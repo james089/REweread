@@ -3,9 +3,11 @@
   "version": "2.0.0",
   "releaseType": "source-only",
   "status": "release-candidate",
-  "license": "PolyForm-Noncommercial-1.0.0",
-  "commercialUse": false,
+  "license": "MIT",
+  "commercialUse": true,
+  "commercialUseScope": "project-owned code only",
   "officiallyAuthorized": false,
+  "serviceUseAuthorized": false,
   "target": {
     "device": "reMarkable Paper Pro Move",
     "codename": "chiappa",

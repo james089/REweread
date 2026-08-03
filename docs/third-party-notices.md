@@ -6,7 +6,7 @@
 
 The upstream repository licenses this dictionary under Apache License 2.0 and attributes its dictionary data to Android Pinyin IME under the same license. The generated file keeps its SPDX identifier and source notice. Any source or binary distribution that includes it must also provide [the complete Apache License 2.0 text](../THIRD_PARTY_LICENSES/Apache-2.0.txt) and preserve those notices.
 
-This attribution does not change the repository's PolyForm Noncommercial license for project-owned code, nor does it resolve the separate WeRead, upstream-plugin or public-release blockers.
+This attribution does not change the repository's MIT License for project-owned code, nor does it resolve the separate WeRead, upstream-plugin or public-release blockers.
 
 ## Reader fonts
 
