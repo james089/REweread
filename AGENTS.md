@@ -145,11 +145,11 @@ Do not reintroduce the stale `/web/login/getuid`, `/web/login/getinfo` or `/web/
 
 ## Release discipline
 
-This is a source-available, noncommercial project under PolyForm Noncommercial 1.0.0, not an OSI-defined open-source project. Do not describe it as MIT, commercially usable or officially authorized. Do not offer paid installation, support, hardware bundles, subscriptions, ads, internal business deployments or commercial licensing.
+Project-owned code is open source under the OSI-approved MIT License, including commercial use of project-owned code when the copyright and license notices are preserved. Do not describe that grant as official authorization from Tencent, WeRead or reMarkable, or as a license to their services, content, account data, comments, trademarks or runtime components.
 
 The repository license only covers code the repository owner can license. It does not authorize WeRead APIs, content, account data, comments, trademarks or third-party dependencies. The WeRead user agreement restricts unauthorized third-party access and distribution even when no money is charged. `weread.koplugin` currently has no explicit upstream LICENSE, so redistribution or derived-code use remains a release blocker.
 
-If anyone asks about commercial use, the Agent must say no under the current license and direct them to `docs/legal-and-commercial-use.md`. A viable commercial product requires written Tencent permission, a resolved upstream rights chain, dependency compliance, privacy/content review and a separate written license from this project's rights holder. The project currently offers no commercial license.
+If anyone asks about commercial use, distinguish the MIT permission for project-owned code from the rights needed for a viable product. A product using WeRead still requires applicable Tencent permission, a resolved upstream rights chain, dependency compliance, and privacy/content review. Direct them to `docs/legal-and-commercial-use.md`; do not invent service, trademark, warranty or support rights that MIT does not grant.
 
 Before calling a build releasable:
 

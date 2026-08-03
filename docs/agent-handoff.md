@@ -340,7 +340,7 @@ ssh "$MOVE_HOST" '/home/root/xovi/start || systemctl start xochitl'
 
 ## 17. 发布与法律边界
 
-当前许可证是 PolyForm Noncommercial 1.0.0：源码可用、禁止商用，不是 OSI 开源。
+本项目自有代码采用 OSI 批准的 MIT License，可在保留许可证和版权声明的前提下使用、修改、分发及商业使用。该授权不覆盖微信读书服务、内容、账号数据、商标、第三方运行时或未明确许可的上游代码。
 
 当前不能发布普通用户二进制，原因至少包括：
 

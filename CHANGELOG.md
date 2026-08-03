@@ -2,6 +2,15 @@
 
 All notable changes to REweread are documented here.
 
+## [Unreleased]
+
+### Licensing
+
+- Relicensed all project-owned code under the OSI-approved MIT License with
+  the consent of all current contributors.
+- Preserved separate third-party notices and the existing service, content,
+  trademark, dependency and source-only release boundaries.
+
 ## [2.0.0] - 2026-07-14
 
 ### Added

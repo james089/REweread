@@ -6,7 +6,7 @@
 - `baidu-ocr-configuration-flow.md`: Agent 与普通用户申请、绑定和排查百度 OCR 凭据的完整指南。
 - `handwriting-annotation-plan.md`: 自由笔迹、正文锚点、块级 OCR 和重排显示设计。
 - `handwriting-input-evaluation.md`: 云端手写识别方案的技术选型记录。
-- `legal-and-commercial-use.md`: 非商用许可、微信读书条款和商业化阻塞说明。
+- `legal-and-commercial-use.md`: MIT 开源许可、微信读书条款和产品化权利边界说明。
 - `xiaohongshu-community-install-post.md`: 可直接用于小红书的社区须知、Agent 安装提示词和使用说明。
 - `dependencies.md`: external SDK, launcher, runtime, plugin and font sources.
 - `troubleshooting.md`: symptom-first diagnostic guide for AI Agents.
