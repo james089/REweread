@@ -8,6 +8,11 @@ import "ReadingClock.js" as ReadingClock
 
 Window {
     id: root
+    // Context properties are not QObject properties.  Keep a real Window
+    // property so both `selfTestMode` and `root.selfTestMode` agree; the
+    // latter guards persistence, network and the reader ink page loader.
+    readonly property string selfTestMode: typeof runtimeSelfTestMode === "string"
+        ? runtimeSelfTestMode : ""
     width: Screen.width
     height: Screen.height
     visible: true
@@ -61,6 +66,11 @@ Window {
     property real magicReplyTilt: -0.75
     property int pageIndex: 0
     property string currentBookId: ""
+    // This is the page currently represented by readerInkCanvas.  It is
+    // deliberately separate from ReaderStore's loaded key: pagination can
+    // rebuild a window and clamp pageIndex before the store is reloaded.
+    property string readerInkViewBookId: ""
+    property int readerInkViewPageIndex: -1
     property int shelfPageIndex: 0
     property int shelfPageCount: Math.max(1, Math.ceil(shelfStore.books.length / 9))
     property int readerBottomGestureHeight: 56
@@ -386,10 +396,15 @@ Window {
             root.magicFontChoice = "龙藏体"
             persistedMagicBookSettings.longCangDefaultMigrated = true
         }
-        readingTimeStore.reloadAccount()
-        root.restoreReadingClockFromLedger()
-        notesStore.reloadAccountScope()
-        accountStore.refresh()
+        // reader-ink is a synthetic page/lifecycle test.  It must not spawn
+        // account helpers or inspect a real session merely because the full
+        // UI component was constructed.
+        if (root.selfTestMode !== "reader-ink") {
+            readingTimeStore.reloadAccount()
+            root.restoreReadingClockFromLedger()
+            notesStore.reloadAccountScope()
+            accountStore.refresh()
+        }
     }
 
     FontLoader {
@@ -2416,6 +2431,10 @@ Window {
         if (root.pageIndex < 0) {
             root.pageIndex = 0
         }
+        // Keep the old page's live framebuffer overlay from surviving a
+        // pagination-window rebuild.  This must happen before currentReader*
+        // changes, because those fields drive the visible body page.
+        root.prepareReaderInkPageChange()
         var image = root.readerPageImages[root.pageIndex] || ({})
         var imageSource = root.readerImageEntrySource(image)
         var topY = imageSource !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
@@ -2436,6 +2455,7 @@ Window {
         root.currentReaderProgressValue = text.length === 0
             ? 0
             : Math.round(root.clamp(root.currentReaderTextStart / Math.max(1, text.length), 0, 1) * 10000) / 100
+        root.loadReaderInkForCurrentPage()
     }
 
     function readerPageForTextOffset(offset) {
@@ -2743,6 +2763,10 @@ Window {
         if (!root.annotationMode) {
             return
         }
+        // A very short eraser/free-ink contact is also reported as a synthetic
+        // mouse tap by StylusStore.  Start suppressing page turns before that
+        // release sequence, rather than relying on the later tap callback.
+        root.readerSuppressPageTurnUntilMs = Date.now() + 900
         if (root.readerMarkerTool === "free") {
             readerInkPersistTimer.stop()
             var freePoint = root.freeNotePointFromStylus(x, y, pressure)
@@ -2831,7 +2855,12 @@ Window {
     }
 
     function readerVisibleInkStrokes() {
-        var strokes = (readerStore.pageStrokes || []).slice()
+        // pageStrokes is a cache, not a book/page-indexed model.  Never draw
+        // it while a navigation or a queued persistence operation has it
+        // loaded for another page.
+        var loadedForVisiblePage = readerStore.strokesBookId === root.currentBookId
+            && Number(readerStore.strokesPageIndex) === Number(root.pageIndex)
+        var strokes = loadedForVisiblePage ? (readerStore.pageStrokes || []).slice() : []
         if (root.pendingFreeInkBookId === root.currentBookId
                 && root.pendingFreeInkPageIndex === root.pageIndex) {
             var persistedIds = ({})
@@ -2851,6 +2880,37 @@ Window {
             }
         }
         return strokes
+    }
+
+    function readerInkStoreAllowed() {
+        // reader-ink is the one intentionally writable temporary-store UI
+        // test.  Other QML self-tests keep their historical no-write policy.
+        return root.selfTestMode === "" || root.selfTestMode === "reader-ink"
+    }
+
+    function prepareReaderInkPageChange() {
+        if (root.readerInkViewBookId === root.currentBookId
+                && root.readerInkViewPageIndex === root.pageIndex) {
+            return
+        }
+        if (root.readerInkStoreAllowed()) {
+            // The pending record carries its original book/page, so this is
+            // safe even if a pagination helper already changed pageIndex.
+            root.flushPendingFreeInkStrokes()
+        }
+        readerInkCanvas.clearLive()
+        root.readerInkViewBookId = root.currentBookId
+        root.readerInkViewPageIndex = root.pageIndex
+    }
+
+    function loadReaderInkForCurrentPage() {
+        if (!root.readerInkStoreAllowed() || root.currentBookId === "") {
+            return
+        }
+        if (readerStore.strokesBookId !== root.currentBookId
+                || Number(readerStore.strokesPageIndex) !== Number(root.pageIndex)) {
+            readerStore.loadStrokesForPage(root.currentBookId, root.pageIndex)
+        }
     }
 
     function flushPendingFreeInkStrokes() {
@@ -3433,6 +3493,21 @@ Window {
         appControl.quitToSystem()
     }
 
+    function runReaderInkSelfTest() {
+        console.log("reader-ink-selftest-mode=" + root.selfTestMode)
+        root.readerMarkerTool = "free"
+        root.annotationMode = true
+        root.enterReaderForBook("ink-probe", "Ink probe")
+        readerInkSelfTestTimer.phase = 0
+        readerInkSelfTestTimer.passed = root.selfTestMode === "reader-ink"
+            && root.readerCachedPageCount >= 2
+        readerInkSelfTestTimer.baselines = []
+        // Let the newly-entered reader page commit before taking a baseline;
+        // otherwise this could digest the shelf's old framebuffer.
+        readerInkSelfTestTimer.interval = 720
+        readerInkSelfTestTimer.start()
+    }
+
     function runReaderSocialSelfTest() {
         if (!root.enterReaderForSelfTest("reader-social-selftest")) {
             return
@@ -3857,6 +3932,136 @@ Window {
         running: selfTestMode === "reader-marker"
         repeat: false
         onTriggered: root.runReaderMarkerSelfTest()
+    }
+
+    Timer {
+        interval: 250
+        running: selfTestMode === "reader-ink"
+        repeat: false
+        onTriggered: root.runReaderInkSelfTest()
+    }
+
+    Timer {
+        id: readerInkSelfTestTimer
+        property int phase: 0
+        property bool passed: true
+        property var baselines: []
+        property var samples: [
+            { "x": 10, "y": 230, "width": 52, "height": 52 },
+            { "x": 10, "y": 310, "width": 52, "height": 52 },
+            // This sample crosses visible body text, not only the blank edge.
+            { "x": 180, "y": 390, "width": 140, "height": 58 }
+        ]
+        interval: 180
+        repeat: false
+        onTriggered: {
+            if (phase === 0) {
+                for (var baselineIndex = 0; baselineIndex < samples.length; ++baselineIndex) {
+                    var sample = samples[baselineIndex]
+                    baselines.push(appControl.readerInkSelfTestDigest(sample.x, sample.y,
+                                                                        sample.width, sample.height))
+                    passed = passed && baselines[baselineIndex] !== ""
+                }
+                console.log("reader-ink-selftest-phase=baseline passed=" + passed)
+                // Three separate free strokes exercise first/middle/last
+                // direct regions, rather than one aggregate ink bitmap.
+                root.beginStylusStroke(18, 245, 1)
+                root.appendStylusStroke(46, 265, 1)
+                root.endStylusStroke(54, 272, 1)
+                root.beginStylusStroke(18, 325, 1)
+                root.appendStylusStroke(46, 345, 1)
+                root.endStylusStroke(54, 352, 1)
+                root.beginStylusStroke(198, 405, 1)
+                root.appendStylusStroke(278, 425, 1)
+                root.endStylusStroke(296, 432, 1)
+                phase = 1
+                interval = 1250 // includes the real 900ms pending flush
+                start()
+                return
+            }
+            if (phase === 1) {
+                var visible = root.readerVisibleInkStrokes()
+                passed = passed && visible.length === 3 && (readerStore.pageStrokes || []).length === 3
+                for (var i = 0; i < baselines.length; ++i) {
+                    var inkSample = samples[i]
+                    passed = passed && appControl.readerInkSelfTestDigest(inkSample.x, inkSample.y,
+                                                                            inkSample.width, inkSample.height) !== baselines[i]
+                }
+                console.log("reader-ink-selftest-phase=flush passed=" + passed)
+                root.setReaderPage(1)
+                phase = 2
+                interval = 420
+                start()
+                return
+            }
+            if (phase === 2) {
+                passed = passed && root.readerVisibleInkStrokes().length === 0
+                    && Number(readerStore.strokesPageIndex) === 1
+                console.log("reader-ink-selftest-phase=next-page passed=" + passed)
+                root.setReaderPage(0)
+                phase = 3
+                interval = 420
+                start()
+                return
+            }
+            if (phase === 3) {
+                passed = passed && root.readerVisibleInkStrokes().length === 3
+                    && Number(readerStore.strokesPageIndex) === 0
+                console.log("reader-ink-selftest-phase=return-page passed=" + passed)
+                root.readerMarkerTool = "eraser"
+                root.beginStylusStroke(14, 340, 1)
+                root.appendStylusStroke(58, 340, 1)
+                root.endStylusStroke(58, 340, 1)
+                phase = 4
+                interval = 520 // allow the canvas settled refresh to finish
+                start()
+                return
+            }
+            if (phase === 4) {
+                passed = passed && root.readerVisibleInkStrokes().length === 2
+                    && appControl.readerInkSelfTestDigest(10, 310, 52, 52) === baselines[1]
+                console.log("reader-ink-selftest-phase=erase passed=" + passed)
+                root.clearCurrentPageInkAndNotes()
+                phase = 5
+                interval = 520
+                start()
+                return
+            }
+            if (phase === 5) {
+                passed = passed && root.readerVisibleInkStrokes().length === 0
+                    && (readerStore.pageStrokes || []).length === 0
+                for (var j = 0; j < baselines.length; ++j) {
+                    var clearSample = samples[j]
+                    passed = passed && appControl.readerInkSelfTestDigest(clearSample.x, clearSample.y,
+                                                                            clearSample.width, clearSample.height) === baselines[j]
+                }
+                console.log("reader-ink-selftest-phase=clear-page0 passed=" + passed)
+                // Leave a persisted stroke on page 1, then rebuild a window
+                // whose direct assignment returns to page 0.  The assertion
+                // below catches a stale page-1 cache being drawn on page 0.
+                root.setReaderPage(1)
+                root.readerMarkerTool = "free"
+                root.beginStylusStroke(198, 405, 1)
+                root.appendStylusStroke(278, 425, 1)
+                root.endStylusStroke(296, 432, 1)
+                phase = 6
+                interval = 1250
+                start()
+                return
+            }
+            if (phase === 6) {
+                passed = passed && root.readerVisibleInkStrokes().length === 1
+                    && Number(readerStore.strokesPageIndex) === 1
+                // Exercise the direct pageIndex=0 pagination-window path
+                // which used to leave the old canvas/model visible.
+                root.buildReaderPaginationWindowFromOffset(0, 12)
+                passed = passed && root.readerVisibleInkStrokes().length === 0
+                    && Number(readerStore.strokesPageIndex) === 0
+                console.log("reader-ink-selftest-phase=rebuild-page0 passed=" + passed)
+                console.log("reader-ink-selftest=" + (passed ? "ok" : "fail"))
+                appControl.quitToSystem()
+            }
+        }
     }
 
     Timer {
@@ -4739,6 +4944,12 @@ Window {
             ReadingClock.sample(root.readingClockState, Date.now(), "", false,
                                 Number(readingTimeStore.accountGeneration || 0))
         }
+        // A book switch can occur before the batching timer fires.  Commit
+        // against the captured pending key while the old store is still live.
+        if (root.readerInkStoreAllowed()) {
+            root.flushPendingFreeInkStrokes()
+        }
+        readerInkCanvas.clearLive()
         var safeTitle = title || bookId
         readerStore.loadBook(bookId, safeTitle)
         root.currentBookId = bookId
@@ -4756,6 +4967,11 @@ Window {
             root.buildReaderPaginationWindowFromOffset(root.readerDefaultStartOffset(), 12)
             root.screenName = "reader"
         }
+        // buildReaderPaginationWindowFromOffset deliberately builds a small
+        // local page window and assigns index 0 directly.  Explicitly activate
+        // that first page so existing free ink is visible immediately.
+        root.prepareReaderInkPageChange()
+        root.loadReaderInkForCurrentPage()
         if (selfTestMode === "") {
             root.requestReaderProgressPull(false)
             root.scheduleReaderSocialPrefetch()
@@ -4903,7 +5119,7 @@ Window {
     }
 
     function setReaderPage(value) {
-        if (root.selfTestMode === "") {
+        if (root.readerInkStoreAllowed()) {
             root.flushPendingFreeInkStrokes()
         }
         root.closeReaderSocialPopup()
@@ -4924,12 +5140,14 @@ Window {
         root.refreshReaderPageCache()
         root.ensureReaderPaginationWindowAhead()
         count = root.readerCachedPageCount
-        if (root.currentBookId !== "" && root.selfTestMode === "") {
-            readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
-            readerStore.loadStrokesForPage(root.currentBookId, root.pageIndex)
-            root.scheduleReaderSocialPrefetch()
-            if (root.pageIndex >= count - 1) {
-                root.requestReaderContinuationDownload()
+        if (root.currentBookId !== "") {
+            root.loadReaderInkForCurrentPage()
+            if (root.selfTestMode === "") {
+                readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
+                root.scheduleReaderSocialPrefetch()
+                if (root.pageIndex >= count - 1) {
+                    root.requestReaderContinuationDownload()
+                }
             }
         }
     }

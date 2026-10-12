@@ -1,6 +1,7 @@
 #include "ai_reply_store.h"
 
 #include <QDir>
+#include <QByteArray>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +24,10 @@ constexpr int kSentenceSoftLimit = 34;
 constexpr int kMagicReplyTokenLimit = 180;
 
 QString dataDirectory() {
+    const QByteArray overrideDir = qgetenv("RM_WEREAD_DATA_DIR");
+    if (!overrideDir.isEmpty()) {
+        return QString::fromUtf8(overrideDir);
+    }
     return QStringLiteral("/home/root/.local/share/rm-weread");
 }
 

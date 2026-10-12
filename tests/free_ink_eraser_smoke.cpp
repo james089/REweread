@@ -109,5 +109,21 @@ int main(int argc, char **argv) {
            "free-ink eraser result must survive ReaderStore reload");
     expect(countTool(reloaded.pageStrokes(), QStringLiteral("marker")) == 1,
            "marker preservation must survive ReaderStore reload");
+    reloaded.loadStrokesForPage(firstBook, page + 1);
+    const QVariantList visibleBeforeLateWrite = reloaded.pageStrokes();
+    reloaded.addPageStrokesBatch(firstBook, QStringLiteral("test"), page, 10,
+                                 {stroke(QStringLiteral("free"), horizontal)});
+    expect(reloaded.strokesBookId() == firstBook && reloaded.strokesPageIndex() == page + 1,
+           "late old-page save must not change the visible page key");
+    expect(reloaded.pageStrokes() == visibleBeforeLateWrite,
+           "late old-page save must not replace the visible strokes");
+    reloaded.erasePageStrokesAtPath(firstBook, page, {point(130, 100)}, 20);
+    expect(reloaded.pageStrokes() == visibleBeforeLateWrite,
+           "old-page erase must not replace the visible strokes");
+    reloaded.clearPageStrokes(firstBook, page);
+    expect(reloaded.pageStrokes() == visibleBeforeLateWrite,
+           "old-page clear must not replace the visible strokes");
+    reloaded.loadStrokesForPage(firstBook, page);
+    expect(reloaded.pageStrokes().isEmpty(), "old-page clear must still persist");
     return 0;
 }

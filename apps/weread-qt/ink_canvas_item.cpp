@@ -254,10 +254,16 @@ void InkCanvasItem::clearLive() {
     m_settleBounds = QRectF();
     m_pendingSegments.clear();
     m_penDown = false;
-    clearDirectInkOverlay();
+    const QRect restoredDirect = clearDirectInkOverlay();
     resetDirectInk();
     hidePenModeRegion();
-    if (!dirty.isEmpty()) {
+    if (!restoredDirect.isEmpty()) {
+        // Direct ink may have covered a persisted stroke long before this
+        // call. A partial repaint of only the live tail would leave that
+        // persisted texture absent from the vendor buffer, so let the canvas
+        // fully take ownership again before a page/tool state changes.
+        update(boundingRect().toAlignedRect());
+    } else if (!dirty.isEmpty()) {
         update(dirty.toAlignedRect());
     }
 }
@@ -445,12 +451,25 @@ QRectF InkCanvasItem::strokeBounds(const QVariantList &points, double lineWidth)
     if (points.isEmpty()) {
         return {};
     }
-    QRectF bounds(pointFromVariant(points.constFirst()), QSizeF(0, 0));
+    // QRectF(point, QSizeF(0, 0)) is null. QRectF::united() deliberately
+    // treats a null operand as absent, which used to leave the dirty region at
+    // just the final pen sample. Compute extrema explicitly so an appended
+    // persisted stroke uploads its complete texture region.
+    const QPointF first = pointFromVariant(points.constFirst());
+    double left = first.x();
+    double top = first.y();
+    double right = first.x();
+    double bottom = first.y();
     for (qsizetype index = 1; index < points.size(); ++index) {
-        bounds = bounds.united(QRectF(pointFromVariant(points.at(index)), QSizeF(0, 0)));
+        const QPointF point = pointFromVariant(points.at(index));
+        left = qMin(left, point.x());
+        top = qMin(top, point.y());
+        right = qMax(right, point.x());
+        bottom = qMax(bottom, point.y());
     }
     const double pad = lineWidth / 2.0 + 3.0;
-    return bounds.normalized().adjusted(-pad, -pad, pad, pad);
+    return QRectF(left, top, qMax(1.0, right - left), qMax(1.0, bottom - top))
+        .adjusted(-pad, -pad, pad, pad);
 }
 
 void InkCanvasItem::clearImageRect(QImage *image, const QRectF &bounds) {
@@ -530,10 +549,12 @@ void InkCanvasItem::finalizeInkSession() {
     m_dryTimer.stop();
     m_pendingSegments.clear();
     m_penDown = false;
-    // At this point the persisted image is the source of truth. Restore the
-    // direct pen overlay first, then let the one scheduled Qt update compose
-    // the stored coloured stroke without carrying old page pixels forward.
-    clearDirectInkOverlay();
+    // The Qt update below asks the persisted image to take over presentation,
+    // but it does not prove that a transparent QQuickPaintedItem has already
+    // replaced every directly-written vendor pixel. Keep the original-pixel
+    // overlay until a deliberate clear, page replacement, hide, resize or
+    // destruction can restore it safely. That preserves reversibility across
+    // multiple short pen strokes on firmware where composition is deferred.
     resetDirectInk();
     hidePenModeRegion();
     eraseLiveImages();

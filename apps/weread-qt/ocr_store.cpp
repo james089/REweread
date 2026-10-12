@@ -1,6 +1,7 @@
 #include "ocr_store.h"
 
 #include <QDateTime>
+#include <QByteArray>
 #include <QBuffer>
 #include <QDir>
 #include <QFile>
@@ -35,6 +36,10 @@ QString dataDirectory() {
     // AppLoad/XOVI can launch the application without HOME.  Use the device's
     // documented persistent data root instead of relying on a home-path
     // lookup that can fall back to the read-only root filesystem.
+    const QByteArray overrideDir = qgetenv("RM_WEREAD_DATA_DIR");
+    if (!overrideDir.isEmpty()) {
+        return QString::fromUtf8(overrideDir);
+    }
     return QStringLiteral("/home/root/.local/share/rm-weread");
 }
 

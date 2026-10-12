@@ -18,6 +18,8 @@ class ReaderStore : public QObject {
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
     Q_PROPERTY(QVariantList highlights READ highlights NOTIFY highlightsChanged)
     Q_PROPERTY(QVariantList pageStrokes READ pageStrokes NOTIFY strokesChanged)
+    Q_PROPERTY(QString strokesBookId READ strokesBookId NOTIFY strokesChanged)
+    Q_PROPERTY(int strokesPageIndex READ strokesPageIndex NOTIFY strokesChanged)
     Q_PROPERTY(QVariantList pageInkBlocks READ pageInkBlocks NOTIFY strokesChanged)
     Q_PROPERTY(QVariantList paragraphNotes READ paragraphNotes NOTIFY paragraphNotesChanged)
     Q_PROPERTY(QVariantList searchResults READ searchResults NOTIFY searchChanged)
@@ -36,6 +38,8 @@ public:
     QVariantList bookmarks() const;
     QVariantList highlights() const;
     QVariantList pageStrokes() const;
+    QString strokesBookId() const { return m_strokesBookId; }
+    int strokesPageIndex() const { return m_strokesPageIndex; }
     QVariantList pageInkBlocks() const;
     QVariantList paragraphNotes() const;
     QVariantList searchResults() const;
@@ -85,6 +89,7 @@ signals:
     void searchChanged();
 
 private:
+    void refreshStrokesIfVisible(const QString &bookId, int pageIndex);
     void setStrokesForPage(const QString &bookId, int pageIndex, const QVariantList &strokes);
     QString dataDir() const;
     QString safeName(const QString &value) const;

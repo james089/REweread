@@ -58,6 +58,8 @@ const scripts = [
   'validate-free-note-anchor.mjs',
   'validate-fast-ink.mjs',
   'validate-free-ink-eraser.mjs',
+  'validate-ink-canvas-stroke-bounds.mjs',
+  'validate-reader-ink-lifecycle.mjs',
   'validate-baidu-ocr-flow.mjs',
   'validate-ai-handwriting.mjs',
   'validate-v1-5-guides.mjs',

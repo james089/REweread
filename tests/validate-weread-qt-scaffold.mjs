@@ -66,7 +66,7 @@ assert(main.includes('setContextProperty("networkStore"'), 'main.cpp must expose
 assert(main.includes('setContextProperty("accountStore"'), 'main.cpp must expose AccountStore to QML');
 assert(main.includes('setContextProperty("bookCatalogStore"'), 'main.cpp must expose BookCatalogStore to QML');
 assert(main.includes('setContextProperty("appControl"'), 'main.cpp must expose AppControl to QML');
-assert(main.includes('"selfTestMode"'), 'main.cpp must expose the optional self-test mode to QML');
+assert(main.includes('"runtimeSelfTestMode"'), 'main.cpp must expose the optional self-test mode through a real QML root property');
 assert(main.includes('qEnvironmentVariable("RM_WEREAD_QT_SELFTEST"'), 'main.cpp must source self-test mode from an environment variable');
 assert(main.includes('engine.loadFromModule("WeReadMove", "Main")'), 'main.cpp must load WeReadMove/Main');
 assert(main.indexOf('ShelfStore shelfStore') < main.indexOf('QQmlApplicationEngine engine'), 'main.cpp must construct QML engine after stores so QML tears down before context objects');
@@ -978,7 +978,7 @@ assert(qml.includes('function runReaderMarkerSelfTest'), 'QML must expose a devi
 assert(qml.includes('selfTestMode === "reader-marker"'), 'QML must run the marker stroke self-test only when explicitly requested');
 assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must refuse to alter real annotation storage');
 assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must fail closed until it has isolated annotation storage');
-assert(qml.includes('root.currentBookId !== "" && root.selfTestMode === ""'), 'reader page self-tests must not save real progress or trigger continuation downloads');
+assert(qml.includes('if (root.selfTestMode === "") {\n                readerStore.saveProgress'), 'reader page self-tests must not save real progress or trigger continuation downloads');
 assert(qml.includes('function runReaderLayoutSelfTest'), 'QML must expose a device-runnable reader layout self-test');
 assert(qml.includes('function captureReaderSettings'), 'reader self-tests must capture current persisted typography settings');
 assert(qml.includes('function restoreReaderSettings'), 'reader self-tests must restore typography settings before exit');
@@ -990,7 +990,7 @@ const readerLayoutSelfTestSnippet = qml.slice(qml.indexOf('function prepareReade
 assert(readerLayoutSelfTestSnippet.includes('var fractions = [0.08, 0.52, 0.88]') && readerLayoutSelfTestSnippet.includes('body.indexOf("\\n", offset)'), 'reader layout self-test must skip front matter and sample real body paragraph starts');
 assert(!readerLayoutSelfTestSnippet.includes('[\n            0,'), 'reader layout self-test must not use page zero front matter as the typography proof');
 const enterReaderIndex = qml.indexOf('function enterReaderForBook');
-const enterReaderSnippet = qml.slice(enterReaderIndex, enterReaderIndex + 1800);
+const enterReaderSnippet = qml.slice(enterReaderIndex, enterReaderIndex + 3200);
 assert(enterReaderSnippet.includes('if (selfTestMode === "")'), 'reader self-tests must skip async helper fetches so luajit processes are not destroyed during test shutdown');
 assert(enterReaderSnippet.includes('root.requestReaderProgressPull(false)') && enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must fetch progress and schedule current-page comments');
 assert(!enterReaderSnippet.includes('notesStore.refreshBookNotes(bookId)'), 'normal reader opens must not block current-page comments behind full-book note sync');

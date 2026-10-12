@@ -2,6 +2,7 @@
 #include "direct_ink_framebuffer.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QImage>
 #include <QSaveFile>
 
@@ -28,4 +29,20 @@ bool AppControl::saveSelfTestScreen() {
     if (!output.open(QIODevice::WriteOnly)) return false;
     output.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     return image.save(&output, "PNG") && output.commit();
+}
+
+QString AppControl::readerInkSelfTestDigest(int x, int y, int width, int height) const {
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") != QStringLiteral("reader-ink")) {
+        return {};
+    }
+    auto &buffer = DirectInkFramebuffer::instance();
+    const QRect requested(x, y, width, height);
+    const QRect available(0, 0, buffer.width(), buffer.height());
+    const QRect area = requested.intersected(available);
+    const QByteArray pixels = buffer.snapshot(area);
+    if (area.isEmpty() || pixels.size() != area.width() * area.height() * 4) {
+        return {};
+    }
+    return QString::fromLatin1(QCryptographicHash::hash(pixels,
+        QCryptographicHash::Sha256).toHex());
 }

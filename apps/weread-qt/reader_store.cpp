@@ -821,6 +821,12 @@ void ReaderStore::setStrokesForPage(const QString &bookId, int pageIndex, const 
     emit strokesChanged();
 }
 
+void ReaderStore::refreshStrokesIfVisible(const QString &bookId, int pageIndex) {
+    if (m_strokesBookId == bookId && m_strokesPageIndex == qMax(0, pageIndex)) {
+        loadStrokesForPage(bookId, pageIndex);
+    }
+}
+
 void ReaderStore::addPageStroke(const QString &bookId, const QString &title, int pageIndex, int pageCount, const QString &colorName, const QString &colorValue, const QVariantList &points, const QString &tool, int lineWidth) {
     QVariantMap stroke;
     stroke.insert(QStringLiteral("colorName"), colorName);
@@ -906,7 +912,10 @@ void ReaderStore::addPageStrokesBatch(const QString &bookId, const QString &titl
     }
     strokesMap.insert(safeName(bookId), list);
     saveStrokesMap(strokesMap);
-    setStrokesForPage(bookId, safePageIndex, list);
+    // Saving a queued stroke must never switch the currently displayed page.
+    if (m_strokesBookId == bookId && m_strokesPageIndex == safePageIndex) {
+        setStrokesForPage(bookId, safePageIndex, list);
+    }
 }
 
 void ReaderStore::clearPageStrokes(const QString &bookId, int pageIndex) {
@@ -925,7 +934,7 @@ void ReaderStore::clearPageStrokes(const QString &bookId, int pageIndex) {
     }
     strokesMap.insert(safeName(bookId), kept);
     saveStrokesMap(strokesMap);
-    loadStrokesForPage(bookId, pageIndex);
+    refreshStrokesIfVisible(bookId, pageIndex);
 }
 
 int ReaderStore::erasePageStrokesAtPath(const QString &bookId, int pageIndex,
@@ -955,7 +964,7 @@ int ReaderStore::erasePageStrokesAtPath(const QString &bookId, int pageIndex,
     }
     strokesMap.insert(safeName(bookId), kept);
     saveStrokesMap(strokesMap);
-    loadStrokesForPage(bookId, safePageIndex);
+    refreshStrokesIfVisible(bookId, safePageIndex);
     return removed;
 }
 
@@ -990,7 +999,7 @@ void ReaderStore::removePageInkBlock(const QString &bookId, int pageIndex, const
     }
     strokesMap.insert(safeName(bookId), kept);
     saveStrokesMap(strokesMap);
-    loadStrokesForPage(bookId, safePageIndex);
+    refreshStrokesIfVisible(bookId, safePageIndex);
 }
 
 void ReaderStore::setPageInkBlockOcrText(const QString &bookId, int pageIndex, const QString &blockId, const QString &text) {
@@ -1033,7 +1042,7 @@ void ReaderStore::setPageInkBlockOcrText(const QString &bookId, int pageIndex, c
     }
     strokesMap.insert(safeName(bookId), list);
     saveStrokesMap(strokesMap);
-    loadStrokesForPage(bookId, safePageIndex);
+    refreshStrokesIfVisible(bookId, safePageIndex);
 }
 
 void ReaderStore::setPageInkBlockAiReply(const QString &bookId, int pageIndex, const QString &blockId, const QString &text) {
@@ -1069,7 +1078,7 @@ void ReaderStore::setPageInkBlockAiReply(const QString &bookId, int pageIndex, c
     if (!attached) return;
     strokesMap.insert(safeName(bookId), list);
     saveStrokesMap(strokesMap);
-    loadStrokesForPage(bookId, safePageIndex);
+    refreshStrokesIfVisible(bookId, safePageIndex);
 }
 
 void ReaderStore::addParagraphNote(const QString &bookId, const QString &title, const QVariantMap &anchor, const QVariantMap &fallback, const QVariantList &points, const QString &colorName, const QString &colorValue) {

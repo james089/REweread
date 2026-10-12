@@ -4,6 +4,17 @@ All notable changes to REweread are documented here.
 
 ## [Unreleased]
 
+### Fixed — 2026-10-13
+
+- Fix the QML self-test mode scope that skipped ink loading during normal
+  page turns; activate the correct book/page ink model on every pagination path.
+- Keep delayed writes to an old page from replacing the visible ink model.
+- Restore complete multi-stroke direct-ink regions when clearing or erasing,
+  including strokes over body text, without sacrificing the fast pen path.
+- Add isolated real-reader regression coverage for saving, page turns, returning,
+  erasing, clearing and rebuilding pagination. Two device runs passed; the user
+  then confirmed all reported page-turn, erase and clear issues were resolved.
+
 ## [3.0.0] - 2026-10-12
 
 Source-only milestone; no public binary distribution. End-to-end cloud writes,

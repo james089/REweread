@@ -5,7 +5,12 @@
 #include <QSettings>
 #include <QTimer>
 #include <QQuickWindow>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include <cstdio>
+#include <memory>
 
 #include "account_store.h"
 #include "ai_reply_store.h"
@@ -28,12 +33,60 @@
 #include "shelf_store.h"
 #include "stylus_store.h"
 
+namespace {
+
+bool writeReaderInkSelfTestFile(const QString &path, const QByteArray &contents) {
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    return file.write(contents) == contents.size();
+}
+
+bool prepareReaderInkSelfTestBook(const QString &dataDir) {
+    const QString bookDir = QDir(dataDir).filePath(QStringLiteral("books/ink-probe"));
+    const QString expanded = QDir(bookDir).filePath(QStringLiteral("epub-expanded/OEBPS"));
+    QByteArray body("<html><head><title>Ink probe</title></head><body><h1>Ink probe</h1>");
+    const QByteArray paragraph("<p>这是隔离手写笔迹测试文本，用于生成多个真实阅读页面并验证翻页、擦除与清页。"
+                               "页面内容仅存在于临时目录，不会读取或修改用户书籍。</p>");
+    for (int index = 0; index < 900; ++index) {
+        body.append(paragraph);
+    }
+    body.append("</body></html>");
+    return writeReaderInkSelfTestFile(QDir(bookDir).filePath(QStringLiteral("foo.epub")), QByteArray("probe"))
+        && writeReaderInkSelfTestFile(QDir(expanded).filePath(QStringLiteral("content.opf")),
+                                      QByteArray("<package><metadata/></package>"))
+        && writeReaderInkSelfTestFile(QDir(expanded).filePath(QStringLiteral("text/ch1.xhtml")), body);
+}
+
+} // namespace
+
 int main(int argc, char *argv[]) {
     std::fputs("rm-weread: initializing Qt platform\n", stderr);
     QGuiApplication app(argc, argv);
     std::fputs("rm-weread: Qt platform ready\n", stderr);
     QCoreApplication::setApplicationName("WeRead Move");
     QCoreApplication::setOrganizationName("rm-weread");
+    std::unique_ptr<QTemporaryDir> readerInkSelfTestDir;
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-ink")) {
+        // This mode is a real QML/ReaderStore exercise, but it must never
+        // enumerate or write the normal rm-weread directory.
+        readerInkSelfTestDir = std::make_unique<QTemporaryDir>(QStringLiteral("/tmp/rm-weread-reader-ink-XXXXXX"));
+        if (!readerInkSelfTestDir->isValid()
+                || !prepareReaderInkSelfTestBook(readerInkSelfTestDir->path())) {
+            std::fputs("reader-ink-selftest=setup-failed\n", stderr);
+            return 2;
+        }
+        qputenv("RM_WEREAD_DATA_DIR", readerInkSelfTestDir->path().toUtf8());
+        qputenv("RM_WEREAD_SESSION_PATH", QDir(readerInkSelfTestDir->path())
+                .filePath(QStringLiteral("session.json")).toUtf8());
+        if (!writeReaderInkSelfTestFile(qEnvironmentVariable("RM_WEREAD_SESSION_PATH"),
+                                        QByteArray("{\"logged_out\":true}"))) {
+            std::fputs("reader-ink-selftest=session-setup-failed\n", stderr);
+            return 2;
+        }
+    }
     if (!qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST")) {
         // QML's device-provided Settings type has no fileName property.
         // Isolate preferences below it so interrupted UI tests cannot change
@@ -189,7 +242,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("appControl", &appControl);
     engine.rootContext()->setContextProperty("stylusStore", &stylusStore);
     engine.rootContext()->setContextProperty(
-        "selfTestMode",
+        "runtimeSelfTestMode",
         qEnvironmentVariable("RM_WEREAD_QT_SELFTEST"));
     QObject::connect(
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
