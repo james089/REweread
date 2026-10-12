@@ -1,5 +1,7 @@
 #pragma once
 
+#include "direct_ink_framebuffer.h"
+
 #include <QColor>
 #include <QElapsedTimer>
 #include <QImage>
@@ -18,6 +20,7 @@ class InkCanvasItem : public QQuickPaintedItem {
 
 public:
     explicit InkCanvasItem(QQuickItem *parent = nullptr);
+    ~InkCanvasItem() override;
 
     QVariantList strokes() const;
     void setStrokes(const QVariantList &strokes);
@@ -39,6 +42,7 @@ signals:
 
 protected:
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    void itemChange(ItemChange change, const ItemChangeData &data) override;
 
 private:
     struct LiveSegment {
@@ -73,6 +77,7 @@ private:
     void hidePenModeRegion();
     bool drawDirectSegment(const LiveSegment &segment);
     void flushDirectInk();
+    QRect clearDirectInkOverlay();
     void resetDirectInk();
 
     QVariantList m_strokes;
@@ -96,6 +101,7 @@ private:
     QElapsedTimer m_directSwapClock;
     QTimer m_directSwapTimer;
     QRect m_directDirty;
+    DirectInkFramebuffer::OverlayPixels m_directOverlay;
     bool m_directInkActiveForStroke = false;
     QQuickItem *m_penModeItem = nullptr;
     bool m_penModeProbeComplete = false;

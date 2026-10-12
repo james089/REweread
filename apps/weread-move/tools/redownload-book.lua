@@ -37,6 +37,13 @@ local function sanitize_error(err)
         :gsub("%s+$", "")
 end
 
+-- This is the completion contract for the Qt caller.  Progress lines are
+-- intentionally advisory; only this final line states which file was created
+-- by *this* helper invocation.
+local function emit_result(state, path)
+    print("result state=" .. tostring(state or "error") .. " path=" .. tostring(path or ""))
+end
+
 local ok, err = pcall(function()
 
 local function snapshot_status(status)
@@ -92,6 +99,7 @@ if job.state == "done" then
     print("selected=" .. tostring(#(job.selected or {})))
     print("assets=already-packaged")
     print("failed=0")
+    emit_result("full", job.path)
     os.exit(0)
 end
 
@@ -112,6 +120,7 @@ while job.state ~= "done" do
         local opening_path = manager:finish_opening_download(job)
         print("stopped_after=" .. tostring(#job.selected))
         print("opening path=" .. tostring(opening_path or ""))
+        emit_result("opening", opening_path)
         os.exit(0)
     end
 end
@@ -120,6 +129,7 @@ print("done path=" .. tostring(job.path or ""))
 print("selected=" .. tostring(#(job.selected or {})))
 print("assets=" .. tostring(#(job.assets or {})))
 print("failed=" .. tostring(#(job.failed or {})))
+emit_result(#(job.failed or {}) > 0 and "partial" or "full", job.path)
 
 end)
 

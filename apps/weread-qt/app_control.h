@@ -9,4 +9,5 @@ public:
     explicit AppControl(QObject *parent = nullptr);
 
     Q_INVOKABLE void quitToSystem();
+    Q_INVOKABLE bool saveSelfTestScreen();
 };

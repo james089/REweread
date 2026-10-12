@@ -32,6 +32,7 @@ for (const script of [
   'validate-chapter-cache.mjs',
   'validate-reader-document.mjs',
   'validate-reader-word-wrap.mjs',
+  'validate-reader-image-flow.mjs',
   'validate-native-reader-view.mjs',
   'validate-native-raster.mjs',
   'validate-native-framebuffer.mjs',

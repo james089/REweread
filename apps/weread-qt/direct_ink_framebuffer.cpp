@@ -1,6 +1,7 @@
 #include "direct_ink_framebuffer.h"
 
 #include <QImage>
+#include <QSet>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -116,6 +117,46 @@ int requestedCandidateIndex() {
     }
     return static_cast<int>(value);
 }
+
+quint64 pixelKey(int x, int y) {
+    return (quint64(quint32(y)) << 32) | quint32(x);
+}
+
+QPoint pointFromKey(quint64 key) {
+    return QPoint(int(quint32(key)), int(quint32(key >> 32)));
+}
+
+QSet<quint64> linePixels(const QPointF &from, const QPointF &to, int radius,
+                         int width, int height) {
+    QSet<quint64> pixels;
+    if (width <= 0 || height <= 0) {
+        return pixels;
+    }
+    radius = qBound(1, radius, 64);
+    const int x0 = qRound(from.x());
+    const int y0 = qRound(from.y());
+    const int x1 = qRound(to.x());
+    const int y1 = qRound(to.y());
+    const int steps = qMax(1, qMax(qAbs(x1 - x0), qAbs(y1 - y0)));
+    const int radiusSquared = radius * radius;
+    for (int step = 0; step <= steps; ++step) {
+        const int centerX = x0 + (x1 - x0) * step / steps;
+        const int centerY = y0 + (y1 - y0) * step / steps;
+        for (int offsetY = -radius; offsetY <= radius; ++offsetY) {
+            for (int offsetX = -radius; offsetX <= radius; ++offsetX) {
+                if (offsetX * offsetX + offsetY * offsetY > radiusSquared) {
+                    continue;
+                }
+                const int x = centerX + offsetX;
+                const int y = centerY + offsetY;
+                if (x >= 0 && y >= 0 && x < width && y < height) {
+                    pixels.insert(pixelKey(x, y));
+                }
+            }
+        }
+    }
+    return pixels;
+}
 } // namespace
 
 // libqsgepaper constructs its auxiliary buffer through these exact Qt 6
@@ -176,7 +217,13 @@ bool DirectInkFramebuffer::initialize() {
     m_swap = reinterpret_cast<decltype(m_swap)>(dlsym(
         m_vendorLibrary,
         "_ZN13EPFramebuffer11swapBuffersE5QRect13EPContentType12EPScreenMode6QFlagsINS_10UpdateFlagEE"));
-    if (!instanceFunction || !m_swap) {
+    // Firmware 3.28 removed EPContentType from the QRect overload. Resolve
+    // each exact ABI separately; never call a new symbol through the old type.
+    m_swapModern = reinterpret_cast<decltype(m_swapModern)>(dlsym(
+        m_vendorLibrary,
+        "_ZN13EPFramebuffer11swapBuffersE5QRect12EPScreenMode6QFlagsINS_10UpdateFlagEE"));
+    if (!instanceFunction || (!m_swap && !m_swapModern)) {
+        std::fputs("rm-weread: direct ink unavailable (unsupported refresh ABI)\n", stderr);
         return false;
     }
 
@@ -296,6 +343,90 @@ QRect DirectInkFramebuffer::drawBlackLine(const QPointF &from, const QPointF &to
         .intersected(QRect(0, 0, m_width, m_height));
 }
 
+bool DirectInkFramebuffer::drawBlackLineWithOverlay(const QPointF &from,
+                                                     const QPointF &to,
+                                                     int radius,
+                                                     OverlayPixels *overlay,
+                                                     qsizetype maximumPixels,
+                                                     QRect *dirty) {
+    if (dirty) {
+        *dirty = {};
+    }
+    if (!overlay || maximumPixels == 0) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_available || !m_pixels || overlay->capacityExceeded) {
+        return false;
+    }
+    const QSet<quint64> pixels = linePixels(from, to, radius, m_width, m_height);
+    if (pixels.isEmpty()) {
+        return false;
+    }
+    qsizetype missing = 0;
+    for (quint64 key : pixels) {
+        if (!overlay->originals.contains(key)) {
+            ++missing;
+        }
+    }
+    if (missing > maximumPixels || overlay->originals.size() > maximumPixels - missing) {
+        overlay->capacityExceeded = true;
+        return false;
+    }
+
+    QRect bounds;
+    for (quint64 key : pixels) {
+        const QPoint point = pointFromKey(key);
+        unsigned char *pixel = m_pixels + static_cast<qsizetype>(point.y()) * m_stride
+                             + static_cast<qsizetype>(point.x()) * 4;
+        if (!overlay->originals.contains(key)) {
+            quint32 original = 0;
+            std::memcpy(&original, pixel, sizeof(original));
+            overlay->originals.insert(key, original);
+        }
+        pixel[0] = 0;
+        pixel[1] = 0;
+        pixel[2] = 0;
+        pixel[3] = 0xff;
+        const QRect pointRect(point, QSize(1, 1));
+        bounds = bounds.isNull() ? pointRect : bounds.united(pointRect);
+    }
+    if (dirty) {
+        *dirty = bounds;
+    }
+    return !bounds.isEmpty();
+}
+
+QRect DirectInkFramebuffer::restoreBlackOverlay(OverlayPixels *overlay) {
+    if (!overlay) {
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    QRect bounds;
+    if (m_available && m_pixels) {
+        for (auto it = overlay->originals.cbegin(); it != overlay->originals.cend(); ++it) {
+            const QPoint point = pointFromKey(it.key());
+            if (point.x() < 0 || point.y() < 0 || point.x() >= m_width || point.y() >= m_height) {
+                continue;
+            }
+            unsigned char *pixel = m_pixels + static_cast<qsizetype>(point.y()) * m_stride
+                                 + static_cast<qsizetype>(point.x()) * 4;
+            // Do not bring an old page back over a scene which has already
+            // repainted this pixel. Direct ink is always opaque RGB black.
+            if (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0 || pixel[3] != 0xff) {
+                continue;
+            }
+            std::memcpy(pixel, &it.value(), sizeof(quint32));
+            const QRect pointRect(point, QSize(1, 1));
+            bounds = bounds.isNull() ? pointRect : bounds.united(pointRect);
+        }
+    }
+    overlay->originals.clear();
+    overlay->capacityExceeded = false;
+    return bounds;
+}
+
 QByteArray DirectInkFramebuffer::snapshot(const QRect &rect) {
     std::lock_guard<std::mutex> lock(m_mutex);
     const QRect clipped = rect.intersected(QRect(0, 0, m_width, m_height));
@@ -338,7 +469,7 @@ void DirectInkFramebuffer::dissolve(const QRect &rect, const QByteArray &backgro
 
 void DirectInkFramebuffer::refreshMonoFast(const QRect &dirty) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_available || !m_swap || dirty.isEmpty()) {
+    if (!m_available || (!m_swap && !m_swapModern) || dirty.isEmpty()) {
         return;
     }
     const QRect clipped = dirty.intersected(QRect(0, 0, m_width, m_height));
@@ -346,5 +477,12 @@ void DirectInkFramebuffer::refreshMonoFast(const QRect &dirty) {
         return;
     }
     // EPContentType::Mono = 0, EPScreenMode::Pen = 0, partial update flags = 0.
-    m_swap(m_vendorInstance, clipped, 0, 0, 0);
+    if (m_swap) {
+        m_swap(m_vendorInstance, clipped, 0, 0, 0);
+    } else {
+        // Mode 0 / default flags on the exact 3.28 QRect ABI. Its numeric
+        // behavior is covered by the bounded on-device direct-ink probe;
+        // do not infer private enum names from the older overload.
+        m_swapModern(m_vendorInstance, clipped, 0, 0);
+    }
 }

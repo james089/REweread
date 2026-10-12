@@ -4,6 +4,43 @@ All notable changes to REweread are documented here.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-12
+
+Source-only milestone; no public binary distribution. End-to-end cloud writes,
+whole-book offline acceptance and the full typography matrix remain pending.
+
+### Added
+
+- My → Reading statistics: local daily/monthly reading time, book totals and
+  recent activity, with foreground-only accounting and account isolation.
+- Persistent reading-time upload ledger, uncertain-result protection, cloud
+  personal-note cache and conservative remote progress matching.
+- Checksum-verified chapter reuse, bounded retries, resumable downloads and
+  explicit partial EPUB status.
+- Reader font preview grid and ordered image/caption pagination.
+- Guarded XOVI startup with exact firmware/resource validation and stock-system
+  fallback after injection failure; documented AppLoad v0.6.0 recovery on 3.28.
+
+### Fixed
+
+- Support the firmware 3.28 framebuffer refresh ABI while preserving the older ABI.
+- Read legacy session encoding in memory without rewriting credentials.
+- Track and restore temporary direct-ink pixels on canvas clearing, page
+  transitions and handoff to Qt; preserve the background rather than painting
+  white over body text. Bounded tracking falls back safely to Qt.
+- Freehand eraser now deletes intersected strokes on the current book/page,
+  including newly queued ink and writing in the page margins.
+
+### Validation boundary
+
+- OS 3.28.0.172: AppLoad entry confirmed, reboot persistence and stock-system
+  return checked; font, image, statistics and direct-ink probe self-tests passed
+  before this release preparation. These do not prove continuous handwriting.
+- Freehand page-clear/eraser regression reported during release preparation;
+  see release notes for the fix and its actual validation status.
+- Local handwriting upload, precise native chapter offsets, clean-device
+  install/uninstall and long-duration battery acceptance remain incomplete.
+
 ### Licensing
 
 - Relicensed all project-owned code under the OSI-approved MIT License with

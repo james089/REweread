@@ -1,13 +1,17 @@
 #include "notes_store.h"
+#include "session_json_reader.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QStringList>
 
 namespace {
@@ -27,12 +31,13 @@ NotesStore::NotesStore(QObject *parent)
         setState(false, QStringLiteral("笔记加载超时"));
     });
     connect(&m_process, &QProcess::readyReadStandardOutput, this, [this]() {
-        appendOutput(QString::fromUtf8(m_process.readAllStandardOutput()));
+        appendOutput(m_process.readAllStandardOutput(), m_stdoutBuffer);
     });
     connect(&m_process, &QProcess::readyReadStandardError, this, [this]() {
-        appendOutput(QString::fromUtf8(m_process.readAllStandardError()));
+        appendOutput(m_process.readAllStandardError(), m_stderrBuffer);
     });
-    connect(&m_process, &QProcess::finished, this, &NotesStore::finishProcess);
+    connect(&m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &NotesStore::finishProcess);
 }
 
 bool NotesStore::running() const {
@@ -61,6 +66,160 @@ QString NotesStore::socialCachePath() const {
         ? QStringLiteral("/home/root/.local/share/rm-weread")
         : QString::fromUtf8(overrideDir);
     return QDir(dataDir).filePath(QStringLiteral("social-comments-cache.json"));
+}
+
+QString NotesStore::personalNotesCachePath() const {
+    const QByteArray overrideDir = qgetenv("RM_WEREAD_DATA_DIR");
+    const QString dataDir = overrideDir.isEmpty()
+        ? QStringLiteral("/home/root/.local/share/rm-weread")
+        : QString::fromUtf8(overrideDir);
+    return QDir(dataDir).filePath(QStringLiteral("personal-notes-cache.json"));
+}
+
+QString NotesStore::currentAccountScope() const {
+    const QByteArray sessionOverride = qgetenv("RM_WEREAD_SESSION_PATH");
+    const QString sessionPath = sessionOverride.isEmpty()
+        ? QStringLiteral("/home/root/.local/share/rm-weread/session.json")
+        : QString::fromUtf8(sessionOverride);
+    QFile file(sessionPath);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    const SessionJsonReader::Result parsed = SessionJsonReader::parse(file.readAll());
+    const QJsonDocument document = parsed.document;
+    if (!document.isObject()) return {};
+    const QJsonObject session = document.object();
+    if (session.value(QStringLiteral("logged_out")).toBool()) return {};
+    const QJsonObject cookies = session.value(QStringLiteral("cookies")).toObject();
+    const QString vid = cookies.value(QStringLiteral("wr_vid")).toString().trimmed();
+    const QString sessionKey = cookies.value(QStringLiteral("wr_skey")).toString().trimmed();
+    if (vid.isEmpty() || sessionKey.isEmpty()
+        || (parsed.usedLatin1Fallback && !SessionJsonReader::isAsciiDecimalIdentifier(vid))) return {};
+    return QString::fromLatin1(QCryptographicHash::hash(vid.toUtf8(), QCryptographicHash::Sha256).toHex());
+}
+
+bool NotesStore::isPersonalMode() const {
+    return m_mode == QStringLiteral("notebooks") || m_mode == QStringLiteral("book");
+}
+
+bool NotesStore::personalRequestStillCurrent() const {
+    return !m_personalRequestScope.isEmpty()
+        && m_personalRequestScope == m_personalNotesScope
+        && m_personalRequestScope == currentAccountScope();
+}
+
+void NotesStore::reloadAccountScope() {
+    const QString scope = currentAccountScope();
+    if (scope == m_personalNotesScope) {
+        if (scope.isEmpty()) {
+            m_notebooks.clear();
+            m_bookNotes.clear();
+            m_bookNotesBookId.clear();
+            m_personalRequestRows.clear();
+            setState(false, QStringLiteral("请先登录微信读书"));
+        }
+        return;
+    }
+    m_personalNotesScope = scope;
+    m_personalRequestScope.clear();
+    m_personalRequestRows.clear();
+    m_personalRequestDone = false;
+    m_personalRequestFailed = false;
+    m_personalRequestExpectedCount = -1;
+    m_notebooks.clear();
+    m_bookNotes.clear();
+    m_bookNotesBookId.clear();
+    if (isPersonalMode() && m_process.state() != QProcess::NotRunning) {
+        m_processTimeoutTimer.stop();
+        m_process.kill();
+    }
+    if (scope.isEmpty()) setState(false, QStringLiteral("请先登录微信读书"));
+    else emit changed();
+}
+
+bool NotesStore::preparePersonalNotesScope() {
+    reloadAccountScope();
+    if (m_personalNotesScope.isEmpty()) return false;
+    m_personalRequestScope = m_personalNotesScope;
+    m_personalRequestRows.clear();
+    m_personalRequestDone = false;
+    m_personalRequestFailed = false;
+    m_personalRequestExpectedCount = -1;
+    return true;
+}
+
+QVariantMap NotesStore::loadPersonalNotesCache() const {
+    QFile file(personalNotesCachePath());
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    return document.isObject() ? document.object().toVariantMap() : QVariantMap();
+}
+
+void NotesStore::savePersonalNotesCache(const QVariantMap &cache) const {
+    const QString path = personalNotesCachePath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile file(path);
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    if (!file.open(QIODevice::WriteOnly)) return;
+    if (file.write(QJsonDocument(QJsonObject::fromVariantMap(cache)).toJson(QJsonDocument::Compact)) < 0) {
+        file.cancelWriting();
+        return;
+    }
+    if (file.commit()) QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+}
+
+bool NotesStore::loadCachedNotebooks() {
+    if (m_personalNotesScope.isEmpty()) return false;
+    const QVariantMap accounts = loadPersonalNotesCache().value(QStringLiteral("accounts")).toMap();
+    const QVariantMap account = accounts.value(m_personalNotesScope).toMap();
+    const QVariantMap entry = account.value(QStringLiteral("notebooks")).toMap();
+    if (!entry.contains(QStringLiteral("rows"))) return false;
+    m_notebooks = entry.value(QStringLiteral("rows")).toList();
+    setState(false, m_notebooks.isEmpty() ? QStringLiteral("暂无微信笔记（缓存）") : QStringLiteral("微信笔记书籍 %1 本（缓存）").arg(m_notebooks.size()));
+    return true;
+}
+
+bool NotesStore::loadCachedBookNotes(const QString &bookId) {
+    if (m_personalNotesScope.isEmpty()) return false;
+    const QVariantMap accounts = loadPersonalNotesCache().value(QStringLiteral("accounts")).toMap();
+    const QVariantMap account = accounts.value(m_personalNotesScope).toMap();
+    const QVariantMap books = account.value(QStringLiteral("books")).toMap();
+    const QVariantMap entry = books.value(bookId).toMap();
+    if (!entry.contains(QStringLiteral("rows"))) return false;
+    m_bookNotes = entry.value(QStringLiteral("rows")).toList();
+    m_bookNotesBookId = bookId;
+    setState(false, m_bookNotes.isEmpty() ? QStringLiteral("本书暂无微信笔记（缓存）") : QStringLiteral("本书笔记 %1 条（缓存）").arg(m_bookNotes.size()));
+    return true;
+}
+
+void NotesStore::persistNotebooksCache() {
+    if (!personalRequestStillCurrent()) return;
+    QVariantMap cache = loadPersonalNotesCache();
+    QVariantMap accounts = cache.value(QStringLiteral("accounts")).toMap();
+    QVariantMap account = accounts.value(m_personalRequestScope).toMap();
+    QVariantMap entry;
+    entry.insert(QStringLiteral("updatedAt"), QDateTime::currentSecsSinceEpoch());
+    entry.insert(QStringLiteral("rows"), m_notebooks);
+    account.insert(QStringLiteral("notebooks"), entry);
+    accounts.insert(m_personalRequestScope, account);
+    cache.insert(QStringLiteral("version"), 1);
+    cache.insert(QStringLiteral("accounts"), accounts);
+    savePersonalNotesCache(cache);
+}
+
+void NotesStore::persistBookNotesCache() {
+    if (!personalRequestStillCurrent() || m_bookNotesBookId.isEmpty()) return;
+    QVariantMap cache = loadPersonalNotesCache();
+    QVariantMap accounts = cache.value(QStringLiteral("accounts")).toMap();
+    QVariantMap account = accounts.value(m_personalRequestScope).toMap();
+    QVariantMap books = account.value(QStringLiteral("books")).toMap();
+    QVariantMap entry;
+    entry.insert(QStringLiteral("updatedAt"), QDateTime::currentSecsSinceEpoch());
+    entry.insert(QStringLiteral("rows"), m_bookNotes);
+    books.insert(m_bookNotesBookId, entry);
+    account.insert(QStringLiteral("books"), books);
+    accounts.insert(m_personalRequestScope, account);
+    cache.insert(QStringLiteral("version"), 1);
+    cache.insert(QStringLiteral("accounts"), accounts);
+    savePersonalNotesCache(cache);
 }
 
 QVariantMap NotesStore::loadSocialCache() const {
@@ -186,9 +345,11 @@ void NotesStore::refreshNotebooks() {
     if (m_running) {
         return;
     }
+    if (!preparePersonalNotesScope()) {
+        return;
+    }
     m_mode = QStringLiteral("notebooks");
-    m_notebooks.clear();
-    emit changed();
+    loadCachedNotebooks();
     startHelper(QStringList() << QStringLiteral("notebooks"), QStringLiteral("正在同步微信笔记..."));
 }
 
@@ -203,9 +364,15 @@ void NotesStore::refreshBookNotes(const QString &bookId) {
         return;
     }
 
+    if (!preparePersonalNotesScope()) {
+        return;
+    }
     m_mode = QStringLiteral("book");
-    m_bookNotes.clear();
-    emit changed();
+    if (!loadCachedBookNotes(trimmed) && m_bookNotesBookId != trimmed) {
+        m_bookNotes.clear();
+        m_bookNotesBookId = trimmed;
+        emit changed();
+    }
     startHelper(QStringList() << QStringLiteral("book") << trimmed, QStringLiteral("正在加载本书笔记..."));
 }
 
@@ -376,54 +543,106 @@ void NotesStore::startHelper(const QStringList &arguments, const QString &status
     }
 }
 
-void NotesStore::appendOutput(const QString &text) {
-    const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    for (const QString &rawLine : lines) {
-        const QString line = rawLine.trimmed();
-        if (line.isEmpty()) {
-            continue;
+void NotesStore::appendOutput(const QByteArray &chunk, QByteArray &buffer, bool finalChunk) {
+    buffer.append(chunk);
+    for (;;) {
+        const int newline = buffer.indexOf('\n');
+        if (newline < 0) {
+            break;
         }
+        const QByteArray line = buffer.left(newline);
+        buffer.remove(0, newline + 1);
+        appendOutputLine(line);
+    }
+    if (finalChunk && !buffer.trimmed().isEmpty()) {
+        appendOutputLine(buffer);
+    }
+    if (finalChunk) {
+        buffer.clear();
+    }
+}
 
-        const QJsonDocument document = QJsonDocument::fromJson(line.toUtf8());
-        if (!document.isObject()) {
-            continue;
-        }
+void NotesStore::appendOutputLine(const QByteArray &rawLine) {
+    const QByteArray line = rawLine.trimmed();
+    if (line.isEmpty()) {
+        return;
+    }
 
-        const QJsonObject object = document.object();
-        const QString state = object.value(QStringLiteral("state")).toString();
-        if (m_cancelledForPopularRestart && m_mode == QStringLiteral("popular")) {
-            continue;
+    const QJsonDocument document = QJsonDocument::fromJson(line);
+    if (!document.isObject()) {
+        return;
+    }
+
+    const QJsonObject object = document.object();
+    const QString state = object.value(QStringLiteral("state")).toString();
+    if (m_cancelledForPopularRestart && m_mode == QStringLiteral("popular")) {
+        return;
+    }
+    if (isPersonalMode() && !personalRequestStillCurrent()) {
+        return;
+    }
+    if (state == QStringLiteral("row")) {
+        appendRow(object.toVariantMap());
+    } else if (state == QStringLiteral("done")) {
+        if (isPersonalMode()) {
+            m_personalRequestDone = true;
+            m_personalRequestExpectedCount = object.value(QStringLiteral("count")).toInt(-1);
         }
-        if (state == QStringLiteral("row")) {
-            appendRow(object.toVariantMap());
-        } else if (state == QStringLiteral("done")) {
-            const int count = object.value(QStringLiteral("count")).toInt();
-            if (m_mode == QStringLiteral("popular")) {
-                m_statusText = count > 0 ? QStringLiteral("划线评论 %1 处").arg(count) : QStringLiteral("暂无划线评论");
-            } else if (m_mode == QStringLiteral("popular_review")) {
-                m_statusText = count > 0 ? QStringLiteral("评论 %1 条").arg(count) : QStringLiteral("暂无评论详情");
-            } else if (m_mode == QStringLiteral("book")) {
-                m_statusText = count > 0 ? QStringLiteral("本书笔记 %1 条").arg(count) : QStringLiteral("本书暂无微信笔记");
-            } else {
-                m_statusText = count > 0 ? QStringLiteral("微信笔记书籍 %1 本").arg(count) : QStringLiteral("暂无微信笔记");
-            }
-        } else if (state == QStringLiteral("error")) {
-            setState(m_running, QStringLiteral("微信笔记加载失败"));
+        const int count = object.value(QStringLiteral("count")).toInt();
+        if (m_mode == QStringLiteral("popular")) {
+            m_statusText = count > 0 ? QStringLiteral("划线评论 %1 处").arg(count) : QStringLiteral("暂无划线评论");
+        } else if (m_mode == QStringLiteral("popular_review")) {
+            m_statusText = count > 0 ? QStringLiteral("评论 %1 条").arg(count) : QStringLiteral("暂无评论详情");
+        } else if (m_mode == QStringLiteral("book")) {
+            m_statusText = count > 0 ? QStringLiteral("本书笔记 %1 条").arg(count) : QStringLiteral("本书暂无微信笔记");
+        } else {
+            m_statusText = count > 0 ? QStringLiteral("微信笔记书籍 %1 本").arg(count) : QStringLiteral("暂无微信笔记");
         }
+    } else if (state == QStringLiteral("error")) {
+        if (isPersonalMode()) {
+            m_personalRequestFailed = true;
+        }
+        setState(m_running, QStringLiteral("微信笔记加载失败"));
     }
 }
 
 void NotesStore::finishProcess(int exitCode, QProcess::ExitStatus exitStatus) {
     m_processTimeoutTimer.stop();
+    if (m_process.isOpen()) {
+        appendOutput(m_process.readAllStandardOutput(), m_stdoutBuffer, true);
+        appendOutput(m_process.readAllStandardError(), m_stderrBuffer, true);
+    } else {
+        appendOutput({}, m_stdoutBuffer, true);
+        appendOutput({}, m_stderrBuffer, true);
+    }
     const bool cancelledForPopularRestart = m_cancelledForPopularRestart;
-    const bool succeeded = exitStatus == QProcess::NormalExit && exitCode == 0;
+    const bool personalMode = isPersonalMode();
+    const bool personalRequestCurrent = !personalMode || personalRequestStillCurrent();
+    const bool completedPersonalRequest = !personalMode || (m_personalRequestDone
+        && !m_personalRequestFailed
+        && m_personalRequestExpectedCount >= 0
+        && m_personalRequestRows.size() == m_personalRequestExpectedCount);
+    const bool succeeded = exitStatus == QProcess::NormalExit && exitCode == 0 && completedPersonalRequest;
     m_cancelledForPopularRestart = false;
-    if (succeeded && m_mode == QStringLiteral("popular")) {
+    if (succeeded && personalMode && personalRequestCurrent) {
+        if (m_mode == QStringLiteral("notebooks")) {
+            m_notebooks = m_personalRequestRows;
+            persistNotebooksCache();
+        } else if (m_mode == QStringLiteral("book")) {
+            m_bookNotes = m_personalRequestRows;
+            persistBookNotesCache();
+        }
+    } else if (succeeded && m_mode == QStringLiteral("popular")) {
         persistPopularMarksCache();
     } else if (succeeded && m_mode == QStringLiteral("popular_review")) {
         persistPopularReviewsCache();
     }
-    if (cancelledForPopularRestart && m_mode == QStringLiteral("popular")) {
+    if (personalMode && !personalRequestCurrent) {
+        m_notebooks.clear();
+        m_bookNotes.clear();
+        m_bookNotesBookId.clear();
+        setState(false, QStringLiteral("请先登录微信读书"));
+    } else if (cancelledForPopularRestart && m_mode == QStringLiteral("popular")) {
         setState(false, QStringLiteral("划线评论已暂停"));
     } else if (succeeded) {
         if (m_statusText.contains(QStringLiteral("正在"))) {
@@ -437,6 +656,8 @@ void NotesStore::finishProcess(int exitCode, QProcess::ExitStatus exitStatus) {
         } else {
             setState(false, m_statusText);
         }
+    } else if (personalMode && m_personalRequestDone && !m_personalRequestFailed) {
+        setState(false, QStringLiteral("微信笔记数据不完整"));
     } else if (!m_statusText.contains(QStringLiteral("失败"))) {
         setState(false, QStringLiteral("微信笔记加载失败"));
     } else {
@@ -447,6 +668,14 @@ void NotesStore::finishProcess(int exitCode, QProcess::ExitStatus exitStatus) {
         m_popularReviewBookId.clear();
         m_popularReviewChapterUid.clear();
         m_popularReviewRange.clear();
+    }
+
+    if (personalMode) {
+        m_personalRequestScope.clear();
+        m_personalRequestRows.clear();
+        m_personalRequestDone = false;
+        m_personalRequestFailed = false;
+        m_personalRequestExpectedCount = -1;
     }
 
     if (!m_pendingPopularBookId.isEmpty() && !m_running) {
@@ -463,9 +692,17 @@ void NotesStore::appendRow(const QVariantMap &row) {
     const bool notifyChanged = kind != QStringLiteral("popular_mark")
         && kind != QStringLiteral("popular_review");
     if (kind == QStringLiteral("notebook")) {
-        m_notebooks.append(row);
+        if (isPersonalMode()) {
+            m_personalRequestRows.append(row);
+        } else {
+            m_notebooks.append(row);
+        }
     } else if (kind == QStringLiteral("highlight") || kind == QStringLiteral("thought")) {
-        m_bookNotes.append(row);
+        if (isPersonalMode()) {
+            m_personalRequestRows.append(row);
+        } else {
+            m_bookNotes.append(row);
+        }
     } else if (kind == QStringLiteral("popular_mark")) {
         QVariantMap mark = row;
         mark.insert(QStringLiteral("reviews"), QVariantList());
@@ -489,7 +726,9 @@ void NotesStore::appendRow(const QVariantMap &row) {
         }
     }
     if (notifyChanged) {
-        emit changed();
+        if (!isPersonalMode()) {
+            emit changed();
+        }
     }
 }
 

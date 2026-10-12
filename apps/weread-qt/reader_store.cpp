@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QImageReader>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -12,6 +14,7 @@
 #include <QSet>
 #include <QTextDocumentFragment>
 #include <QUrl>
+#include <QVector>
 
 #include <algorithm>
 #include <utility>
@@ -32,6 +35,34 @@ QString htmlAttribute(const QString &tag, const QString &name) {
 QString compactAnnotationText(QString value) {
     value.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
     return value.trimmed();
+}
+
+QHash<QString, QString> numericChapterUidsFromOpf(const QString &expandedDir) {
+    QHash<QString, QString> result;
+    QFile opf(QDir(expandedDir).filePath(QStringLiteral("OEBPS/content.opf")));
+    if (!opf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return result;
+    }
+    const QString xml = QString::fromUtf8(opf.readAll());
+    const QRegularExpression itemRe(QStringLiteral("<item\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
+    QRegularExpressionMatchIterator items = itemRe.globalMatch(xml);
+    while (items.hasNext()) {
+        const QString item = items.next().captured(0);
+        const QString id = htmlAttribute(item, QStringLiteral("id"));
+        const QString href = htmlAttribute(item, QStringLiteral("href"));
+        if (!id.startsWith(QStringLiteral("chapter_")) || href.isEmpty()) {
+            continue;
+        }
+        const QString uid = id.mid(QStringLiteral("chapter_").size());
+        // save_book_epub's item id is lossy for non-numeric UIDs (punctuation
+        // becomes an underscore). Numeric UIDs survive it exactly, so only use
+        // that reversible case as a fallback for older full-book caches.
+        if (!QRegularExpression(QStringLiteral("^\\d+$")).match(uid).hasMatch()) {
+            continue;
+        }
+        result.insert(QDir::cleanPath(href), uid);
+    }
+    return result;
 }
 
 struct InkBlockAccumulator {
@@ -72,6 +103,120 @@ QRectF freeStrokeBounds(const QVariantMap &stroke) {
         maxY = qMax(maxY, y);
     }
     return QRectF(minX, minY, qMax(1.0, maxX - minX), qMax(1.0, maxY - minY));
+}
+
+QPointF inkPoint(const QVariant &value) {
+    const QVariantMap point = value.toMap();
+    return QPointF(point.value(QStringLiteral("x")).toDouble(),
+                   point.value(QStringLiteral("y")).toDouble());
+}
+
+double pointSegmentDistanceSquared(const QPointF &point, const QPointF &start,
+                                   const QPointF &end) {
+    const QPointF delta = end - start;
+    const double lengthSquared = delta.x() * delta.x() + delta.y() * delta.y();
+    if (lengthSquared <= 0.0001) {
+        const QPointF difference = point - start;
+        return difference.x() * difference.x() + difference.y() * difference.y();
+    }
+    const QPointF relative = point - start;
+    const double ratio = qBound(0.0, (relative.x() * delta.x() + relative.y() * delta.y())
+                                / lengthSquared, 1.0);
+    const QPointF nearest = start + delta * ratio;
+    const QPointF difference = point - nearest;
+    return difference.x() * difference.x() + difference.y() * difference.y();
+}
+
+bool lineSegmentsWithinDistance(const QPointF &firstStart, const QPointF &firstEnd,
+                                const QPointF &secondStart, const QPointF &secondEnd,
+                                double maximumDistance) {
+    const auto cross = [](const QPointF &start, const QPointF &end, const QPointF &point) {
+        const QPointF line = end - start;
+        const QPointF offset = point - start;
+        return line.x() * offset.y() - line.y() * offset.x();
+    };
+    const auto lengthSquared = [](const QPointF &start, const QPointF &end) {
+        const QPointF delta = end - start;
+        return delta.x() * delta.x() + delta.y() * delta.y();
+    };
+    const auto onSegment = [](const QPointF &point, const QPointF &start, const QPointF &end) {
+        constexpr double epsilon = 0.0001;
+        return point.x() >= qMin(start.x(), end.x()) - epsilon
+            && point.x() <= qMax(start.x(), end.x()) + epsilon
+            && point.y() >= qMin(start.y(), end.y()) - epsilon
+            && point.y() <= qMax(start.y(), end.y()) + epsilon;
+    };
+    constexpr double epsilon = 0.0001;
+    if (lengthSquared(firstStart, firstEnd) > epsilon
+        && lengthSquared(secondStart, secondEnd) > epsilon) {
+        const double firstAgainstStart = cross(firstStart, firstEnd, secondStart);
+        const double firstAgainstEnd = cross(firstStart, firstEnd, secondEnd);
+        const double secondAgainstStart = cross(secondStart, secondEnd, firstStart);
+        const double secondAgainstEnd = cross(secondStart, secondEnd, firstEnd);
+        const bool splitFirst = (firstAgainstStart > epsilon && firstAgainstEnd < -epsilon)
+            || (firstAgainstStart < -epsilon && firstAgainstEnd > epsilon);
+        const bool splitSecond = (secondAgainstStart > epsilon && secondAgainstEnd < -epsilon)
+            || (secondAgainstStart < -epsilon && secondAgainstEnd > epsilon);
+        if (splitFirst && splitSecond) {
+            return true;
+        }
+        if ((qAbs(firstAgainstStart) <= epsilon && onSegment(secondStart, firstStart, firstEnd))
+            || (qAbs(firstAgainstEnd) <= epsilon && onSegment(secondEnd, firstStart, firstEnd))
+            || (qAbs(secondAgainstStart) <= epsilon && onSegment(firstStart, secondStart, secondEnd))
+            || (qAbs(secondAgainstEnd) <= epsilon && onSegment(firstEnd, secondStart, secondEnd))) {
+            return true;
+        }
+    }
+    const double maximumSquared = maximumDistance * maximumDistance;
+    return pointSegmentDistanceSquared(firstStart, secondStart, secondEnd) <= maximumSquared
+        || pointSegmentDistanceSquared(firstEnd, secondStart, secondEnd) <= maximumSquared
+        || pointSegmentDistanceSquared(secondStart, firstStart, firstEnd) <= maximumSquared
+        || pointSegmentDistanceSquared(secondEnd, firstStart, firstEnd) <= maximumSquared;
+}
+
+bool freeStrokeHitsEraser(const QVariantMap &stroke, const QVariantList &eraserPoints,
+                          double eraserWidth) {
+    const QVariantList strokePoints = stroke.value(QStringLiteral("points")).toList();
+    if (strokePoints.isEmpty() || eraserPoints.isEmpty()) {
+        return false;
+    }
+    const double maximumDistance = qMax(1.0, eraserWidth / 2.0
+        + qMax(1.0, stroke.value(QStringLiteral("lineWidth"), 4).toDouble()) / 2.0);
+    const QPointF firstEraserPoint = inkPoint(eraserPoints.constFirst());
+    double minX = firstEraserPoint.x();
+    double maxX = minX;
+    double minY = firstEraserPoint.y();
+    double maxY = minY;
+    for (const QVariant &value : eraserPoints) {
+        const QPointF point = inkPoint(value);
+        minX = qMin(minX, point.x());
+        maxX = qMax(maxX, point.x());
+        minY = qMin(minY, point.y());
+        maxY = qMax(maxY, point.y());
+    }
+    const QRectF eraserBounds(minX, minY, qMax(1.0, maxX - minX), qMax(1.0, maxY - minY));
+    const QRectF expandedEraser = eraserBounds.adjusted(-maximumDistance, -maximumDistance,
+                                                         maximumDistance, maximumDistance);
+    const QRectF expandedStroke = freeStrokeBounds(stroke).adjusted(-maximumDistance, -maximumDistance,
+                                                                      maximumDistance, maximumDistance);
+    if (!expandedEraser.intersects(expandedStroke)) {
+        return false;
+    }
+    for (qsizetype eraserIndex = 0; eraserIndex < eraserPoints.size(); ++eraserIndex) {
+        const QPointF eraserStart = inkPoint(eraserPoints.at(eraserIndex));
+        const QPointF eraserEnd = inkPoint(eraserPoints.at(qMin<qsizetype>(eraserIndex + 1,
+                                                                            eraserPoints.size() - 1)));
+        for (qsizetype strokeIndex = 0; strokeIndex < strokePoints.size(); ++strokeIndex) {
+            const QPointF strokeStart = inkPoint(strokePoints.at(strokeIndex));
+            const QPointF strokeEnd = inkPoint(strokePoints.at(qMin<qsizetype>(strokeIndex + 1,
+                                                                                strokePoints.size() - 1)));
+            if (lineSegmentsWithinDistance(eraserStart, eraserEnd, strokeStart, strokeEnd,
+                                           maximumDistance)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 bool strokeJoinsBlock(const QRectF &blockBounds, qint64 blockLastAtMs,
@@ -222,6 +367,81 @@ bool ReaderStore::openingCache() const {
     return m_openingCache;
 }
 
+QVariantMap ReaderStore::textAnchorForRemoteProgress(const QString &chapterUid, const QString &summary) const {
+    QVariantMap result;
+    result.insert(QStringLiteral("found"), false);
+    result.insert(QStringLiteral("ambiguous"), false);
+
+    const QString wantedUid = chapterUid.trimmed();
+    const QString wantedSummary = summary.simplified();
+    // A very short phrase is too likely to repeat in Chinese prose. Refuse to
+    // move the user's local position rather than choosing a plausible-looking
+    // but wrong occurrence.
+    if (wantedUid.isEmpty() || wantedSummary.size() < 4 || m_bodyText.isEmpty()) {
+        return result;
+    }
+
+    int chapterRow = -1;
+    for (int index = 0; index < m_chapters.size(); ++index) {
+        const QVariantMap row = m_chapters.at(index).toMap();
+        if (row.value(QStringLiteral("chapterUid")).toString().trimmed() == wantedUid) {
+            chapterRow = index;
+            break;
+        }
+    }
+    if (chapterRow < 0) {
+        return result;
+    }
+
+    const QVariantMap chapter = m_chapters.at(chapterRow).toMap();
+    const int chapterStart = qBound(0, chapter.value(QStringLiteral("textStart")).toInt(), m_bodyText.size());
+    const int chapterEnd = chapterRow + 1 < m_chapters.size()
+        ? qBound(chapterStart, m_chapters.at(chapterRow + 1).toMap().value(QStringLiteral("textStart")).toInt(), m_bodyText.size())
+        : m_bodyText.size();
+    const QString chapterText = m_bodyText.mid(chapterStart, chapterEnd - chapterStart);
+
+    // The Web reader summary can collapse line breaks while ReaderStore keeps
+    // them for pagination. Search a whitespace-normalized view and keep the
+    // original UTF-16 index for QML's TextEdit offsets.
+    QString compactChapter;
+    QVector<int> sourceOffsets;
+    compactChapter.reserve(chapterText.size());
+    sourceOffsets.reserve(chapterText.size());
+    for (int index = 0; index < chapterText.size(); ++index) {
+        if (chapterText.at(index).isSpace()) {
+            continue;
+        }
+        compactChapter.append(chapterText.at(index));
+        sourceOffsets.append(index);
+    }
+    QString compactSummary;
+    compactSummary.reserve(wantedSummary.size());
+    for (const QChar character : wantedSummary) {
+        if (!character.isSpace()) {
+            compactSummary.append(character);
+        }
+    }
+    if (compactSummary.size() < 4) {
+        return result;
+    }
+
+    const int firstMatch = compactChapter.indexOf(compactSummary);
+    if (firstMatch < 0 || firstMatch >= sourceOffsets.size()) {
+        return result;
+    }
+    const int secondMatch = compactChapter.indexOf(compactSummary, firstMatch + 1);
+    if (secondMatch >= 0) {
+        result.insert(QStringLiteral("ambiguous"), true);
+        return result;
+    }
+
+    result.insert(QStringLiteral("found"), true);
+    result.insert(QStringLiteral("textOffset"), chapterStart + sourceOffsets.at(firstMatch));
+    result.insert(QStringLiteral("chapterUid"), wantedUid);
+    result.insert(QStringLiteral("chapterIndex"), chapter.value(QStringLiteral("index")).toInt());
+    return result;
+}
+
 void ReaderStore::loadBook(const QString &bookId, const QString &title) {
     m_title = title.isEmpty() ? bookId : title;
     m_status = QStringLiteral("loading");
@@ -265,7 +485,7 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
 
     QStringList parts;
     parts.reserve(chapters.size());
-    QStringList seenImages;
+    const QHash<QString, QString> opfChapterUids = numericChapterUidsFromOpf(expandedDir);
     int textStart = 0;
     int readableIndex = 0;
     int noteCounter = 0;
@@ -287,25 +507,17 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
             chapterTextStart = textStart;
         }
 
-        const QStringList images = imageSourcesFromChapter(chapterPath, xhtml);
+        const QVariantList images = imageEntriesFromChapter(chapterPath, annotatedXhtml);
         const int chapterImageCount = images.size();
         int chapterImageIndex = 0;
-        for (const QString &image : images) {
-            if (seenImages.contains(image)) {
-                ++chapterImageIndex;
-                continue;
-            }
-            seenImages.append(image);
-            int imageTextStart = chapterTextStart;
-            if (!text.isEmpty() && chapterImageCount > 1) {
-                const double ratio = double(chapterImageIndex + 1) / double(chapterImageCount + 1);
-                const int imageOffset = qBound(0, int(text.size() * ratio), qMax(0, text.size() - 1));
-                imageTextStart = chapterTextStart + imageOffset;
-            }
-            QVariantMap imageRow;
-            imageRow.insert(QStringLiteral("source"), image);
-            imageRow.insert(QStringLiteral("caption"), imageCaptionForSource(chapterPath, xhtml, image));
-            imageRow.insert(QStringLiteral("textStart"), imageTextStart);
+        for (const QVariant &entry : images) {
+            QVariantMap imageRow = entry.toMap();
+            // Keep the source offset exact, including a trailing image at
+            // text.size().  QML creates a display-only tail-image page when
+            // needed; changing this to N-1 would isolate the final character
+            // and corrupt legacy textOffset anchors.
+            const int imageOffset = qBound(0, imageRow.value(QStringLiteral("textStart")).toInt(), text.size());
+            imageRow.insert(QStringLiteral("textStart"), chapterTextStart + imageOffset);
             imageRow.insert(QStringLiteral("chapterIndex"), readableIndex);
             imageRow.insert(QStringLiteral("imageIndex"), chapterImageIndex);
             imageRow.insert(QStringLiteral("chapterImageCount"), chapterImageCount);
@@ -313,7 +525,7 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
             ++chapterImageIndex;
         }
         if (m_imageSource.isEmpty() && !images.isEmpty()) {
-            m_imageSource = images.first();
+            m_imageSource = images.first().toMap().value(QStringLiteral("source")).toString();
         }
 
         if (!text.isEmpty()) {
@@ -325,7 +537,11 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
             }
             QVariantMap row;
             row.insert(QStringLiteral("title"), chapterTitleFromXhtml(chapterPath, xhtml, readableIndex + 1));
-            row.insert(QStringLiteral("chapterUid"), chapterUidFromXhtml(xhtml));
+            QString chapterUid = chapterUidFromXhtml(xhtml);
+            if (chapterUid.isEmpty()) {
+                chapterUid = opfChapterUids.value(QStringLiteral("text/%1").arg(QFileInfo(chapterPath).fileName()));
+            }
+            row.insert(QStringLiteral("chapterUid"), chapterUid);
             row.insert(QStringLiteral("textStart"), textStart);
             row.insert(QStringLiteral("index"), readableIndex);
             m_chapters.append(row);
@@ -710,6 +926,37 @@ void ReaderStore::clearPageStrokes(const QString &bookId, int pageIndex) {
     strokesMap.insert(safeName(bookId), kept);
     saveStrokesMap(strokesMap);
     loadStrokesForPage(bookId, pageIndex);
+}
+
+int ReaderStore::erasePageStrokesAtPath(const QString &bookId, int pageIndex,
+                                        const QVariantList &eraserPoints, int eraserWidth) {
+    if (bookId.isEmpty() || eraserPoints.isEmpty()) {
+        return 0;
+    }
+    const int safePageIndex = qMax(0, pageIndex);
+    QVariantMap strokesMap = loadStrokesMap();
+    const QVariantList list = strokesMap.value(safeName(bookId)).toList();
+    QVariantList kept;
+    kept.reserve(list.size());
+    int removed = 0;
+    for (const QVariant &item : list) {
+        const QVariantMap stroke = item.toMap();
+        const bool eligible = stroke.value(QStringLiteral("pageIndex")).toInt() == safePageIndex
+            && stroke.value(QStringLiteral("tool")).toString() == QStringLiteral("free");
+        if (eligible && freeStrokeHitsEraser(stroke, eraserPoints,
+                                             qBound(2, eraserWidth, 96))) {
+            ++removed;
+            continue;
+        }
+        kept.append(stroke);
+    }
+    if (removed == 0) {
+        return 0;
+    }
+    strokesMap.insert(safeName(bookId), kept);
+    saveStrokesMap(strokesMap);
+    loadStrokesForPage(bookId, safePageIndex);
+    return removed;
 }
 
 void ReaderStore::removePageInkBlock(const QString &bookId, int pageIndex, const QString &blockId) {
@@ -1210,14 +1457,14 @@ QString ReaderStore::chapterUidFromXhtml(const QString &xhtml) const {
 }
 
 QString ReaderStore::firstImageSource(const QString &chapterPath, const QString &xhtml) const {
-    const QStringList images = imageSourcesFromChapter(chapterPath, xhtml);
-    return images.isEmpty() ? QString() : images.first();
+    const QVariantList images = imageEntriesFromChapter(chapterPath, xhtml);
+    return images.isEmpty() ? QString() : images.first().toMap().value(QStringLiteral("source")).toString();
 }
 
-QStringList ReaderStore::imageSourcesFromChapter(const QString &chapterPath, const QString &xhtml) const {
+QVariantList ReaderStore::imageEntriesFromChapter(const QString &chapterPath, const QString &xhtml) const {
     const QRegularExpression imgRe(QStringLiteral("<img\\b[^>]*\\bsrc\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"][^>]*>"), QRegularExpression::CaseInsensitiveOption);
     QRegularExpressionMatchIterator matches = imgRe.globalMatch(xhtml);
-    QStringList out;
+    QVariantList out;
 
     while (matches.hasNext()) {
         const QRegularExpressionMatch match = matches.next();
@@ -1237,55 +1484,29 @@ QStringList ReaderStore::imageSourcesFromChapter(const QString &chapterPath, con
         if (!QFileInfo::exists(imagePath)) {
             continue;
         }
-        out.append(QUrl::fromLocalFile(imagePath).toString());
-    }
-    return out;
-}
-
-QString ReaderStore::imageCaptionForSource(const QString &chapterPath, const QString &xhtml, const QString &imageSource) const {
-    const QRegularExpression imgRe(QStringLiteral("<img\\b[^>]*\\bsrc\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"][^>]*>"), QRegularExpression::CaseInsensitiveOption);
-    QRegularExpressionMatchIterator matches = imgRe.globalMatch(xhtml);
-    const QUrl wantedUrl(imageSource);
-    const QString wantedPath = wantedUrl.isLocalFile() ? wantedUrl.toLocalFile() : imageSource;
-
-    while (matches.hasNext()) {
-        const QRegularExpressionMatch match = matches.next();
-        const QString tag = match.captured(0);
-        QString src = QTextDocumentFragment::fromHtml(match.captured(1)).toPlainText();
-        if (src.isEmpty() || src.startsWith(QStringLiteral("http://")) || src.startsWith(QStringLiteral("https://"))) {
-            continue;
-        }
-        const QString lowerTag = tag.toLower();
-        const QString lowerSrc = src.toLower();
-        if (lowerTag.contains(QStringLiteral("qqreader-footnote")) || lowerSrc.endsWith(QStringLiteral("note.png"))) {
-            continue;
-        }
-
-        QFileInfo chapterInfo(chapterPath);
-        const QString imagePath = QDir::cleanPath(chapterInfo.dir().filePath(src));
-        if (imagePath != wantedPath) {
-            continue;
-        }
-
         QString caption = compactAnnotationText(htmlAttribute(tag, QStringLiteral("alt")));
+        if (caption.isEmpty()) caption = compactAnnotationText(htmlAttribute(tag, QStringLiteral("title")));
         if (caption.isEmpty()) {
-            caption = compactAnnotationText(htmlAttribute(tag, QStringLiteral("title")));
-        }
-        if (caption.isEmpty()) {
-            const int afterImage = match.capturedEnd(0);
-            const QString tail = xhtml.mid(afterImage, 900);
+            const QString tail = xhtml.mid(match.capturedEnd(0), 900);
             const QRegularExpression figcaptionRe(QStringLiteral("<figcaption[^>]*>([\\s\\S]*?)</figcaption>"), QRegularExpression::CaseInsensitiveOption);
             const QRegularExpressionMatch captionMatch = figcaptionRe.match(tail);
-            if (captionMatch.hasMatch()) {
-                caption = QTextDocumentFragment::fromHtml(captionMatch.captured(1)).toPlainText();
-                caption.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
-                caption = caption.trimmed();
-            }
+            if (captionMatch.hasMatch()) caption = compactAnnotationText(QTextDocumentFragment::fromHtml(captionMatch.captured(1)).toPlainText());
         }
-        return caption.left(160);
+        const QSize size = QImageReader(imagePath).size();
+        QVariantMap row;
+        row.insert(QStringLiteral("source"), QUrl::fromLocalFile(imagePath).toString());
+        row.insert(QStringLiteral("caption"), caption.left(160));
+        // Preserve the full plain-text model.  The anchor is only display
+        // metadata, calculated from the same XHTML prefix normalizer.
+        const int sourceTextStart = plainTextFromXhtml(xhtml.left(match.capturedStart(0))).size();
+        row.insert(QStringLiteral("sourceTextStart"), sourceTextStart);
+        row.insert(QStringLiteral("textStart"), sourceTextStart);
+        row.insert(QStringLiteral("sourceOrdinal"), out.size());
+        row.insert(QStringLiteral("pixelWidth"), size.width());
+        row.insert(QStringLiteral("pixelHeight"), size.height());
+        out.append(row);
     }
-
-    return {};
+    return out;
 }
 
 QString ReaderStore::annotateFootnotes(const QString &xhtml, int chapterIndex, int &noteCounter, QList<QVariantMap> *chapterFootnotes) const {

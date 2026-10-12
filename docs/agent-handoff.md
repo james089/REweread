@@ -1,16 +1,38 @@
 # REweread Agent 交接手册
 
-更新时间：2026-07-14
+更新时间：2026-10-12
 
 这份文档面向第一次接手仓库的新 AI Agent。先读 `AGENTS.md`，再从头读完本文，然后才运行命令或接触设备。本文只记录可公开的项目状态，不包含设备地址、账号、书名、Cookie、API Key、二维码 UID、用户缓存或原始日志。
 
 ## 1. 一句话现状
 
-REweread 当前源码里程碑为 `2.0.0`：Qt 产品在 1.5 的拼音输入、百度 OCR、页内自由笔迹和快速墨迹基础上，加入了 DeepSeek 手写回复、Magic Notebook、凭据分离配置和原生笔迹回复动画。2.0 源码已通过完整静态验证，仍未创建 `v2.0.0` 标签或公开二进制；官方 chiappa SDK 构建和真机验证状态以 `docs/releases/v2.0.0.md` 为准。
+REweread 当前源码里程碑为 `3.0.0`：在 2.0 魔法笔记本、百度 OCR / DeepSeek 分离配置基础上，加入本机阅读统计、同步账本、个人云笔记缓存、离线章节校验续传、字体预览、图文分页及新系统启动保护。验证范围与未完成项见 `docs/releases/v3.0.0.md`，升级必读 `docs/agent-upgrade-v3.0.md`。源码更新不代表全部功能通过验收，也不附公开二进制。
 
 它仍不是可面向普通用户广泛分发的正式产品。当前存在服务授权、上游许可证、干净设备安装/卸载和长期电池测试等阻塞项。
 
+### 2026-10-12 同步与离线下载开发增量
+
+基于 main `0271ab2` 补充了阅读时长账号账本、个人云笔记离线缓存、手动云进度正文锚点定位、章节校验续传和 partial EPUB 状态。详细已完成项与协议限制见 [官方客户端接口与同步能力补齐](official-client-sync-gap.md)。本轮增量归入 3.0.0 源码里程碑。
+
+后续增量包含“我的 → 阅读统计”（独立每日统计、北京时间、账号代次防串号）和阅读字体预览网格。统计仅从更新后的本机实际阅读开始，不代表云端历史总时长。设备自检不得计时/上传/保存阅读位置；标注自检已禁用对真实笔记的破坏性写入。现有安装的应用文件升级可用 `scripts/upgrade-weread-qt-files.sh`，无需重写 XOVI 系统配置。
+
+本轮通过官方 chiappa SDK 构建、全套源码验证、本机 Qt 账本行为测试，以及设备 LuaJIT 的隔离下载续传测试。隔离测试不访问真实账号/书籍；它不能替代完整 UI、线上同步或安装升级验收。不要把这些结果写成已部署或已验证真实账号上传。
+
+真机结果：统计页和字体面板已显示并检查截图，字体笔点击通过；云端进度、笔记列表及单本笔记只读调用成功，未测试真实账号写入。已修复旧 session 非 UTF-8 字节导致的 Qt 账号范围识别失败，且不写回 session。完整 52 组合排版自检尚未完成。后续系统升级和 USB 连接已恢复，详情如下；不要再依据历史 WLAN 超时判断当前部署失败。
+
+关键约束：仅手动“同步进度”提交持久时长；结果不明的请求保留 uncertainty，不能无条件重放。云笔记当前只读取和缓存，本机手写不会自动发布。精确上传所需远端 chapterOffset 编码尚未验证，四参上传仍是百分比兼容模式。
+
+### OTA / AppLoad 恢复事故与本地保护
+
+**后续授权执行已完成**：官方更新服务升级至 3.28.0.172，隔离重建映射（20231 条），AppLoad v0.6.0 独立试运行并由用户确认入口后启用 guarded ExecStart；重启后仍在 3.28.0.172，AppLoad 自动加载，根分区只读，无 Xochitl 崩溃重启。应用适配了移除 EPContentType 参数的新刷新 ABI，direct ink 小区域刷新恢复测试、字体面板、图文正文和统计页自检通过；已有用户数据文件校验全部一致。最终应用 SHA-256 为 `62aeaaea2e765a5823cc8cf7756ab97b62fe01644bb685ef62ee4c0b2fb3f80d`。下面的“仅本地/未部署”描述保留为早期审查背景，不代表当前部署状态。详情见恢复文档。
+
+后续只读日志确认：在 3.28.0.172 补回直接 XOVI 注入后，旧 3.27.3.0 hashtab 被拒绝，AppLoad hook 解析 panic 导致 Xochitl 连续 ABRT、数轮启动失败，最终回到 3.27.3.0。120 秒临时回退定时器随重启消失，不能提供启动保护。当前旧系统可以加载 AppLoad；不能据此认定新系统兼容。
+
+当前 AppLoad v0.6.0 和目标系统 hashtab 已部署，并在用户确认隔离试运行后启用启动保护；失败时回到 stock。上游版本不能跨系统盲目套用，见 [XOVI / AppLoad 兼容性与恢复](xovi-appload-recovery.md)。应用文件升级与系统恢复分开，不能直接调用旧恢复脚本试错。
+
 ## 2. 接手后的第一组动作
+
+3.0 发布准备期间修复了自由笔迹翻页残留和橡皮只擦高亮的问题。`InkCanvasItem` 为直写层保存有界原始像素并在清除/离页/Qt 接管前恢复；`ReaderStore::erasePageStrokesAtPath` 删除当前书当前页命中的整笔。设备 `ink-lifecycle` 独立空白页自检已通过，但用户真实页连续书写复测仍待确认。具体构建校验和见 `docs/releases/v3.0.0.md`。
 
 只在一个干净 Git checkout 中工作。先执行：
 
@@ -26,7 +48,7 @@ for file in scripts/*.sh apps/weread-move/*.sh; do bash -n "$file"; done
 预期：
 
 - 基线来自 `main`。
-- `VERSION` 与 `release-manifest.json`、`CHANGELOG.md` 和当前 `docs/releases/v<version>.md` 一致，当前为 `2.0.0`。
+- `VERSION` 与 `release-manifest.json`、`CHANGELOG.md` 和当前 `docs/releases/v<version>.md` 一致，当前为 `3.0.0`。
 - 安全检查和静态验证全部通过。
 - 不存在 SDK、字体、构建目录、第三方 checkout 或用户数据的待提交文件。
 
@@ -45,10 +67,10 @@ for file in scripts/*.sh apps/weread-move/*.sh; do bash -n "$file"; done
 
 发布状态：
 
-- `2.0.0` 是当前 source-only 源码里程碑；提交源码不等于发布普通用户二进制。
+- `3.0.0` 是当前 source-only 源码里程碑；提交源码不等于发布普通用户二进制。
 - GitHub PR #1 已合并，保留 `1.0.0-rc.1` 的历史记录。
 - `v1.0.0-rc.1` 是 Draft prerelease 名称，不是公开标签。
-- 未创建 `v2.0.0` 标签或 Release；不要因为 `VERSION` 已更新就自动发布。
+- 未创建公开 `v3.0.0` 标签或 Release；不要因为 `VERSION` 已更新就自动发布。Draft 可用于源码审查，不得误称正式发布。
 - Draft 中只附源码归档和 `SHA256SUMS.txt`。
 - 源码归档 SHA-256：`2eaf1c08db968606ac539edc2247e1c3aad267cdb3ca6ab9538b323fd1e571d8`。
 - 不得擅自把 Draft 点成 Publish，也不得附加应用二进制或依赖包。
@@ -408,6 +430,6 @@ ssh "$MOVE_HOST" '/home/root/xovi/start || systemctl start xochitl'
 
 新 Agent 可以这样向用户确认：
 
-> 我已经阅读 AGENTS.md、docs/agent-handoff.md 和当前版本对应的发布说明；从 1.5 升级时也已阅读 docs/agent-upgrade-v1.5.md。当前源码基线是 2.0.0 source-only 里程碑，没有公开二进制或 v2.0.0 标签。接下来我会先检查本地 Git 是否健康并运行仓库安全检查和全套验证，不读取或输出账号、书架、百度或 DeepSeek 凭据和设备日志原文。涉及设备部署、根分区、重启、账号或数据删除前，我会先说明影响并等你确认。
+> 我已经阅读 AGENTS.md、docs/agent-handoff.md、docs/agent-upgrade-v3.0.md 和当前版本发布说明。当前源码基线是 3.0.0 source-only 里程碑，没有公开二进制或公开 v3.0.0 标签。接下来先检查 Git、仓库安全和测试；已有可用 AppLoad 时只升级应用文件。不会读取或输出账号、书架、百度或 DeepSeek 凭据和原始日志；高影响系统操作前先说明并取得授权。
 
 完成这些后，再根据用户的新目标进入实现，不要重新从旧 KOReader UI 或早期设计稿开始。

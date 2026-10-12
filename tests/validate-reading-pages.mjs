@@ -1,0 +1,27 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const main = fs.readFileSync('apps/weread-qt/Main.qml', 'utf8');
+const stats = fs.readFileSync('apps/weread-qt/ReadingStatsPage.qml', 'utf8');
+const picker = fs.readFileSync('apps/weread-qt/ReaderFontPicker.qml', 'utf8');
+const cmake = fs.readFileSync('apps/weread-qt/CMakeLists.txt', 'utf8');
+assert(main.includes('stats: readingTimeStore.statistics'));
+assert(main.includes('root.screenName = "readingStats"'));
+const entry = fs.readFileSync('apps/weread-qt/main.cpp', 'utf8');
+assert(entry.includes('if (!qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST"))'));
+assert(entry.includes('QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, testSettings)'));
+assert(entry.includes('"/tmp/rm-weread-selftest-settings"'));
+for (const field of ['todayMs', 'monthMs', 'totalMs', 'days', 'activeDays', 'booksRead'])
+  assert(stats.includes('page.stats.' + field), field);
+assert(stats.includes('云端历史月份尚不可用'));
+assert(stats.includes('北京时间'));
+assert(main.includes('readerFontPicker.tap(lx, ly)'), 'stylus must use the visible picker geometry');
+assert(picker.includes('mapFromItem(picker, x, y)'));
+assert(picker.includes('enabled: modelData.ready'), 'unavailable fonts must not be applied');
+assert(picker.includes('columns: 3'));
+assert(cmake.includes('ReadingStatsPage.qml') && cmake.includes('ReaderFontPicker.qml'));
+const control = fs.readFileSync('apps/weread-qt/app_control.cpp', 'utf8');
+assert(control.includes('qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST")'));
+assert(control.includes('qEnvironmentVariable("RM_WEREAD_SELFTEST_SCREEN") != "1"'));
+assert(control.includes('buffer.snapshot(') && control.includes('QSaveFile output("/tmp/'));
+assert(control.includes('QFileDevice::ReadOwner | QFileDevice::WriteOwner'));
+console.log('reading statistics and font picker contracts ok');

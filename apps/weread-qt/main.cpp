@@ -2,6 +2,10 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QSettings>
+#include <QTimer>
+#include <QQuickWindow>
+#include <cstdio>
 
 #include "account_store.h"
 #include "ai_reply_store.h"
@@ -9,6 +13,7 @@
 #include "book_catalog_store.h"
 #include "discover_store.h"
 #include "direct_ink_framebuffer.h"
+#include "ink_canvas_item.h"
 #include "download_store.h"
 #include "frontlight_store.h"
 #include "network_store.h"
@@ -19,21 +24,136 @@
 #include "progress_sync_store.h"
 #include "qr_image_provider.h"
 #include "reader_store.h"
+#include "reading_time_store.h"
 #include "shelf_store.h"
 #include "stylus_store.h"
 
 int main(int argc, char *argv[]) {
+    std::fputs("rm-weread: initializing Qt platform\n", stderr);
     QGuiApplication app(argc, argv);
+    std::fputs("rm-weread: Qt platform ready\n", stderr);
     QCoreApplication::setApplicationName("WeRead Move");
     QCoreApplication::setOrganizationName("rm-weread");
+    if (!qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST")) {
+        // QML's device-provided Settings type has no fileName property.
+        // Isolate preferences below it so interrupted UI tests cannot change
+        // the user's font, layout or persona choices.
+        const QString testSettings = QStringLiteral("/tmp/rm-weread-selftest-settings");
+        QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, testSettings);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettings);
+    }
 
     // Capture the device-owned auxiliary framebuffer before the Qt Quick
     // scenegraph asks for the same singleton. Unsupported builds safely fall
     // back to the normal QQuickPaintedItem path.
-    DirectInkFramebuffer::instance().initialize();
+    if (qEnvironmentVariableIntValue("RM_WEREAD_DISABLE_DIRECT_INK") != 1) {
+        std::fputs("rm-weread: initializing direct ink\n", stderr);
+        DirectInkFramebuffer::instance().initialize();
+    } else {
+        std::fputs("rm-weread: direct ink disabled for compatibility diagnosis\n", stderr);
+    }
+
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("direct-ink-probe")) {
+        // No stores or user data are opened in this mode. Restore the small
+        // temporary test stroke from an in-memory framebuffer snapshot.
+        auto &ink = DirectInkFramebuffer::instance();
+        const QRect area(40, 80, 160, 80);
+        const QByteArray background = ink.snapshot(area);
+        if (!ink.available() || background.size() != area.width() * area.height() * 4) {
+            std::fputs("direct-ink-probe=unavailable\n", stderr);
+            return 2;
+        }
+        DirectInkFramebuffer::OverlayPixels overlay;
+        QRect dirty;
+        if (!ink.drawBlackLineWithOverlay(QPointF(60, 100), QPointF(175, 140),
+                                          3, &overlay, 8192, &dirty)
+                || !ink.drawBlackLineWithOverlay(QPointF(60, 140), QPointF(175, 100),
+                                                 3, &overlay, 8192, &dirty)) {
+            ink.restoreBlackOverlay(&overlay);
+            ink.refreshMonoFast(area);
+            std::fputs("direct-ink-probe=draw-failed\n", stderr);
+            return 3;
+        }
+        ink.refreshMonoFast(area);
+        QTimer::singleShot(800, &app, [&app, &ink, area, background, overlay]() mutable {
+            ink.restoreBlackOverlay(&overlay);
+            ink.refreshMonoFast(area);
+            const bool restored = ink.snapshot(area) == background;
+            std::fputs(restored ? "direct-ink-probe=ok\n" : "direct-ink-probe=failed\n", stderr);
+            app.exit(restored ? 0 : 3);
+        });
+        return app.exec();
+    }
+
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("ink-lifecycle")) {
+        // Synthetic page only: never construct account/book stores or touch
+        // existing notes. Exercise the real transparent Qt canvas + vendor ink.
+        QQuickWindow window;
+        window.setColor(Qt::white);
+        window.setGeometry(0, 0, 954, 1696);
+        InkCanvasItem canvas(window.contentItem());
+        canvas.setWidth(954);
+        canvas.setHeight(1696);
+        window.showFullScreen();
+        auto &ink = DirectInkFramebuffer::instance();
+        if (!ink.available()) return 2;
+        const QRect area(40, 80, 180, 120);
+        QByteArray baseline;
+        const QVariantList points{QVariantMap{{"x", 60}, {"y", 100}},
+                                  QVariantMap{{"x", 175}, {"y", 140}}};
+        const QVariantList storedStroke{QVariantMap{{"points", points}, {"tool", "free"},
+                                                    {"colorValue", "#000000"}, {"lineWidth", 4}}};
+        int stage = 0;
+        bool passed = true;
+        QTimer steps;
+        steps.setInterval(1800);
+        QObject::connect(&steps, &QTimer::timeout, &app, [&] {
+            if (stage == 0) {
+                baseline = ink.snapshot(area);
+                canvas.beginStroke(60, 100, Qt::black, 4);
+                canvas.appendPoint(175, 140);
+            } else if (stage == 1) {
+                passed = passed && ink.snapshot(area) != baseline;
+                canvas.clearLive();
+            } else if (stage == 2) {
+                passed = passed && ink.snapshot(area) == baseline;
+                canvas.setStrokes(storedStroke);
+            } else if (stage == 3) {
+                passed = passed && ink.snapshot(area) != baseline;
+                canvas.setStrokes({});
+            } else if (stage == 4) {
+                passed = passed && ink.snapshot(area) == baseline;
+                canvas.beginStroke(60, 100, Qt::black, 4);
+                canvas.appendPoint(175, 140);
+                canvas.setVisible(false);
+            } else if (stage == 5) {
+                passed = passed && ink.snapshot(area) == baseline;
+                canvas.setVisible(true);
+                canvas.beginStroke(60, 100, Qt::black, 4);
+                canvas.appendPoint(175, 140);
+                canvas.setStrokes(storedStroke);
+                canvas.finishStroke();
+            } else if (stage == 6) {
+                passed = passed && ink.snapshot(area) != baseline;
+                std::fputs(passed ? "ink-lifecycle-finalize-handoff=ok\n"
+                                  : "ink-lifecycle-finalize-handoff=failed\n", stderr);
+                canvas.setStrokes({});
+            } else {
+                passed = passed && ink.snapshot(area) == baseline;
+                std::fputs(passed ? "ink-lifecycle=ok\n" : "ink-lifecycle=failed\n", stderr);
+                steps.stop();
+                app.exit(passed ? 0 : 3);
+            }
+            std::fprintf(stderr, "ink-lifecycle-stage=%d passed=%d\n", stage, int(passed));
+            ++stage;
+        });
+        steps.start();
+        return app.exec();
+    }
 
     ShelfStore shelfStore;
     ReaderStore readerStore;
+    ReadingTimeStore readingTimeStore;
     DownloadStore downloadStore;
     DiscoverStore discoverStore;
     FrontlightStore frontlightStore;
@@ -53,6 +173,7 @@ int main(int argc, char *argv[]) {
     engine.addImageProvider("wereadqr", new QrImageProvider);
     engine.rootContext()->setContextProperty("shelfStore", &shelfStore);
     engine.rootContext()->setContextProperty("readerStore", &readerStore);
+    engine.rootContext()->setContextProperty("readingTimeStore", &readingTimeStore);
     engine.rootContext()->setContextProperty("downloadStore", &downloadStore);
     engine.rootContext()->setContextProperty("discoverStore", &discoverStore);
     engine.rootContext()->setContextProperty("frontlightStore", &frontlightStore);

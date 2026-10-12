@@ -38,6 +38,9 @@ REMOTE
 }
 trap rollback_on_error EXIT
 
+# Fail before uploads or app swaps on an unknown OS/component set.
+CHECK_ONLY=1 MOVE_HOST="$MOVE_HOST" "$ROOT_DIR/scripts/install-xovi-autostart.sh"
+
 if [[ ! -x "$LOCAL_BIN" ]]; then
   echo "Missing built app: $LOCAL_BIN" >&2
   echo "Run scripts/build-weread-qt.sh first." >&2

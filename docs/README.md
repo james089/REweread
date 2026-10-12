@@ -2,7 +2,10 @@
 
 - `quick-start-user-guide.md`: 面向普通用户的中文快速应用与手势指南。
 - `agent-handoff.md`: 新 Agent 的当前状态、架构、已知坑、验证基线和下一步优先级。
-- `agent-upgrade-v2.0.md`: Agent 从旧版本安全升级到 2.0.0 的逐步流程、验证和回滚边界。
+- `agent-upgrade-v3.0.md`: Agent 安全升级到 3.0.0；应用文件升级与系统恢复分开，保留字体、数据和 API Key。
+- `agent-upgrade-v2.0.md`: 2.0 历史升级记录，不覆盖当前升级流程。
+- `official-client-sync-gap.md`: 阅读时长、笔记、进度与离线下载的实现及验证边界。
+- `xovi-appload-recovery.md`: 新系统映射、隔离试运行和启动崩溃保护。
 - `baidu-ocr-configuration-flow.md`: Agent 与普通用户申请、绑定和排查百度 OCR 凭据的完整指南。
 - `handwriting-annotation-plan.md`: 自由笔迹、正文锚点、块级 OCR 和重排显示设计。
 - `handwriting-input-evaluation.md`: 云端手写识别方案的技术选型记录。

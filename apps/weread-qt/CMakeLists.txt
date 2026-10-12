@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(rm_weread_qt VERSION 2.0.0 LANGUAGES CXX)
+project(rm_weread_qt VERSION 3.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -49,6 +49,8 @@ qt_add_executable(rm_weread_qt
     qr_image_provider.h
     reader_store.cpp
     reader_store.h
+    reading_time_store.cpp
+    reading_time_store.h
     shelf_store.cpp
     shelf_store.h
     stylus_store.cpp
@@ -62,7 +64,7 @@ qt_add_qml_module(rm_weread_qt
     URI WeReadMove
     VERSION 1.0
     SOURCES ink_canvas_item.cpp ink_canvas_item.h magic_reply_ink_item.cpp magic_reply_ink_item.h
-    QML_FILES Main.qml SleepCoverScreen.qml QrLoginScreen.qml PinyinEngine.js PinyinLexicon.js FreeNoteAnchor.js SocialAnchor.js
+    QML_FILES Main.qml SleepCoverScreen.qml QrLoginScreen.qml ReadingStatsPage.qml ReaderFontPicker.qml PinyinEngine.js PinyinLexicon.js FreeNoteAnchor.js SocialAnchor.js ReadingClock.js
 )
 
 target_link_libraries(rm_weread_qt PRIVATE Qt6::Quick Qt6::Network ${CMAKE_DL_LIBS})

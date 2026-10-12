@@ -1,0 +1,36 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const c = vm.createContext({});
+vm.runInContext(fs.readFileSync('apps/weread-qt/ReadingClock.js', 'utf8').replace('.pragma library', ''), c);
+const s = c.create();
+const epoch = 1791800000000;
+let accepted = c.sample(s, epoch, 'a', true, 7);
+assert.equal(accepted.ms, 0);
+accepted = c.sample(s, epoch + 2000, 'a', true, 7);
+assert.deepEqual({ ...accepted }, { book: 'a', ms: 2000, endTimestamp: epoch + 2000, generation: 7 });
+assert.equal(c.seconds(s, 'a'), 2);
+// Count time accrued during a request but acknowledge only its submitted delta.
+c.sample(s, epoch + 3000, 'a', true, 7);
+c.acknowledge(s, 'a', 2);
+assert.equal(c.seconds(s, 'a'), 1);
+c.sample(s, epoch + 4000, 'a', false, 7);
+c.sample(s, epoch + 3600000, 'a', true, 7);
+assert.equal(c.seconds(s, 'a'), 2);
+// Unexpected wall-clock leaps and backwards corrections cannot inflate time.
+c.sample(s, epoch + 7200000, 'a', true, 7);
+c.sample(s, epoch, 'a', true, 7);
+assert.equal(c.seconds(s, 'a'), 2);
+c.sample(s, epoch + 1000, 'b', true, 8);
+accepted = c.sample(s, epoch + 2000, 'b', true, 8);
+assert.equal(accepted.book, 'b');
+assert.equal(accepted.generation, 8);
+assert.equal(c.seconds(s, 'a'), 3);
+assert.equal(c.seconds(s, 'b'), 1);
+c.restorePending(s, { a: 2501, b: -1, c: '3999' });
+assert.equal(c.milliseconds(s, 'a'), 2501);
+assert.equal(c.seconds(s, 'c'), 3);
+c.acknowledge(s, 'a', 3);
+assert.equal(c.seconds(s, 'a'), 0);
+assert.equal(c.seconds(s, 'b'), 0);
+console.log('reading clock behavioral tests ok');

@@ -25,6 +25,7 @@ public:
 
     Q_INVOKABLE void refreshNotebooks();
     Q_INVOKABLE void refreshBookNotes(const QString &bookId);
+    Q_INVOKABLE void reloadAccountScope();
     Q_INVOKABLE void refreshPopularMarks(const QString &bookId);
     Q_INVOKABLE void refreshPopularReviews(const QString &bookId, const QString &chapterUid, const QString &range);
     Q_INVOKABLE void bufferPopularMarks(const QString &bookId);
@@ -37,7 +38,8 @@ signals:
 
 private:
     void startHelper(const QStringList &arguments, const QString &statusText);
-    void appendOutput(const QString &text);
+    void appendOutput(const QByteArray &chunk, QByteArray &buffer, bool finalChunk = false);
+    void appendOutputLine(const QByteArray &line);
     void finishProcess(int exitCode, QProcess::ExitStatus exitStatus);
     void appendRow(const QVariantMap &row);
     void setState(bool running, const QString &statusText);
@@ -51,6 +53,17 @@ private:
     void persistPopularMarksCache();
     bool loadCachedPopularReviews(const QString &bookId, const QString &chapterUid, const QString &range);
     void persistPopularReviewsCache();
+    QString personalNotesCachePath() const;
+    QString currentAccountScope() const;
+    bool preparePersonalNotesScope();
+    QVariantMap loadPersonalNotesCache() const;
+    void savePersonalNotesCache(const QVariantMap &cache) const;
+    bool loadCachedNotebooks();
+    bool loadCachedBookNotes(const QString &bookId);
+    void persistNotebooksCache();
+    void persistBookNotesCache();
+    bool personalRequestStillCurrent() const;
+    bool isPersonalMode() const;
 
     QProcess m_process;
     QTimer m_processTimeoutTimer;
@@ -67,5 +80,14 @@ private:
     QString m_popularReviewBookId;
     QString m_popularReviewChapterUid;
     QString m_popularReviewRange;
+    QString m_personalNotesScope;
+    QString m_personalRequestScope;
+    QString m_bookNotesBookId;
+    QVariantList m_personalRequestRows;
+    bool m_personalRequestDone = false;
+    bool m_personalRequestFailed = false;
+    int m_personalRequestExpectedCount = -1;
+    QByteArray m_stdoutBuffer;
+    QByteArray m_stderrBuffer;
     bool m_cancelledForPopularRestart = false;
 };

@@ -13,6 +13,9 @@ const inkCpp = read('apps/weread-qt/ink_canvas_item.cpp');
 const directInkHeader = read('apps/weread-qt/direct_ink_framebuffer.h');
 const directInkCpp = read('apps/weread-qt/direct_ink_framebuffer.cpp');
 const main = read('apps/weread-qt/main.cpp');
+assert(directInkHeader.includes('(*m_swapModern)(void *, QRect, int, int)'), '3.28 refresh must use its own ABI-correct function type');
+assert(directInkCpp.includes('_ZN13EPFramebuffer11swapBuffersE5QRect12EPScreenMode6QFlagsINS_10UpdateFlagEE'), '3.28 refresh symbol must be resolved explicitly');
+assert(directInkCpp.includes('m_swapModern(m_vendorInstance, clipped, 0, 0)'), '3.28 refresh must not receive the removed content-type argument');
 const cmake = read('apps/weread-qt/CMakeLists.txt');
 const stylusHeader = read('apps/weread-qt/stylus_store.h');
 const readerHeader = read('apps/weread-qt/reader_store.h');
@@ -37,8 +40,14 @@ assert(directInkHeader.includes('drawBlackLine') && directInkHeader.includes('re
 assert(directInkCpp.includes('EPFramebuffer8instance') && directInkCpp.includes('EPFramebuffer11swapBuffers'), 'direct ink must use the device vendor singleton without private object offsets');
 assert(directInkCpp.includes('m_swap(m_vendorInstance, clipped, 0, 0, 0)'), 'live ink must use mono content, pen mode, and partial refresh');
 assert(inkCpp.includes('kDirectSwapIntervalMs = 8') && inkCpp.includes('m_directDirty.united(dirty)'), 'live samples must coalesce dirty rectangles at the validated fast-ink cadence');
-const directBranch = inkCpp.slice(inkCpp.indexOf('if (m_directInkActiveForStroke) {'), inkCpp.indexOf('void InkCanvasItem::clearLive'));
-assert(directBranch.includes('drawDirectSegment(segment)') && !directBranch.includes('drawDirectSegment(segment);\n        update('), 'direct pen points must not also schedule per-point Qt scene redraws');
+const directBegin = inkCpp.slice(inkCpp.indexOf('void InkCanvasItem::beginStroke'), inkCpp.indexOf('void InkCanvasItem::appendPoint'));
+const directAppend = inkCpp.slice(inkCpp.indexOf('void InkCanvasItem::appendPoint'), inkCpp.indexOf('void InkCanvasItem::clearLive'));
+assert(directBegin.includes('m_directInkActiveForStroke && drawDirectSegment(segment)')
+  && directAppend.includes('m_directInkActiveForStroke && drawDirectSegment(segment)')
+  && !directBegin.includes('drawDirectSegment(segment);\n        update(')
+  && !directAppend.includes('drawDirectSegment(segment);\n        update('), 'direct pen points must not also schedule per-point Qt scene redraws');
+assert(directInkHeader.includes('OverlayPixels') && directInkCpp.includes('drawBlackLineWithOverlay') && directInkCpp.includes('restoreBlackOverlay'), 'direct ink must retain a bounded, restorable per-canvas overlay rather than leaving framebuffer pixels behind');
+assert(inkCpp.includes('clearDirectInkOverlay();') && inkCpp.includes('kDirectOverlayMaximumPixels'), 'page replacement and settling must restore direct ink before discarding its Qt state');
 assert(stylusHeader.includes('m_moveThrottleMs = 8') && stylusHeader.includes('m_minMoveDistance = 1.0'), 'raw stylus sampling must not double-throttle Chinese handwriting');
 assert(appendSnippet.includes('< 1'), 'QML must reject duplicate coordinates only, not six-pixel pen movements');
 

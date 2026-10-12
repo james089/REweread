@@ -23,6 +23,10 @@ constexpr int kDirectSwapIntervalMs = 8;
 constexpr int kFastRefreshKickDelayMs = 28;
 constexpr int kFastRefreshReleaseDelayMs = 132;
 constexpr qsizetype kPrivateScreenModeObjectBytes = 64;
+// Enough for dense Chinese handwriting while keeping a bounded, per-canvas
+// original-pixel overlay.  If it fills, the current stroke falls back to Qt
+// painting rather than losing the ability to erase or change pages safely.
+constexpr qsizetype kDirectOverlayMaximumPixels = 196608;
 
 QPointF pointFromVariant(const QVariant &value) {
     const QVariantMap point = value.toMap();
@@ -109,6 +113,10 @@ InkCanvasItem::InkCanvasItem(QQuickItem *parent)
     ensurePenModeItem();
 }
 
+InkCanvasItem::~InkCanvasItem() {
+    clearDirectInkOverlay();
+}
+
 QVariantList InkCanvasItem::strokes() const {
     return m_strokes;
 }
@@ -136,6 +144,7 @@ void InkCanvasItem::setStrokes(const QVariantList &strokes) {
         m_settleTimer.stop();
         m_pendingSegments.clear();
         m_penDown = false;
+        clearDirectInkOverlay();
         resetDirectInk();
         hidePenModeRegion();
         eraseLiveImages();
@@ -185,9 +194,11 @@ void InkCanvasItem::beginStroke(double x, double y, const QColor &color,
     const QRectF dirty = drawLiveSegment(&m_liveImage, segment, Qt::black);
     m_liveBounds = m_liveBounds.united(dirty);
     m_settleBounds = m_settleBounds.united(dirty);
-    if (m_directInkActiveForStroke) {
-        drawDirectSegment(segment);
+    if (m_directInkActiveForStroke && drawDirectSegment(segment)) {
+        // The vendor framebuffer has already shown the pen head. Avoid a
+        // competing Qt scene redraw for every sample.
     } else {
+        m_directInkActiveForStroke = false;
         updatePenModeRegion();
         if (!m_dryTimer.isActive()) {
             m_dryTimer.start();
@@ -222,9 +233,10 @@ void InkCanvasItem::appendPoint(double x, double y) {
     m_lastPoint = nextPoint;
     m_liveBounds = m_liveBounds.united(dirty);
     m_settleBounds = m_settleBounds.united(dirty);
-    if (m_directInkActiveForStroke) {
-        drawDirectSegment(segment);
+    if (m_directInkActiveForStroke && drawDirectSegment(segment)) {
+        // See beginStroke(): only the direct path may skip this QML update.
     } else {
+        m_directInkActiveForStroke = false;
         updatePenModeRegion();
         if (!m_dryTimer.isActive()) {
             m_dryTimer.start();
@@ -242,6 +254,7 @@ void InkCanvasItem::clearLive() {
     m_settleBounds = QRectF();
     m_pendingSegments.clear();
     m_penDown = false;
+    clearDirectInkOverlay();
     resetDirectInk();
     hidePenModeRegion();
     if (!dirty.isEmpty()) {
@@ -281,6 +294,7 @@ void InkCanvasItem::geometryChange(const QRectF &newGeometry, const QRectF &oldG
     const QSize nextSize(qMax(0, qCeil(newGeometry.width())),
                          qMax(0, qCeil(newGeometry.height())));
     if (nextSize != m_persistedImage.size()) {
+        clearDirectInkOverlay();
         m_persistedImage = QImage();
         m_liveImage = QImage();
         m_dryingImage = QImage();
@@ -297,6 +311,15 @@ void InkCanvasItem::geometryChange(const QRectF &newGeometry, const QRectF &oldG
         rebuildPersistedImage();
     }
     update();
+}
+
+void InkCanvasItem::itemChange(ItemChange change, const ItemChangeData &data) {
+    QQuickPaintedItem::itemChange(change, data);
+    if (change == ItemVisibleHasChanged && !data.boolValue) {
+        // A transparent QQuickPaintedItem cannot itself overwrite pixels that
+        // were written directly into the vendor buffer.
+        clearDirectInkOverlay();
+    }
 }
 
 void InkCanvasItem::requestFastRefresh() {
@@ -507,6 +530,10 @@ void InkCanvasItem::finalizeInkSession() {
     m_dryTimer.stop();
     m_pendingSegments.clear();
     m_penDown = false;
+    // At this point the persisted image is the source of truth. Restore the
+    // direct pen overlay first, then let the one scheduled Qt update compose
+    // the stored coloured stroke without carrying old page pixels forward.
+    clearDirectInkOverlay();
     resetDirectInk();
     hidePenModeRegion();
     eraseLiveImages();
@@ -612,8 +639,11 @@ bool InkCanvasItem::drawDirectSegment(const LiveSegment &segment) {
     const QPointF frameTo(sceneTo.x() * scaleX, sceneTo.y() * scaleY);
     const int radius = qMax(1, qRound(segment.lineWidth *
                                       (scaleX + scaleY) * 0.25));
-    const QRect dirty = framebuffer.drawBlackLine(frameFrom, frameTo, radius);
-    if (dirty.isEmpty()) {
+    QRect dirty;
+    if (!framebuffer.drawBlackLineWithOverlay(frameFrom, frameTo, radius,
+                                              &m_directOverlay,
+                                              kDirectOverlayMaximumPixels,
+                                              &dirty) || dirty.isEmpty()) {
         return false;
     }
     m_directDirty = m_directDirty.united(dirty);
@@ -634,6 +664,15 @@ void InkCanvasItem::flushDirectInk() {
     DirectInkFramebuffer::instance().refreshMonoFast(m_directDirty);
     m_directDirty = QRect();
     m_directSwapClock.restart();
+}
+
+QRect InkCanvasItem::clearDirectInkOverlay() {
+    flushDirectInk();
+    const QRect restored = DirectInkFramebuffer::instance().restoreBlackOverlay(&m_directOverlay);
+    if (!restored.isEmpty()) {
+        DirectInkFramebuffer::instance().refreshMonoFast(restored);
+    }
+    return restored;
 }
 
 void InkCanvasItem::resetDirectInk() {

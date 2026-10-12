@@ -165,8 +165,8 @@ assert(readerStoreCpp.includes('reader-strokes.json'), 'ReaderStore must persist
 assert(readerStoreCpp.includes('epub-expanded'), 'ReaderStore must cache expanded EPUB contents');
 assert(readerStoreHeader.includes('QStringList chapterPaths'), 'ReaderStore must expose an internal chapter list helper');
 assert(readerStoreHeader.includes('QString chapterTitleFromXhtml'), 'ReaderStore must derive readable chapter titles from EPUB XHTML');
-assert(readerStoreHeader.includes('QStringList imageSourcesFromChapter'), 'ReaderStore must extract all local images from each XHTML chapter');
-assert(readerStoreHeader.includes('QString imageCaptionForSource'), 'ReaderStore must extract captions from EPUB image attributes');
+assert(readerStoreHeader.includes('QVariantList imageEntriesFromChapter'), 'ReaderStore must extract ordered local image rows from each XHTML chapter');
+assert(readerStoreCpp.includes('sourceTextStart') && readerStoreCpp.includes('sourceOrdinal'), 'ReaderStore image rows must retain source-order anchors including repeated assets');
 assert(readerStoreHeader.includes('QString annotateFootnotes'), 'ReaderStore must replace WeRead footnote icons with readable inline markers before plain-text extraction');
 assert(readerStoreCpp.includes('chapterPaths(expandedDir)'), 'ReaderStore must enumerate all EPUB text chapters');
 assert(readerStoreCpp.includes('parts.join(QStringLiteral("\\n\\n"))'), 'ReaderStore must join all readable chapter text into one book body');
@@ -188,11 +188,11 @@ assert(readerStoreCpp.includes('strokesChanged'), 'ReaderStore must notify QML w
 assert(readerStoreCpp.includes('m_searchResults.append'), 'ReaderStore must retain search result offsets and excerpts');
 assert(readerStoreCpp.includes('indexOf(query'), 'ReaderStore search must scan the loaded full-book text');
 assert(readerStoreCpp.includes('m_imageSources.append'), 'ReaderStore must retain all EPUB illustration sources, not just the first one');
-assert(readerStoreCpp.includes('imageRow.insert(QStringLiteral("source")') && readerStoreCpp.includes('imageRow.insert(QStringLiteral("textStart")'), 'ReaderStore must anchor EPUB illustrations to chapter text offsets instead of treating them as a front-of-book gallery');
-assert(readerStoreCpp.includes('imageRow.insert(QStringLiteral("caption")'), 'ReaderStore must store extracted illustration captions with image rows');
+assert(readerStoreCpp.includes('imageRow.insert(QStringLiteral("textStart"), chapterTextStart + imageOffset)') && readerStoreCpp.includes('imageOffset'), 'ReaderStore must anchor EPUB illustrations to chapter text offsets instead of treating them as a front-of-book gallery');
+assert(readerStoreCpp.includes('row.insert(QStringLiteral("caption")'), 'ReaderStore must store extracted illustration captions with image rows');
 assert(readerStoreCpp.includes('imageRow.insert(QStringLiteral("imageIndex")'), 'ReaderStore must expose per-chapter image order so picture-heavy chapters can paginate multiple illustrations');
 assert(readerStoreCpp.includes('chapterImageCount') && readerStoreCpp.includes('chapterImageIndex'), 'ReaderStore must expose image counts for image-only chapter pagination');
-assert(readerStoreCpp.includes('imageTextStart') && readerStoreCpp.includes('chapterTextStart + imageOffset'), 'ReaderStore must distribute multiple chapter images across the chapter text instead of anchoring every image to the same first page');
+assert(readerStoreCpp.includes('sourceTextStart') && readerStoreCpp.includes('chapterTextStart + imageOffset'), 'ReaderStore must retain each image XHTML anchor instead of assigning multiple images to one synthetic first page');
 assert(readerStoreCpp.includes('qqreader-footnote') && readerStoreCpp.includes('note.png'), 'ReaderStore must skip WeRead footnote icon images when collecting illustrations');
 assert(readerStoreCpp.includes('m_footnotes.append'), 'ReaderStore must collect WeRead footnote alt text instead of dropping it with the icon image');
 assert(readerStoreCpp.includes('QStringLiteral("㊟%1")'), 'ReaderStore must render footnote anchors as compact circled-note markers in body text');
@@ -418,8 +418,8 @@ assert(syncProgressTool.includes('state=error'), 'progress sync helper must prin
 
 const fetchProgressTool = read('apps/weread-move/tools/fetch-progress.lua');
 assert(fetchProgressTool.includes('client:gateway("/book/getprogress"'), 'progress pull helper must use the official progress endpoint');
-assert(fetchProgressTool.includes('state=done'), 'progress pull helper must print machine-readable success');
-assert(fetchProgressTool.includes('progress='), 'progress pull helper must print the cloud progress percent');
+assert(fetchProgressTool.includes('state = "done"'), 'progress pull helper must print machine-readable success');
+assert(fetchProgressTool.includes('progress ='), 'progress pull helper must print the cloud progress percent');
 
 const refreshDetailTool = read('apps/weread-move/tools/refresh-detail.lua');
 assert(refreshDetailTool.includes('BookInfoService'), 'detail refresh helper must load WeRead book metadata');
@@ -608,7 +608,7 @@ assert(qml.includes('if (root.readerOpenedWithLocalProgress)'), 'remote percenta
 const detailContinueIndex = qml.indexOf('text: "继续阅读"');
 const detailContinueSnippet = qml.slice(detailContinueIndex, detailContinueIndex + 700);
 assert(!detailContinueSnippet.includes('root.pageIndex = 0'), 'detail Continue Reading must not reset the saved reading position');
-assert(qml.includes('progressSyncStore.pullProgress(bookId)'), 'centralized reader entry must pull cloud progress in the background');
+assert(qml.includes('root.requestReaderProgressPull(false)'), 'centralized reader entry must pull cloud progress in the background');
 assert(qml.includes('root.scheduleReaderSocialPrefetch()'), 'centralized reader entry must schedule current-page underline comments in the background');
 assert(qml.includes('function setReaderPage'), 'reader page turns must go through a progress-saving helper');
 assert(qml.includes('readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)'), 'reader page turns must persist text offset as well as page index');
@@ -617,20 +617,20 @@ assert(qml.includes('function onEpubReady(bookId, title) {\n            shelfSto
 assert(qml.includes('root.pendingCatalogBookId === bookId'), 'download completion must detect pending detail-catalog chapter opens');
 assert(qml.includes('root.enterReaderForCatalogChapter({ "bookId": bookId, "title": title }, root.pendingCatalogChapter)'), 'download completion must open the selected catalog chapter after downloading');
 assert(qml.includes('function onOpeningChapterReady(bookId, title)'), 'QML must open the reader when the fast opening-chapter download finishes');
-assert(qml.includes('source: root.currentReaderImageSource'), 'reader page must render extracted chapter images by current page');
+assert(qml.includes('source: String(modelData.source || "")'), 'reader page must render each extracted chapter image in its current page group');
 assert(qml.includes('width: root.width - root.readerMargin * 2'), 'reader image pages must render illustrations at the maximum available text width');
-assert(qml.includes('root.readerImageTextTopY - root.readerImageTopMargin - 8'), 'reader image text should sit close enough for the first caption line to read as an image caption');
+assert(qml.includes('readerImageTextTopFor(root.readerPageImages[root.pageIndex] || ({})) - y - 8'), 'reader image text should follow the measured image group rather than a fixed image band');
 assert(qml.includes('readerStore.imageSources'), 'reader page must use the full extracted image list');
 assert(qml.includes('function readerImageForPage'), 'reader page must map multiple chapter images onto adjacent pages');
 assert(qml.includes('function readerImageForPageRange'), 'reader pagination must assign images only when the image anchor lands inside the real page text range');
 assert(!qml.includes('root.readerImagesForTextRange(offset, offset + pageChars)'), 'reader pagination must not assign the same image through a rough pageChars window');
 assert(qml.includes('property string currentReaderImageCaption'), 'reader page must keep the current illustration caption separately from body text');
 assert(qml.includes('function readerImageEntryCaption'), 'reader page must read extracted EPUB image captions from image rows');
-assert(qml.includes('root.currentReaderImageCaption + "\\n\\n" + text.slice'), 'image captions must be prepended to visible text on image pages');
+assert(!qml.includes('root.currentReaderImageCaption + "\\n\\n" + text.slice'), 'image metadata captions must not be prepended into visible text and shift stable offsets');
 assert(!qml.includes('for (var imageIndex = 0; imageIndex < matches.length; imageIndex++)'), 'reader pagination must not create several pages with the same text start just because several images share one text range');
 assert(qml.includes('reader-image-selftest=ok'), 'reader must expose a device-runnable image-page self-test');
 const readerImageSelfTestFunction = qml.slice(qml.indexOf('function runReaderImageSelfTest'), qml.indexOf('function runReaderSettingsSelfTest'));
-assert(readerImageSelfTestFunction.includes('root.rebuildReaderPagination()'), 'reader image self-test must force full pagination so image pages are not hidden by fast-open windows');
+assert(readerImageSelfTestFunction.includes('root.buildReaderPaginationWindowFromOffset(imageOffset, 2)'), 'reader image self-test must explicitly open the real image anchor so fast-open windows cannot hide it');
 assert(qml.includes('reader-settings-selftest=ok'), 'reader must expose a device-runnable settings-open timing self-test');
 assert(qml.includes('reader-defaults-selftest=ok'), 'reader must expose a device-runnable default typography self-test');
 assert(!qml.includes('grabToImage'), 'reader self-tests must not call grabToImage because the official epaper backend crashes on layer grabs');
@@ -794,7 +794,8 @@ assert(qml.includes('function readerEstimatedLinePixels'), 'reader pagination mu
 assert(qml.includes('root.readerEstimatedLinePixels()'), 'reader body and pagination calculations must share the RichText line-height estimate');
 assert(qml.includes('property int readerTextTopMargin: 96'), 'reader text should start from a clean immersive top margin without wasting the old toolbar space');
 assert(qml.includes('property int readerImageTopMargin: 72'), 'reader illustrations should sit higher now that the visible toolbar is gone');
-assert(qml.includes('property int readerImageTextTopY: Math.round(root.height * 0.78)'), 'reader illustration pages should prioritize maximum-width large image rendering, leaving the lower band for captions');
+assert(qml.includes('function readerImageGroupScale'), 'reader illustration groups must be scaled to the actual safe body budget');
+assert(qml.includes('function readerImageTextTopFor'), 'reader illustration pages must derive text top from measured image group height');
 assert(qml.includes('readerBottomSafety'), 'reader must reserve a compact footer safety band');
 assert(qml.includes('return Math.min(10, Math.max(6, readerParagraphSpacing))'), 'reader bottom safety must prevent clipped descenders without creating a large blank band');
 assert(qml.includes('property int readerBottomGestureHeight: 56'), 'reader must define one shared compact bottom gesture/safe-zone height');
@@ -906,7 +907,7 @@ const saveCurrentMarkerSelectionSnippet = qml.slice(qml.indexOf('function saveCu
 assert(!saveCurrentMarkerSelectionSnippet.includes('readerStore.addPageStroke'), 'reader marker gestures must not persist freehand marker strokes');
 assert(qml.includes('readerStore.loadStrokesForPage'), 'reader must load page handwrite strokes when the page changes');
 assert(qml.includes('readerStore.clearPageStrokes'), 'reader must support clearing current-page handwrite strokes');
-assert(qml.includes('readerStore.clearPageHighlights(root.currentBookId, root.pageIndex)'), 'reader clear-current-page action must remove snapped text highlights');
+assert(qml.includes('readerStore.clearTextHighlightsInRange(root.currentBookId, range.start, range.end)'), 'reader erase action must remove snapped text highlights by their text range');
 assert(qml.includes('id: catalogOpenGestureArea'), 'reader catalog must open from a gesture area instead of a bulky button');
 assert(qml.includes('property real startX') && qml.includes('mouse.x - startX > 56'), 'reader catalog must open with a left-edge right-swipe gesture');
 assert(qml.includes('width: 96') && qml.includes('root.showReaderCatalog = true'), 'reader catalog open gesture must live on the left edge');
@@ -975,8 +976,9 @@ assert(qml.includes('function runReaderDefaultsSelfTest'), 'QML must expose a de
 assert(qml.includes('selfTestMode === "reader-defaults"'), 'QML must run the default typography self-test only when explicitly requested');
 assert(qml.includes('function runReaderMarkerSelfTest'), 'QML must expose a device-runnable marker stroke self-test');
 assert(qml.includes('selfTestMode === "reader-marker"'), 'QML must run the marker stroke self-test only when explicitly requested');
-assert(qml.includes('reader-marker-selftest=ok'), 'reader marker self-test must write an unambiguous success marker');
-assert(qml.includes('reader-marker-selftest=fail missing-text-highlight'), 'reader marker self-test must verify snapped text highlight persistence');
+assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must refuse to alter real annotation storage');
+assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must fail closed until it has isolated annotation storage');
+assert(qml.includes('root.currentBookId !== "" && root.selfTestMode === ""'), 'reader page self-tests must not save real progress or trigger continuation downloads');
 assert(qml.includes('function runReaderLayoutSelfTest'), 'QML must expose a device-runnable reader layout self-test');
 assert(qml.includes('function captureReaderSettings'), 'reader self-tests must capture current persisted typography settings');
 assert(qml.includes('function restoreReaderSettings'), 'reader self-tests must restore typography settings before exit');
@@ -985,12 +987,12 @@ assert(qml.includes('selfTestMode === "reader-layout"'), 'QML must run the layou
 assert(qml.includes('reader-layout-selftest=ok'), 'reader layout self-test must write an unambiguous success marker');
 assert(qml.includes('leading-punctuation page='), 'reader layout self-test must reject body pages that begin with Chinese punctuation');
 const readerLayoutSelfTestSnippet = qml.slice(qml.indexOf('function prepareReaderLayoutSelfTestCase'), qml.indexOf('property double settingsSelfTestStartMs'));
-assert(readerLayoutSelfTestSnippet.includes('Math.floor(count * 0.08)'), 'reader layout self-test must skip copyright/front-matter pages and sample body text');
+assert(readerLayoutSelfTestSnippet.includes('var fractions = [0.08, 0.52, 0.88]') && readerLayoutSelfTestSnippet.includes('body.indexOf("\\n", offset)'), 'reader layout self-test must skip front matter and sample real body paragraph starts');
 assert(!readerLayoutSelfTestSnippet.includes('[\n            0,'), 'reader layout self-test must not use page zero front matter as the typography proof');
 const enterReaderIndex = qml.indexOf('function enterReaderForBook');
 const enterReaderSnippet = qml.slice(enterReaderIndex, enterReaderIndex + 1800);
 assert(enterReaderSnippet.includes('if (selfTestMode === "")'), 'reader self-tests must skip async helper fetches so luajit processes are not destroyed during test shutdown');
-assert(enterReaderSnippet.includes('progressSyncStore.pullProgress(bookId)') && enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must fetch progress and schedule current-page comments');
+assert(enterReaderSnippet.includes('root.requestReaderProgressPull(false)') && enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must fetch progress and schedule current-page comments');
 assert(!enterReaderSnippet.includes('notesStore.refreshBookNotes(bookId)'), 'normal reader opens must not block current-page comments behind full-book note sync');
 assert(enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must schedule non-blocking popular community comment prefetch');
 assert(!qml.includes('返回系统'), 'reader settings must not show an ugly return-to-system button');
@@ -1034,8 +1036,8 @@ assert(qml.includes('id: progressJumpSlider'), 'reader settings must include a p
 assert(qml.includes('text: "跳转进度"'), 'reader progress jump control must be labeled in Chinese');
 assert(qml.includes('root.setReaderProgressPercent'), 'reader progress slider must apply real page jumps');
 assert(qml.includes('function syncCurrentReaderProgress'), 'reader must expose a reusable current-book cloud progress sync helper');
-assert(qml.includes('progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), root.currentReaderElapsedSeconds())'), 'reader cloud progress sync helper must use the current local page ratio, summary, and elapsed reading seconds');
-assert(qml.includes('root.syncCurrentReaderProgress()'), 'reader return path must automatically attempt cloud progress sync before leaving the book');
+assert(qml.includes('readingTimeStore.beginSubmission(root.currentBookId, elapsedSeconds)') && qml.includes('progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), token === "" ? 0 : elapsedSeconds)'), 'reader cloud progress sync must reserve persisted elapsed seconds before reporting the current local position');
+assert(qml.includes('root.syncCurrentReaderProgress(false)'), 'reader return path must automatically sync position without automatically reporting elapsed time');
 assert(qml.includes('text: "同步进度"'), 'reader settings must label progress sync in Chinese');
 assert(qml.includes('text: "拉取进度"'), 'reader settings must label cloud progress pull in Chinese');
 assert(qml.includes('frontlightLevels'), 'reader settings must offer discrete frontlight levels');

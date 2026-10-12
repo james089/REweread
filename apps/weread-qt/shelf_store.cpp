@@ -207,6 +207,17 @@ QString ShelfStore::findFullEpub(const QString &bookId) const {
     return files.first().absoluteFilePath();
 }
 
+QString ShelfStore::findPartialEpub(const QString &bookId) const {
+    QDir dir(bookDir(bookId));
+    const QFileInfoList files = dir.entryInfoList(
+        QStringList() << QStringLiteral("*partial.epub") << QStringLiteral("*opening.epub"),
+        QDir::Files, QDir::Name);
+    if (files.isEmpty()) {
+        return {};
+    }
+    return files.first().absoluteFilePath();
+}
+
 QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
     const QString bookId = raw.value(QStringLiteral("bookId")).toString();
     const QString title = raw.value(QStringLiteral("title"), QStringLiteral("Untitled")).toString();
@@ -221,7 +232,9 @@ QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
     const bool hasRemoteProgress = raw.contains(QStringLiteral("remoteProgress"));
     const double remoteProgress = qBound(0.0, raw.value(QStringLiteral("remoteProgress")).toDouble(), 100.0);
     QString downloadState = raw.value(QStringLiteral("downloadState")).toString();
-    const QString localEpubPath = findFullEpub(bookId);
+    const QString fullEpubPath = findFullEpub(bookId);
+    const QString partialEpubPath = findPartialEpub(bookId);
+    const QString localEpubPath = !fullEpubPath.isEmpty() ? fullEpubPath : partialEpubPath;
     int rating = raw.value(QStringLiteral("newRating")).toInt();
     if (rating > 100 && rating <= 1000) {
         rating = rating / 10;
@@ -232,8 +245,10 @@ QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
             ? qBound(0.0, double(textOffset) / double(textLength), 1.0)
             : (hasRemoteProgress ? remoteProgress / 100.0 : 0.0));
     const QString progressLabel = QStringLiteral("%1%").arg(qRound(progressRatio * 100.0));
-    if (!localEpubPath.isEmpty()) {
+    if (!fullEpubPath.isEmpty()) {
         downloadState = QStringLiteral("full");
+    } else if (!partialEpubPath.isEmpty()) {
+        downloadState = QStringLiteral("partial");
     } else if (downloadState.isEmpty()) {
         downloadState = QStringLiteral("remote");
     }

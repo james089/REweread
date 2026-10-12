@@ -4,6 +4,7 @@ import QtCore
 import "SocialAnchor.js" as SocialAnchor
 import "PinyinEngine.js" as PinyinEngine
 import "FreeNoteAnchor.js" as FreeNoteAnchor
+import "ReadingClock.js" as ReadingClock
 
 Window {
     id: root
@@ -13,6 +14,8 @@ Window {
     color: root.paperColor
 
     onClosing: function(close) {
+        root.sampleReadingClock()
+        root.snapshotReadingClock()
         root.flushPendingFreeInkStrokes()
     }
 
@@ -221,7 +224,7 @@ Window {
                                                 ? longCangFont.name
                                                 : readerFontChoice === "站酷快乐" && zcoolKuaiLeFont.status === FontLoader.Ready
                                                     ? zcoolKuaiLeFont.name
-                                                    : ""
+                                                    : "Noto Sans CJK SC"
     property string magicFontFamily: magicFontChoice === "马善政" && maShanZhengFont.status === FontLoader.Ready ? maShanZhengFont.name
         : magicFontChoice === "刘建毛草" && liuJianMaoCaoFont.status === FontLoader.Ready ? liuJianMaoCaoFont.name
         : magicFontChoice === "智勇行" && zhiMangXingFont.status === FontLoader.Ready ? zhiMangXingFont.name
@@ -252,6 +255,7 @@ Window {
     property double readerPaginationStartedMs: 0
     property string currentReaderImageSource: ""
     property string currentReaderImageCaption: ""
+    property var currentReaderImageEntries: []
     property int currentReaderTextTopY: readerTextTopMargin
     property string currentReaderPageText: ""
     property int currentReaderTextStart: 0
@@ -274,9 +278,54 @@ Window {
     property string readerPendingContinueTitle: ""
     property string readerPendingContinueSnippet: ""
     property int readerLastPulledRemoteProgress: -1
-    property int readerSessionStartedMs: 0
+    // Opening pulls preserve local-first behavior. An explicit settings pull
+    // may adopt a uniquely anchored server position instead.
+    property string readerProgressPullIntent: ""
+    property string readerProgressPullBookId: ""
+    property int readerPendingManualPulledProgress: -1
+    Timer {
+        id: readerManualProgressFallbackTimer
+        interval: 1
+        repeat: false
+        onTriggered: {
+            if (root.readerProgressPullIntent !== "manual"
+                    || root.readerProgressPullBookId !== root.currentBookId
+                    || readerStore.openingCache
+                    || root.readerPendingManualPulledProgress < 0) {
+                return
+            }
+            root.setReaderProgressPercent(root.readerPendingManualPulledProgress)
+            root.readerPendingManualPulledProgress = -1
+            root.readerProgressPullIntent = ""
+            root.readerProgressPullBookId = ""
+        }
+    }
+    property var readingClockState: ReadingClock.create()
+    property string readingTimeSubmissionToken: ""
+    property string readingTimeSubmissionBookId: ""
+    property int readingTimeSubmissionSeconds: 0
+    readonly property bool readingClockActive: root.screenName === "reader"
+        && !root.sleepOverlayVisible && root.visible && root.active
+        && accountStore.cookieConfigured && readerStore.bodyText !== ""
+        && root.selfTestMode === ""
+    onReadingClockActiveChanged: {
+        root.sampleReadingClock()
+        root.snapshotReadingClock()
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.readingClockActive
+        onTriggered: root.sampleReadingClock()
+    }
+    Timer {
+        interval: 10000
+        repeat: true
+        running: root.readingClockActive
+        onTriggered: root.snapshotReadingClock()
+    }
     property bool readerImageLoadFailed: false
-    property var readerLayoutSelfTestPages: []
+    property var readerLayoutSelfTestOffsets: []
     property int readerLayoutSelfTestCursor: 0
     property var readerLayoutSelfTestCases: []
     property int readerLayoutSelfTestCaseCursor: 0
@@ -337,6 +386,9 @@ Window {
             root.magicFontChoice = "龙藏体"
             persistedMagicBookSettings.longCangDefaultMigrated = true
         }
+        readingTimeStore.reloadAccount()
+        root.restoreReadingClockFromLedger()
+        notesStore.reloadAccountScope()
         accountStore.refresh()
     }
 
@@ -847,10 +899,7 @@ Window {
         var leftTrim = pageBody.length - pageBody.replace(/^\s+/, "").length
         var visibleStart = Math.min(pageEnd, pageStart + leftTrim)
         var targetOffset = root.clamp(Math.floor(Number(globalOffset) || 0), visibleStart, pageEnd)
-        var captionLength = root.currentReaderImageCaption === ""
-            ? 0
-            : root.readerCompactTextLength(root.currentReaderImageCaption)
-        var targetLength = captionLength + root.readerCompactTextLength(body.slice(visibleStart, targetOffset))
+        var targetLength = root.readerCompactTextLength(body.slice(visibleStart, targetOffset))
         var low = 0
         var high = Math.max(0, Math.floor(Number(readerBodyText.length) || 0))
         var answer = high
@@ -1111,10 +1160,9 @@ Window {
         var chapterStart = root.isReaderChapterStart(textStart)
         var sourceCursor = 0
         var bodyLineHeight = Math.max(1, root.readerLinePixels())
-        var pageImageSource = imageSource === undefined ? root.currentReaderImageSource : String(imageSource || "")
-        var pageImageCaption = imageCaption === undefined ? root.currentReaderImageCaption : String(imageCaption || "")
-        var imageCaptionPrefix = pageImageSource !== "" ? pageImageCaption.replace(/\s+/g, " ").trim() : ""
-        var bodySourceStart = imageCaptionPrefix === "" ? 0 : -1
+        // Keep the EPUB text stream untouched. figcaption remains where the
+        // book placed it; alt/title is display metadata only, never prepended
+        // into TextEdit where it would shift positionToRectangle offsets.
         for (var i = 0; i < paragraphs.length; i++) {
             var rawPara = paragraphs[i]
             var rawIndex = source.indexOf(rawPara, sourceCursor)
@@ -1127,19 +1175,7 @@ Window {
                 continue
             }
             var trimLeft = rawPara.length - rawPara.replace(/^\s+/, "").length
-            if (imageCaptionPrefix !== "" && out.length === 0 && para === imageCaptionPrefix) {
-                out.push("<p class='reader-caption' style='margin-top:0; margin-bottom:" + root.readerLinePixels() +
-                         "px; text-indent:0; text-align:center; font-size:" +
-                         Math.round(root.readerFontSize * 0.82) +
-                         "px; line-height:" + Math.round(bodyLineHeight * 0.95) +
-                         "px; font-weight:400;'>" +
-                         htmlEscape(para) + "</p>")
-                continue
-            }
-            if (bodySourceStart < 0) {
-                bodySourceStart = rawIndex
-            }
-            var paraGlobalStart = textStart + Math.max(0, rawIndex - bodySourceStart) + trimLeft
+            var paraGlobalStart = textStart + rawIndex + trimLeft
             if (chapterStart && out.length === 0) {
                 out.push("<p class='reader-title' style='margin-top:0; margin-bottom:" +
                          Math.max(root.readerParagraphSpacing * 2, 28) +
@@ -1194,8 +1230,25 @@ Window {
     }
 
     function closeReaderSettings() {
+        readerFontPicker.visible = false
         showReaderSettings = false
         settingsDragOffset = 0
+    }
+
+    function readerInstalledFontChoices() {
+        var fonts = [["微米黑", microHeiFont], ["正黑", zenHeiFont], ["霞鹜文楷", lxgwWenKaiFont],
+            ["思源黑体", sourceHanSansFont], ["思源宋体", sourceHanSerifFont],
+            ["寒蝉正楷", chillKaiFont], ["寒蝉活宋", chillHuoSongFont],
+            ["马善政", maShanZhengFont], ["刘建毛草", liuJianMaoCaoFont],
+            ["智勇行", zhiMangXingFont], ["龙藏体", longCangFont], ["站酷快乐", zcoolKuaiLeFont]]
+        var result = [{name: "系统", family: "sans-serif", ready: true, statusText: "系统字体"}]
+        for (var i = 0; i < fonts.length; ++i) {
+            var loader = fonts[i][1]
+            result.push({name: fonts[i][0], family: loader.name,
+                ready: loader.status === FontLoader.Ready,
+                statusText: loader.status === FontLoader.Loading ? "加载中" : "未安装 / 不可用"})
+        }
+        return result
     }
 
     function closeReaderCatalog() {
@@ -1299,6 +1352,52 @@ Window {
         return String(image.caption || "").replace(/\s+/g, " ").trim()
     }
 
+    function readerImageEntryHeight(image) {
+        var group = arguments.length > 1 ? arguments[1] : ({})
+        return Math.max(0, Math.floor(root.readerImageNaturalHeight(image) * root.readerImageGroupScale(group)))
+    }
+
+    function readerImageEntriesFor(image) {
+        if (!image || typeof image === "string") return []
+        return image.entries || [image]
+    }
+
+    function readerImageNaturalHeight(image) {
+        var width = Math.max(1, Number(image.pixelWidth) || 0)
+        var height = Math.max(1, Number(image.pixelHeight) || 0)
+        return width > 1 && height > 1 ? root.readerTextWidth() * height / width : root.height * 0.28
+    }
+
+    function readerImageGroupSpacing(image) {
+        var entries = root.readerImageEntriesFor(image)
+        if (entries.length < 2) return 0
+        var available = Math.max(0, root.readerContentBottom - root.readerImageTopMargin -
+                                 root.readerEstimatedLinePixels() * 2 - 10)
+        return Math.min(10, Math.floor(available / (entries.length - 1)))
+    }
+
+    function readerImageGroupScale(image) {
+        var entries = root.readerImageEntriesFor(image)
+        if (entries.length === 0) return 1
+        var natural = 0
+        for (var i = 0; i < entries.length; i++) natural += root.readerImageNaturalHeight(entries[i])
+        var spacing = Math.max(0, entries.length - 1) * root.readerImageGroupSpacing(image)
+        var budget = Math.max(0, root.readerContentBottom - root.readerImageTopMargin -
+                              root.readerEstimatedLinePixels() * 2 - 10 - spacing)
+        return Math.min(1, budget / Math.max(1, natural))
+    }
+
+    function readerImageTextTopFor(image) {
+        var entries = root.readerImageEntriesFor(image)
+        if (entries.length === 0) return root.readerTextTopMargin
+        var spacing = root.readerImageGroupSpacing(image)
+        var total = root.readerImageTopMargin
+        for (var i = 0; i < entries.length; i++) total += root.readerImageEntryHeight(entries[i], image) + (i > 0 ? spacing : 0)
+        total += 10
+        return Math.min(root.readerContentBottom - root.readerEstimatedLinePixels() * 2,
+                        Math.max(root.readerTextTopMargin, Math.round(total)))
+    }
+
     function readerImageForTextRange(start, end) {
         var images = readerStore.imageSources || []
         for (var i = 0; i < images.length; i++) {
@@ -1309,7 +1408,16 @@ Window {
             }
             var imageStart = root.readerImageEntryTextStart(image)
             if (imageStart >= start && imageStart < end) {
-                return image
+                var entries = []
+                for (var same = i; same < images.length; same++) {
+                    var candidate = images[same]
+                    if (root.readerImageEntryTextStart(candidate) !== imageStart) break
+                    entries.push(candidate)
+                }
+                var grouped = ({})
+                for (var key in image) grouped[key] = image[key]
+                grouped.entries = entries
+                return grouped
             }
             if (imageStart < 0 && start === 0 && i === 0) {
                 return image
@@ -1323,11 +1431,58 @@ Window {
         return root.readerImageEntrySource(image) === "" ? ({}) : image
     }
 
+    function readerTailImageForTextLength(textLength) {
+        var images = readerStore.imageSources || []
+        var expected = Math.max(0, Math.floor(Number(textLength) || 0))
+        for (var i = 0; i < images.length; i++) {
+            var image = images[i]
+            if (root.readerImageEntrySource(image) === "" || root.readerImageEntryTextStart(image) !== expected) continue
+            var entries = []
+            for (var same = i; same < images.length; same++) {
+                var candidate = images[same]
+                if (root.readerImageEntryTextStart(candidate) !== expected) break
+                entries.push(candidate)
+            }
+            var grouped = ({})
+            for (var key in image) grouped[key] = image[key]
+            grouped.entries = entries
+            return grouped
+        }
+        return ({})
+    }
+
+    function readerAppendTailImagePage(starts, images, textLength) {
+        var tail = root.readerTailImageForTextLength(textLength)
+        var tailSource = root.readerImageEntrySource(tail)
+        if (tailSource === "") return false
+        var tailOrdinal = Number(tail.sourceOrdinal)
+        for (var i = 0; i < images.length; i++) {
+            var existing = images[i]
+            if (root.readerImageEntryTextStart(existing) === textLength &&
+                    Number(existing.sourceOrdinal) === tailOrdinal) return false
+        }
+        starts.push(textLength)
+        images.push(tail)
+        return true
+    }
+
+    function readerNextImageStartAfter(start) {
+        var images = readerStore.imageSources || []
+        var safeStart = Math.max(0, Math.floor(Number(start) || 0))
+        var next = -1
+        for (var i = 0; i < images.length; i++) {
+            var imageStart = root.readerImageEntryTextStart(images[i])
+            if (root.readerImageEntrySource(images[i]) !== "" && imageStart > safeStart &&
+                    (next < 0 || imageStart < next)) next = imageStart
+        }
+        return next
+    }
+
     function readerPageCapacityAtOffset(offset) {
         var start = Math.max(0, Math.floor(Number(offset) || 0))
         var textEnd = root.readerNextPageOffset(start, root.readerTextTopMargin)
         var image = root.readerImageForPageRange(start, textEnd)
-        var topY = root.readerImageEntrySource(image) !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+        var topY = root.readerImageEntrySource(image) !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
         return Math.max(1, root.readerNextPageOffset(start, topY, image) - start)
     }
 
@@ -1337,11 +1492,12 @@ Window {
         return [
             text.length,
             readerStore.status || "",
-            images.length,
+            images.map(function(entry) { return [entry.source, entry.textStart, entry.caption, entry.pixelWidth, entry.pixelHeight].join("~") }).join("|"),
             root.width,
             root.height,
             root.readerFontSize,
             root.readerFontWeight,
+            root.readerFontFamily,
             root.readerLineHeight,
             root.readerParagraphSpacing,
             root.readerMargin
@@ -1414,8 +1570,17 @@ Window {
             var image = root.readerImageForPageRange(offset, textOnlyEnd)
             var imageSource = root.readerImageEntrySource(image)
             if (imageSource !== "") {
-                var imageEnd = root.readerNextPageOffset(offset, root.readerImageTextTopY, image)
                 var imageStart = root.readerImageEntryTextStart(image)
+                // A block image belongs at its source anchor, never at the
+                // top of an earlier text page.  Finish that text page first.
+                if (imageStart > offset) {
+                    starts.push(offset)
+                    images.push("")
+                    offset = imageStart
+                    guard += 1
+                    continue
+                }
+                var imageEnd = root.readerNextPageOffset(offset, root.readerImageTextTopFor(image), image)
                 if (imageStart >= imageEnd) {
                     image = ({})
                     imageSource = ""
@@ -1423,9 +1588,12 @@ Window {
             }
             starts.push(offset)
             images.push(image)
-            var topY = imageSource !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+            var topY = imageSource !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
             offset = root.readerNextPageOffset(offset, topY, image)
             guard += 1
+        }
+        if (offset >= text.length) {
+            root.readerAppendTailImagePage(starts, images, text.length)
         }
         if (starts.length === 0) {
             starts.push(0)
@@ -1650,11 +1818,11 @@ Window {
     }
 
     function readerFirstPageTopY() {
-        return root.readerImageForPage(0) !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+        return root.readerImageForPage(0) !== "" ? root.readerImageTextTopFor(root.readerPageImages[0] || ({})) : root.readerTextTopMargin
     }
 
     function readerTextTopY() {
-        return root.readerImageForPage(pageIndex) !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+        return root.readerImageForPage(pageIndex) !== "" ? root.readerImageTextTopFor(root.readerPageImages[pageIndex] || ({})) : root.readerTextTopMargin
     }
 
     function readerTextWidth() {
@@ -2003,9 +2171,7 @@ Window {
 
     function readerFormattedRangeText(start, end, image) {
         var text = String(readerStore.bodyText || "")
-        var caption = root.readerImageEntryCaption(image)
-        var body = text.slice(start, end).trim()
-        return caption !== "" ? caption + "\n\n" + body : body
+        return text.slice(start, end).trim()
     }
 
     function readerMeasuredPageHeight(start, end, image) {
@@ -2013,12 +2179,7 @@ Window {
             return 0
         }
         readerPageMeasure.width = root.readerTextWidth()
-        readerPageMeasure.text = root.formatReaderText(
-                    root.readerFormattedRangeText(start, end, image),
-                    start,
-                    end,
-                    root.readerImageEntrySource(image),
-                    root.readerImageEntryCaption(image))
+        readerPageMeasure.text = root.formatReaderText(root.readerFormattedRangeText(start, end, image), start, end)
         return Math.ceil(readerPageMeasure.paintedHeight)
     }
 
@@ -2058,13 +2219,20 @@ Window {
 
     function readerNextPageOffset(start, topY, image) {
         var text = String(readerStore.bodyText || "")
-        var safeStart = Math.max(0, Math.floor(Number(start) || 0))
+        var safeStart = root.clamp(Math.floor(Number(start) || 0), 0, text.length)
+        if (safeStart >= text.length) return text.length
         var rawEnd = root.readerEstimatedPageEnd(safeStart, topY)
         var chapterBreak = root.nextReaderChapterStartAfter(safeStart)
         var candidateEnd = chapterBreak > safeStart && chapterBreak <= rawEnd
             ? chapterBreak
             : root.readerPreferredPageEnd(text, safeStart, rawEnd)
-        return root.readerMeasuredPageEnd(safeStart, candidateEnd, topY, image || ({}))
+        var measuredEnd = root.readerMeasuredPageEnd(safeStart, candidateEnd, topY, image || ({}))
+        // An illustration is a block in the same page flow as text. Do not
+        // let a measured text page cross its next distinct anchor, otherwise
+        // the next page starts after the image and silently loses it.
+        var nextImageStart = root.readerNextImageStartAfter(safeStart)
+        if (nextImageStart > safeStart && nextImageStart < measuredEnd) return nextImageStart
+        return measuredEnd
     }
 
     function buildReaderPaginationWindowFromOffset(offset, pageCount) {
@@ -2078,8 +2246,15 @@ Window {
             var image = root.readerImageForPageRange(start, textOnlyEnd)
             var imageSource = root.readerImageEntrySource(image)
             if (imageSource !== "") {
-                var imageEnd = root.readerNextPageOffset(start, root.readerImageTextTopY, image)
                 var imageStart = root.readerImageEntryTextStart(image)
+                if (imageStart > start) {
+                    starts.push(start)
+                    images.push("")
+                    start = imageStart
+                    guard += 1
+                    continue
+                }
+                var imageEnd = root.readerNextPageOffset(start, root.readerImageTextTopFor(image), image)
                 if (imageStart >= imageEnd) {
                     image = ({})
                     imageSource = ""
@@ -2087,13 +2262,16 @@ Window {
             }
             starts.push(start)
             images.push(image)
-            var topY = imageSource !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+            var topY = imageSource !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
             var next = root.readerNextPageOffset(start, topY, image)
             if (next <= start) {
                 break
             }
             start = next
             guard += 1
+        }
+        if (start >= text.length) {
+            root.readerAppendTailImagePage(starts, images, text.length)
         }
         if (starts.length === 0) {
             starts.push(0)
@@ -2125,9 +2303,12 @@ Window {
         var lastIndex = starts.length - 1
         var lastImage = images[lastIndex] || ({})
         var lastTopY = root.readerImageEntrySource(lastImage) !== ""
-            ? root.readerImageTextTopY
+            ? root.readerImageTextTopFor(lastImage)
             : root.readerTextTopMargin
         var cursor = root.readerNextPageOffset(starts[lastIndex], lastTopY, lastImage)
+        if (root.readerImageEntryTextStart(lastImage) >= text.length) {
+            return false
+        }
         var added = 0
         var target = Math.max(1, Math.floor(Number(additionalPages) || 0))
         while (cursor < text.length && added < target) {
@@ -2135,7 +2316,15 @@ Window {
             var image = root.readerImageForPageRange(cursor, textOnlyEnd)
             var imageSource = root.readerImageEntrySource(image)
             if (imageSource !== "") {
-                var imageEnd = root.readerNextPageOffset(cursor, root.readerImageTextTopY, image)
+                var imageStart = root.readerImageEntryTextStart(image)
+                if (imageStart > cursor) {
+                    starts.push(cursor)
+                    images.push("")
+                    cursor = imageStart
+                    added += 1
+                    continue
+                }
+                var imageEnd = root.readerNextPageOffset(cursor, root.readerImageTextTopFor(image), image)
                 if (root.readerImageEntryTextStart(image) >= imageEnd) {
                     image = ({})
                     imageSource = ""
@@ -2143,12 +2332,15 @@ Window {
             }
             starts.push(cursor)
             images.push(image)
-            var topY = imageSource !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+            var topY = imageSource !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
             var next = root.readerNextPageOffset(cursor, topY, image)
             if (next <= cursor) {
                 break
             }
             cursor = next
+            added += 1
+        }
+        if (cursor >= text.length && root.readerAppendTailImagePage(starts, images, text.length)) {
             added += 1
         }
         if (added === 0) {
@@ -2226,7 +2418,7 @@ Window {
         }
         var image = root.readerPageImages[root.pageIndex] || ({})
         var imageSource = root.readerImageEntrySource(image)
-        var topY = imageSource !== "" ? root.readerImageTextTopY : root.readerTextTopMargin
+        var topY = imageSource !== "" ? root.readerImageTextTopFor(image) : root.readerTextTopMargin
         var text = String(readerStore.bodyText || "")
         var start = Math.max(0, root.readerPageStarts[root.pageIndex] || 0)
         var nextStart = root.readerPageStarts[root.pageIndex + 1] || 0
@@ -2235,12 +2427,11 @@ Window {
             : root.readerNextPageOffset(start, topY, image)
         root.currentReaderImageSource = imageSource
         root.currentReaderImageCaption = root.readerImageEntryCaption(image)
+        root.currentReaderImageEntries = root.readerImageEntriesFor(image)
         root.currentReaderTextTopY = topY
         root.currentReaderTextStart = start
         root.currentReaderTextEnd = Math.min(text.length, end)
-        root.currentReaderPageText = root.currentReaderImageCaption !== ""
-            ? root.currentReaderImageCaption + "\n\n" + text.slice(start, root.currentReaderTextEnd).trim()
-            : text.slice(start, root.currentReaderTextEnd).trim()
+        root.currentReaderPageText = text.slice(start, root.currentReaderTextEnd).trim()
         root.readerCurrentLineBoxes = root.readerLineBoxesForText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextTopY)
         root.currentReaderProgressValue = text.length === 0
             ? 0
@@ -2558,7 +2749,9 @@ Window {
             root.currentFreeNotePoints = [freePoint]
             readerInkCanvas.beginStroke(freePoint.x, freePoint.y, root.readerMarkerColor, 4, 1, true)
         } else {
-            var markerPoint = root.markerPointFromStylus(x, y, pressure)
+            var markerPoint = root.readerMarkerTool === "eraser"
+                ? root.freeNotePointFromStylus(x, y, pressure)
+                : root.markerPointFromStylus(x, y, pressure)
             root.currentStrokePoints = [markerPoint]
             readerInkCanvas.beginStroke(markerPoint.x, markerPoint.y,
                                         root.readerMarkerTool === "eraser" ? root.inkColor : root.readerMarkerColor,
@@ -2573,7 +2766,9 @@ Window {
         if (root.readerStylusStrokeInToolbar || !root.annotationMode || points.length < 1) {
             return
         }
-        var point = root.readerMarkerTool === "free" ? root.freeNotePointFromStylus(x, y, pressure) : root.markerPointFromStylus(x, y, pressure)
+        var point = (root.readerMarkerTool === "free" || root.readerMarkerTool === "eraser")
+            ? root.freeNotePointFromStylus(x, y, pressure)
+            : root.markerPointFromStylus(x, y, pressure)
         var last = points[points.length - 1]
         if (Math.abs((last.x || 0) - point.x) + Math.abs((last.y || 0) - point.y) < 1) {
             return
@@ -2781,16 +2976,38 @@ Window {
     }
 
     function eraseCurrentMarkerSelection() {
-        if (root.currentStrokePoints.length < 2) {
+        var eraserPoints = (root.currentStrokePoints || []).slice()
+        if (eraserPoints.length < 1) {
             root.currentStrokePoints = []
             return
         }
-        var range = root.currentMarkerTextRange()
-        if (range.start < 0 || range.end <= range.start) {
-            root.currentStrokePoints = []
-            return
+        // Free ink is briefly batched for smooth writing. Persist it before
+        // erasing so an immediate tool switch cannot make the newest stroke
+        // immune to the eraser.
+        root.flushPendingFreeInkStrokes()
+        readerStore.erasePageStrokesAtPath(root.currentBookId, root.pageIndex,
+                                           eraserPoints, 20)
+
+        // Retain highlighter erasing, but only map the eraser through text if
+        // it actually entered the body. Margin ink must not clamp to an edge
+        // word merely because it shares the same vertical coordinate.
+        var textBottom = root.currentReaderTextTopY
+            + root.readerBodyHeight(root.currentReaderTextTopY)
+        var touchedBody = false
+        for (var pointIndex = 0; pointIndex < eraserPoints.length; ++pointIndex) {
+            var point = eraserPoints[pointIndex] || ({})
+            if (Number(point.x) >= root.readerMargin && Number(point.x) <= root.width - root.readerMargin
+                    && Number(point.y) >= root.currentReaderTextTopY && Number(point.y) <= textBottom) {
+                touchedBody = true
+                break
+            }
         }
-        readerStore.clearTextHighlightsInRange(root.currentBookId, range.start, range.end)
+        if (touchedBody) {
+            var range = root.currentMarkerTextRange()
+            if (range.start >= 0 && range.end > range.start) {
+                readerStore.clearTextHighlightsInRange(root.currentBookId, range.start, range.end)
+            }
+        }
         root.currentStrokePoints = []
     }
 
@@ -2802,11 +3019,41 @@ Window {
         return root.currentReaderPageText.replace(/\s+/g, " ").trim().slice(0, 80)
     }
 
-    function currentReaderElapsedSeconds() {
-        if (root.readerSessionStartedMs <= 0) {
-            return 0
+    function sampleReadingClock() {
+        if (!root.readingClockState) {
+            return ({ "book": "", "ms": 0, "endTimestamp": 0, "generation": -1 })
         }
-        return Math.max(0, Math.floor((Date.now() - root.readerSessionStartedMs) / 1000))
+        var generation = Number(readingTimeStore.accountGeneration || 0)
+        var accepted = ReadingClock.sample(root.readingClockState, Date.now(), root.currentBookId,
+                                            root.readingClockActive, generation)
+        if (root.selfTestMode === "" && accepted.ms > 0 && accepted.generation === generation) {
+            readingTimeStore.recordObservedInterval(accepted.book, accepted.ms,
+                                                    accepted.endTimestamp, accepted.generation)
+        }
+        return accepted
+    }
+
+    function snapshotReadingClock(bookId) {
+        if (root.selfTestMode !== "") {
+            return
+        }
+        var id = String(bookId === undefined ? root.currentBookId : bookId || "")
+        if (id === "" || !root.readingClockState) {
+            return
+        }
+        readingTimeStore.snapshotPending(id, ReadingClock.milliseconds(root.readingClockState, id))
+    }
+
+    function restoreReadingClockFromLedger() {
+        if (!root.readingClockState) {
+            root.readingClockState = ReadingClock.create()
+        }
+        ReadingClock.restorePending(root.readingClockState, readingTimeStore.pendingMillisecondsByBook())
+    }
+
+    function currentReaderElapsedSeconds() {
+        root.sampleReadingClock()
+        return ReadingClock.seconds(root.readingClockState, root.currentBookId)
     }
 
     function requestReaderContinuationDownload() {
@@ -2976,8 +3223,18 @@ Window {
         if (!root.enterReaderForSelfTest("reader-image-selftest")) {
             return
         }
-        root.rebuildReaderPagination()
-        var imagePage = root.firstReaderImagePage()
+        var imageRows = readerStore.imageSources || []
+        var imageOffset = imageRows.length ? root.readerImageEntryTextStart(imageRows[0]) : -1
+        var bodyLength = String(readerStore.bodyText || "").length
+        for (var imageIndex = 0; imageIndex < imageRows.length; imageIndex++) {
+            if (root.readerImageEntryTextStart(imageRows[imageIndex]) > bodyLength * 0.04) {
+                imageOffset = root.readerImageEntryTextStart(imageRows[imageIndex])
+                break
+            }
+        }
+        if (imageOffset >= 0) root.buildReaderPaginationWindowFromOffset(imageOffset, 2)
+        readerPaginationDebounceTimer.stop()
+        var imagePage = imageOffset >= 0 ? root.firstReaderImagePage() : -1
         if (imagePage < 0) {
             console.log("reader-image-selftest=fail no-image-page images=" + (readerStore.imageSources || []).length)
             appControl.quitToSystem()
@@ -2990,7 +3247,6 @@ Window {
             return
         }
         readerImageSelfTestTimer.page = imagePage
-        readerImageSelfTestTimer.source = root.currentReaderImageSource
         readerImageSelfTestTimer.restart()
     }
 
@@ -3026,8 +3282,34 @@ Window {
         return pages
     }
 
+    function readerCanFitAnotherBodyLine(paintedHeight) {
+        var start = root.currentReaderTextStart
+        var end = root.currentReaderTextEnd
+        var limit = String(readerStore.bodyText || "").length
+        var chapter = root.nextReaderChapterStartAfter(start)
+        var image = root.readerNextImageStartAfter(start)
+        if (chapter > end) limit = Math.min(limit, chapter)
+        if (image > end) limit = Math.min(limit, image)
+        var high = end
+        var step = 1
+        var bound = Math.max(8, root.readerEstimatedCharsPerLine() * 3)
+        while (high < limit && step <= bound) {
+            high = Math.min(limit, end + step)
+            if (root.readerMeasuredPageHeight(start, high, {}) > paintedHeight + 1) break
+            step *= 2
+        }
+        if (high <= end || root.readerMeasuredPageHeight(start, high, {}) <= paintedHeight + 1) return false
+        var low = end + 1
+        while (low < high) {
+            var mid = Math.floor((low + high) / 2)
+            if (root.readerMeasuredPageHeight(start, mid, {}) > paintedHeight + 1) high = mid
+            else low = mid + 1
+        }
+        return root.readerMeasuredPageFits(start, low, root.currentReaderTextTopY, {})
+    }
+
     function readerLayoutFailure() {
-        if (String(root.currentReaderPageText || "").length === 0) {
+        if (String(root.currentReaderPageText || "").length === 0 && root.currentReaderImageSource === "") {
             return "empty-text page=" + root.pageIndex
         }
         var firstChar = String(root.currentReaderPageText || "").replace(/\s+/g, "").charAt(0)
@@ -3058,10 +3340,11 @@ Window {
         if (Math.abs(measuredHeight - paintedHeight) > 2) {
             return "measurement-drift page=" + root.pageIndex + " measure=" + measuredHeight + " painted=" + paintedHeight
         }
-        if (root.currentReaderImageSource === "" && root.pageIndex < root.readerCachedPageCount - 1
+        if (root.currentReaderImageSource === "" && root.currentReaderTextEnd < String(readerStore.bodyText || "").length
                 && !root.isReaderChapterEnd(root.currentReaderTextEnd)
                 && !root.isReaderNearChapterEnd(root.currentReaderTextStart, root.currentReaderTextEnd)
-                && paintedHeight < paginationHeight * 0.97) {
+                && paintedHeight < paginationHeight * 0.97
+                && root.readerCanFitAnotherBodyLine(paintedHeight)) {
             return "underfilled-page page=" + root.pageIndex + " painted=" + paintedHeight + " pagination=" + paginationHeight
         }
         return ""
@@ -3071,17 +3354,22 @@ Window {
         var layoutCase = root.readerLayoutSelfTestCases[root.readerLayoutSelfTestCaseCursor] || ({})
         root.readerFontChoice = String(layoutCase.fontChoice || "霞鹜文楷")
         root.readerLineHeight = Number(layoutCase.lineHeight || 1.26)
-        root.rebuildReaderPagination()
-        var count = Math.max(1, root.readerCachedPageCount)
-        var imagePage = root.firstReaderImagePage()
-        root.readerLayoutSelfTestPages = root.uniqueReaderLayoutPages([
-            Math.floor(count * 0.08),
-            Math.floor(count * 0.52),
-            Math.floor(count * 0.88),
-            imagePage > Math.floor(count * 0.04) ? imagePage : Math.floor(count * 0.08)
-        ], count)
+        // Exercise real body paragraphs without repaginating an entire long
+        // book 52 times on the device's UI thread.
+        var body = String(readerStore.bodyText || "")
+        var offsets = []
+        var fractions = [0.08, 0.52, 0.88]
+        for (var i = 0; i < fractions.length; i++) {
+            var offset = Math.floor(body.length * fractions[i])
+            var paragraph = body.indexOf("\n", offset)
+            if (paragraph >= 0 && paragraph + 1 < body.length) offset = paragraph + 1
+            while (offset < body.length - 1 && /\s/.test(body.charAt(offset))) offset++
+            offsets.push(offset)
+        }
+        root.readerLayoutSelfTestOffsets = root.uniqueReaderLayoutPages(offsets, body.length)
         root.readerLayoutSelfTestCursor = 0
-        root.setReaderPage(root.readerLayoutSelfTestPages[0] || 0)
+        root.buildReaderPaginationWindowFromOffset(root.readerLayoutSelfTestOffsets[0] || 0, 1)
+        readerPaginationDebounceTimer.stop()
     }
 
     function runReaderLayoutSelfTest() {
@@ -3092,7 +3380,8 @@ Window {
         root.readerFirstLineIndentChars = 2
         root.readerMargin = 64
         root.readerLayoutSelfTestCases = []
-        var fonts = ["微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋"]
+        var fonts = ["系统", "微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋",
+                     "马善政", "刘建毛草", "智勇行", "龙藏体", "站酷快乐"]
         var lineHeights = [1.16, 1.26, 1.36, 1.46]
         for (var fontIndex = 0; fontIndex < fonts.length; fontIndex++) {
             for (var lineIndex = 0; lineIndex < lineHeights.length; lineIndex++) {
@@ -3138,35 +3427,9 @@ Window {
     }
 
     function runReaderMarkerSelfTest() {
-        if (!root.enterReaderForSelfTest("reader-marker-selftest")) {
-            return
-        }
-        root.rebuildReaderPagination()
-        root.setReaderPage(Math.min(2, Math.max(0, root.readerCachedPageCount - 1)))
-        readerStore.clearPageStrokes(root.currentBookId, root.pageIndex)
-        readerStore.clearPageHighlights(root.currentBookId, root.pageIndex)
-        var count = root.readerPageCountFor(readerStore.bodyText, root.readerTextTopY())
-        var points = [
-            {"x": root.readerMargin + 42, "y": root.currentReaderTextTopY + 72},
-            {"x": root.width - root.readerMargin - 42, "y": root.currentReaderTextTopY + 72}
-        ]
-        root.currentStrokePoints = points
-        var range = root.currentMarkerTextRange()
-        root.saveCurrentMarkerSelection()
-        var textHighlights = root.readerHighlightsForRange(range.start, range.end)
-        if (textHighlights.length < 1) {
-            console.log("reader-marker-selftest=fail missing-text-highlight range=" + range.start + "-" + range.end)
-            appControl.quitToSystem()
-            return
-        }
-        if (textHighlights[0].kind !== "text" || Math.floor(Number(textHighlights[0].textEnd) || 0) <= Math.floor(Number(textHighlights[0].textStart) || 0)) {
-            console.log("reader-marker-selftest=fail kind=" + textHighlights[0].kind + " start=" + textHighlights[0].textStart + " end=" + textHighlights[0].textEnd)
-            readerStore.clearPageHighlights(root.currentBookId, root.pageIndex)
-            appControl.quitToSystem()
-            return
-        }
-        readerStore.clearPageHighlights(root.currentBookId, root.pageIndex)
-        console.log("reader-marker-selftest=ok snapped=" + textHighlights[0].textStart + "-" + textHighlights[0].textEnd + " color=" + textHighlights[0].colorName)
+        // This test formerly selected a real recent book and cleared its
+        // annotations. Do not touch user data until a temporary store exists.
+        console.log("reader-marker-selftest=fail persistent-store-disabled")
         appControl.quitToSystem()
     }
 
@@ -3286,16 +3549,18 @@ Window {
     Timer {
         id: readerImageSelfTestTimer
         property int page: -1
-        property string source: ""
         interval: 900
         repeat: false
         onTriggered: {
             if (root.readerImageLoadFailed) {
-                console.log("reader-image-selftest=fail decode page=" + page + " source=" + source)
+                console.log("reader-image-selftest=fail decode page=" + page +
+                            " images=" + root.currentReaderImageEntries.length)
                 appControl.quitToSystem()
                 return
             }
-            console.log("reader-image-selftest=ok page=" + page + " source=" + source)
+            appControl.saveSelfTestScreen()
+            console.log("reader-image-selftest=ok page=" + page +
+                        " images=" + root.currentReaderImageEntries.length)
             appControl.quitToSystem()
         }
     }
@@ -3328,13 +3593,14 @@ Window {
             }
             var failure = root.readerLayoutFailure()
             if (failure !== "") {
+                appControl.saveSelfTestScreen()
                 root.restoreReaderSettings(root.readerSelfTestSavedSettings)
                 console.log("reader-layout-selftest=fail " + failure)
                 appControl.quitToSystem()
                 return
             }
             root.readerLayoutSelfTestCursor += 1
-            if (root.readerLayoutSelfTestCursor >= root.readerLayoutSelfTestPages.length) {
+            if (root.readerLayoutSelfTestCursor >= root.readerLayoutSelfTestOffsets.length) {
                 root.readerLayoutSelfTestCaseCursor += 1
                 if (root.readerLayoutSelfTestCaseCursor < root.readerLayoutSelfTestCases.length) {
                     root.prepareReaderLayoutSelfTestCase()
@@ -3342,16 +3608,17 @@ Window {
                     return
                 }
                 console.log("reader-layout-selftest=ok cases=" + root.readerLayoutSelfTestCases.length +
-                            " pages=" + root.readerLayoutSelfTestPages.join(",") +
+                            " bodyOffsets=" + root.readerLayoutSelfTestOffsets.join(",") +
                             " linePx=" + root.readerEstimatedLinePixels() +
                             " paginationHeight=" + Math.ceil(root.readerBodyHeight(root.currentReaderTextTopY)) +
                             " viewportHeight=" + Math.ceil(readerBodyText.height) +
                             " paintedHeight=" + Math.ceil(readerBodyText.paintedHeight))
+                appControl.saveSelfTestScreen()
                 root.restoreReaderSettings(root.readerSelfTestSavedSettings)
                 appControl.quitToSystem()
                 return
             }
-            root.setReaderPage(root.readerLayoutSelfTestPages[root.readerLayoutSelfTestCursor])
+            root.buildReaderPaginationWindowFromOffset(root.readerLayoutSelfTestOffsets[root.readerLayoutSelfTestCursor], 1)
             readerLayoutSelfTestTimer.restart()
         }
     }
@@ -4464,12 +4731,20 @@ Window {
         if (!bookId || bookId === "") {
             return
         }
+        // Capture the old visible interval before the synchronous EPUB load,
+        // then pause the clock so load time belongs to neither book.
+        root.sampleReadingClock()
+        root.snapshotReadingClock(root.currentBookId)
+        if (root.readingClockState) {
+            ReadingClock.sample(root.readingClockState, Date.now(), "", false,
+                                Number(readingTimeStore.accountGeneration || 0))
+        }
         var safeTitle = title || bookId
         readerStore.loadBook(bookId, safeTitle)
-            root.currentBookId = bookId
-            root.readerSessionStartedMs = Date.now()
-            root.readerSocialPrefetchKey = ""
-            root.closeReaderSocialPopup()
+        root.currentBookId = bookId
+        root.sampleReadingClock()
+        root.readerSocialPrefetchKey = ""
+        root.closeReaderSocialPopup()
         var savedOffset = readerStore.savedTextOffset(bookId)
         root.readerOpenedWithLocalProgress = savedOffset >= 0
         if (savedOffset >= 0) {
@@ -4482,7 +4757,7 @@ Window {
             root.screenName = "reader"
         }
         if (selfTestMode === "") {
-            progressSyncStore.pullProgress(bookId)
+            root.requestReaderProgressPull(false)
             root.scheduleReaderSocialPrefetch()
         }
     }
@@ -4628,7 +4903,9 @@ Window {
     }
 
     function setReaderPage(value) {
-        root.flushPendingFreeInkStrokes()
+        if (root.selfTestMode === "") {
+            root.flushPendingFreeInkStrokes()
+        }
         root.closeReaderSocialPopup()
         root.readerOcrBlockSelection = false
         root.readerSelectedInkBlockId = ""
@@ -4647,7 +4924,7 @@ Window {
         root.refreshReaderPageCache()
         root.ensureReaderPaginationWindowAhead()
         count = root.readerCachedPageCount
-        if (root.currentBookId !== "") {
+        if (root.currentBookId !== "" && root.selfTestMode === "") {
             readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
             readerStore.loadStrokesForPage(root.currentBookId, root.pageIndex)
             root.scheduleReaderSocialPrefetch()
@@ -4697,6 +4974,9 @@ Window {
         var ly = Math.round(Number(y) || 0) - readerSettingsPanel.y
         if (lx < 0 || ly < 0 || lx > readerSettingsPanel.width || ly > readerSettingsPanel.height) {
             return false
+        }
+        if (readerFontPicker.visible) {
+            return readerFontPicker.tap(lx, ly)
         }
         if (root.readerPointInRect(lx, ly, readerSettingsPanel.width - 68, 24, 60, 60)) {
             root.closeReaderSettings()
@@ -4752,19 +5032,14 @@ Window {
             }
         }
 
-        var fontChoices = ["系统", "微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋", "马善政", "刘建毛草", "智勇行", "龙藏体", "站酷快乐"]
-        for (var f = 0; f < fontChoices.length; f++) {
-            var fontX = 124 + f * (78 + 3)
-            if (root.readerPointInRect(lx, ly, fontX, 552, 78, 56)) {
-                root.readerFontChoice = fontChoices[f]
-                root.applyReaderSettingChange(true)
-                return true
-            }
+        if (root.readerPointInRect(lx, ly, 124, 552, readerSettingsPanel.width - 340, 56)) {
+            readerFontPicker.visible = true
+            return true
         }
 
         var weightValues = [Font.DemiBold, Font.Bold]
         for (var w = 0; w < weightValues.length; w++) {
-            var weightX = 840 + w * (52 + 6)
+            var weightX = readerSettingsPanel.width - 128 + w * (52 + 6)
             if (root.readerPointInRect(lx, ly, weightX, 552, 60, 56)) {
                 root.readerFontWeight = weightValues[w]
                 root.applyReaderSettingChange(true)
@@ -4804,13 +5079,13 @@ Window {
         if (readerSettingsPanel.height > 812
                 && root.readerPointInRect(lx, ly, 304, 790, 128, 58)
                 && !progressSyncStore.running) {
-            progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), root.currentReaderElapsedSeconds())
+            root.syncCurrentReaderProgress(true)
             return true
         }
         if (readerSettingsPanel.height > 812
                 && root.readerPointInRect(lx, ly, 444, 790, 128, 58)
                 && !progressSyncStore.running) {
-            progressSyncStore.pullProgress(root.currentBookId)
+            root.requestReaderProgressPull(true)
             return true
         }
         return true
@@ -4840,11 +5115,44 @@ Window {
         root.goToReaderTextOffset(targetOffset)
     }
 
-    function syncCurrentReaderProgress() {
-        if (root.currentBookId === "" || progressSyncStore.running || readerStore.bodyText === "") {
+    function requestReaderProgressPull(manual) {
+        if (root.currentBookId === "" || progressSyncStore.running) {
             return
         }
-        progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), root.currentReaderElapsedSeconds())
+        readerManualProgressFallbackTimer.stop()
+        root.readerPendingManualPulledProgress = -1
+        root.readerProgressPullIntent = manual ? "manual" : "automatic"
+        root.readerProgressPullBookId = root.currentBookId
+        progressSyncStore.pullProgress(root.currentBookId)
+    }
+
+    // Automatic exits/sleep preserve and upload the reading position only.
+    // Duration is reserved for a deliberate manual sync, avoiding an unverified
+    // automatic reporting cadence after offline use.
+    function syncCurrentReaderProgress(includeElapsed) {
+        if (root.selfTestMode !== "" || root.currentBookId === "" || progressSyncStore.running
+                || readerStore.bodyText === "" || !networkStore.connected) {
+            return
+        }
+        root.sampleReadingClock()
+        root.snapshotReadingClock(root.currentBookId)
+        if (root.readingTimeSubmissionToken !== "") {
+            readingTimeStore.completeSubmission(root.readingTimeSubmissionToken, false)
+            root.readingTimeSubmissionToken = ""
+            root.readingTimeSubmissionBookId = ""
+            root.readingTimeSubmissionSeconds = 0
+        }
+        var elapsedSeconds = includeElapsed === true
+                ? Math.floor(readingTimeStore.pendingMilliseconds(root.currentBookId) / 1000) : 0
+        var token = elapsedSeconds > 0
+                ? readingTimeStore.beginSubmission(root.currentBookId, elapsedSeconds) : ""
+        root.readingTimeSubmissionToken = token
+        root.readingTimeSubmissionBookId = token === "" ? "" : root.currentBookId
+        root.readingTimeSubmissionSeconds = token === "" ? 0 : elapsedSeconds
+        if (token !== "") {
+            ReadingClock.acknowledge(root.readingClockState, root.currentBookId, elapsedSeconds)
+        }
+        progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), token === "" ? 0 : elapsedSeconds)
     }
 
     function openQrLogin() {
@@ -4884,7 +5192,7 @@ Window {
         if (root.currentBookId !== "" && readerStore.bodyText !== "") {
             var count = root.readerPageCountFor(readerStore.bodyText, root.readerTextTopY())
             readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
-            root.syncCurrentReaderProgress()
+            root.syncCurrentReaderProgress(false)
         }
         root.closeReaderSettings()
         root.closeReaderCatalog()
@@ -4913,7 +5221,7 @@ Window {
     }
 
     function exitReaderToShelf() {
-        root.syncCurrentReaderProgress()
+        root.syncCurrentReaderProgress(false)
         root.closeReaderCatalog()
         root.closeReaderSettings()
         root.closeReaderFootnote()
@@ -4946,11 +5254,45 @@ Window {
 
     Connections {
         target: progressSyncStore
+        function onProgressFinished(bookId, elapsedSeconds, succeeded) {
+            if (succeeded || root.readingTimeSubmissionToken === ""
+                    || root.readingTimeSubmissionBookId !== bookId
+                    || root.readingTimeSubmissionSeconds !== elapsedSeconds) {
+                return
+            }
+            // The reservation has already been saved as uncertain. Finalize
+            // this request immediately, but never turn an unknown result into
+            // an automatic repeat submission.
+            readingTimeStore.completeSubmission(root.readingTimeSubmissionToken, false)
+            root.readingTimeSubmissionToken = ""
+            root.readingTimeSubmissionBookId = ""
+            root.readingTimeSubmissionSeconds = 0
+        }
+        function onProgressSynced(bookId, elapsedSeconds) {
+            if (root.readingTimeSubmissionToken !== ""
+                    && root.readingTimeSubmissionBookId === bookId
+                    && root.readingTimeSubmissionSeconds === elapsedSeconds) {
+                readingTimeStore.completeSubmission(root.readingTimeSubmissionToken, true)
+                root.readingTimeSubmissionToken = ""
+                root.readingTimeSubmissionBookId = ""
+                root.readingTimeSubmissionSeconds = 0
+            }
+        }
         function onProgressPulled(bookId, progress) {
             if (bookId !== root.currentBookId) {
                 return
             }
             root.readerLastPulledRemoteProgress = Math.round(root.clamp(progress, 0, 100))
+            if (root.readerProgressPullIntent === "manual"
+                    && root.readerProgressPullBookId === bookId) {
+                // The helper emits the legacy percentage signal first and the
+                // detailed anchor immediately after it. Defer this fallback by
+                // one event turn so a successful exact location never flashes
+                // over the reader before it is applied.
+                root.readerPendingManualPulledProgress = root.readerLastPulledRemoteProgress
+                readerManualProgressFallbackTimer.restart()
+                return
+            }
             if (root.readerOpenedWithLocalProgress) {
                 console.log("reader-progress-remote-skipped localOffset=" + root.currentReaderTextStart +
                             " remote=" + root.readerLastPulledRemoteProgress)
@@ -4962,6 +5304,29 @@ Window {
             var text = String(readerStore.bodyText || "")
             var targetOffset = Math.round(root.clamp(progress, 0, 100) / 100 * Math.max(0, text.length - 1))
             root.goToReaderTextOffset(targetOffset)
+        }
+        function onProgressPulledDetailed(bookId, remotePosition) {
+            if (bookId !== root.currentBookId
+                    || root.readerProgressPullIntent !== "manual"
+                    || root.readerProgressPullBookId !== bookId
+                    || readerStore.openingCache) {
+                return
+            }
+            readerManualProgressFallbackTimer.stop()
+            root.readerPendingManualPulledProgress = -1
+            var anchor = readerStore.textAnchorForRemoteProgress(
+                        String(remotePosition.chapterUid || ""),
+                        String(remotePosition.summary || ""))
+            if (anchor && anchor.found) {
+                root.goToReaderTextOffset(Number(anchor.textOffset || 0))
+                // This was an explicit user action, so later automatic pulls
+                // must not replace the adopted cloud location by percentage.
+                root.readerOpenedWithLocalProgress = true
+            } else {
+                root.setReaderProgressPercent(root.readerLastPulledRemoteProgress)
+            }
+            root.readerProgressPullIntent = ""
+            root.readerProgressPullBookId = ""
         }
     }
 
@@ -4975,6 +5340,7 @@ Window {
     Connections {
         target: accountStore
         function onChanged() {
+            notesStore.reloadAccountScope()
             if (!root.accountInitialCheckComplete && !accountStore.running
                     && !accountStore.renewingCookie && !accountStore.loginRunning
                     && accountStore.statusText !== "账号状态未检查") {
@@ -4985,15 +5351,31 @@ Window {
             }
         }
         function onLoginSucceeded() {
+            root.readingClockState = ReadingClock.create()
+            readingTimeStore.reloadAccount()
+            root.restoreReadingClockFromLedger()
+            notesStore.reloadAccountScope()
             root.showQrLogin = false
             root.shelfTab = "书架"
             shelfStore.refreshShelf()
             accountStore.refresh()
         }
         function onLoggedOut() {
+            root.snapshotReadingClock()
+            root.readingClockState = ReadingClock.create()
+            readingTimeStore.reloadAccount()
+            notesStore.reloadAccountScope()
             root.accountAutoPromptHandled = true
             root.showQrLogin = true
             accountStore.startQrLogin()
+        }
+    }
+
+    Connections {
+        target: readingTimeStore
+        function onAccountReloaded() {
+            root.readingClockState = ReadingClock.create()
+            root.restoreReadingClockFromLedger()
         }
     }
 
@@ -5981,6 +6363,29 @@ Window {
                     width: parent.width - 16
                     spacing: 16
 
+                    Rectangle {
+                        width: parent.width
+                        height: 76
+                        radius: 8
+                        color: root.surfaceColor
+                        border.color: root.inkColor
+                        border.width: 2
+                        Text {
+                            anchors.centerIn: parent
+                            text: "阅读统计 · 今日 / 本月 / 累计  ›"
+                            color: root.inkColor
+                            font.pixelSize: 25
+                            font.bold: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                readingTimeStore.reloadAccount()
+                                root.screenName = "readingStats"
+                            }
+                        }
+                    }
+
                     Text {
                         width: parent.width
                         height: 48
@@ -6763,7 +7168,7 @@ Window {
 
                         Text {
                             anchors.centerIn: parent
-                            text: notesStore.running ? "同步中" : "同步笔记"
+                            text: notesStore.running ? "拉取中" : "拉取云端笔记"
                             color: notesStore.running ? root.inkColor : "#ffffff"
                             font.pixelSize: 22
                             font.bold: true
@@ -6863,6 +7268,73 @@ Window {
                     }
                 }
             }
+        }
+    }
+
+    ReadingStatsPage {
+        id: readingStatsPage
+        anchors.fill: parent
+        visible: root.screenName === "readingStats"
+        stats: readingTimeStore.statistics
+        accountReady: readingTimeStore.accountReady
+        inkColor: root.inkColor
+        accentColor: root.brandGreenDark
+        fontFamily: root.readerFontFamily
+        onClosed: {
+            root.shelfTab = "我的"
+            root.screenName = "shelf"
+        }
+    }
+
+    Timer {
+        interval: 1500
+        running: selfTestMode === "reading-stats"
+        onTriggered: {
+            root.screenName = "readingStats"
+            readingStatsCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readingStatsCheckTimer
+        interval: 1000
+        onTriggered: {
+            var valid = readingStatsPage.visible && readingStatsPage.width > 0
+                && Number(readingTimeStore.statistics.totalMs || 0) >= 0
+            console.log("reading-stats-selftest=" + (valid ? "ok" : "fail"))
+            appControl.saveSelfTestScreen()
+            // Epaper layer captures are unsupported; validate the live item
+            // without invoking a render-target grab on this backend.
+            appControl.quitToSystem()
+        }
+    }
+
+    Timer {
+        interval: 1800
+        running: selfTestMode === "reader-font-picker"
+        onTriggered: {
+            if (!root.enterReaderForSelfTest("reader-font-picker-selftest")) return
+            root.openReaderSettings()
+            readerFontPicker.visible = true
+            readerFontPickerCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readerFontPickerCheckTimer
+        interval: 900
+        onTriggered: {
+            var previous = root.readerFontChoice
+            appControl.saveSelfTestScreen()
+            var point = readerFontPicker.choiceCenter("龙藏体")
+            var valid = point !== null && point.x >= 0 && point.x < readerFontPicker.width
+                && point.y >= 0 && point.y < readerFontPicker.height
+            if (valid) {
+                root.handleReaderSettingsStylusTap(readerSettingsPanel.x + point.x, readerSettingsPanel.y + point.y)
+                valid = root.readerFontChoice === "龙藏体"
+            }
+            root.readerFontChoice = previous
+            root.closeReaderSettings()
+            console.log("reader-font-picker-selftest=" + (valid ? "ok" : "fail"))
+            appControl.quitToSystem()
         }
     }
 
@@ -8002,7 +8474,7 @@ Window {
             }
             onReleased: function(mouse) {
                 if (mouse.y - startY > 66) {
-                    root.syncCurrentReaderProgress()
+                    root.syncCurrentReaderProgress(false)
                     shelfStore.reload()
                     root.screenName = "detail"
                 }
@@ -8131,19 +8603,34 @@ Window {
             }
         }
 
-        Image {
+        Item {
+            id: readerImageStack
             x: root.readerMargin
             y: root.readerImageTopMargin
             width: root.width - root.readerMargin * 2
-            height: root.currentReaderImageSource === "" ? 0 : root.readerImageTextTopY - root.readerImageTopMargin - 8
-            source: root.currentReaderImageSource
-            fillMode: Image.PreserveAspectFit
-            asynchronous: true
+            height: root.currentReaderImageSource === "" ? 0
+                : Math.max(0, root.readerImageTextTopFor(root.readerPageImages[root.pageIndex] || ({})) - y - 8)
             visible: root.currentReaderImageSource !== ""
-            onStatusChanged: {
-                if (status === Image.Error) {
-                    root.readerImageLoadFailed = true
-                    console.log("reader-image-error=" + source)
+            Column {
+                width: parent.width
+                spacing: root.readerImageGroupSpacing(root.readerPageImages[root.pageIndex] || ({}))
+                Repeater {
+                    model: root.currentReaderImageEntries
+                    delegate: Image {
+                        required property var modelData
+                        width: parent.width
+                        height: root.readerImageEntryHeight(modelData,
+                                                            root.readerPageImages[root.pageIndex] || ({}))
+                        source: String(modelData.source || "")
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        onStatusChanged: {
+                            if (status === Image.Error) {
+                                root.readerImageLoadFailed = true
+                                console.log("reader-image-error page=" + root.pageIndex)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -9050,6 +9537,22 @@ Window {
             clip: true
             onVisibleChanged: if (!visible) root.settingsDragOffset = 0
 
+            ReaderFontPicker {
+                id: readerFontPicker
+                anchors.fill: parent
+                z: 30
+                visible: false
+                choices: root.readerInstalledFontChoices()
+                selectedName: root.readerFontChoice
+                inkColor: root.inkColor
+                accentColor: root.brandGreenDark
+                onDismissed: visible = false
+                onChosen: function(name) {
+                    root.readerFontChoice = name
+                    root.applyReaderSettingChange(true)
+                }
+            }
+
             Rectangle {
                 x: (parent.width - width) / 2
                 y: 12
@@ -9503,43 +10006,25 @@ Window {
                 font.bold: true
             }
 
-            Row {
+            Rectangle {
                 x: 124
                 y: 558
-                spacing: 3
-
-                Repeater {
-                    model: ["系统", "微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋"]
-                    Rectangle {
-                        width: 78
-                        height: 42
-                        radius: 7
-                        color: root.surfaceColor
-                        border.color: root.readerFontChoice === modelData ? root.brandGreenDark : root.inkColor
-                        border.width: root.readerFontChoice === modelData ? 2 : 1
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: modelData
-                            color: root.readerFontChoice === modelData ? root.brandGreenDark : root.inkColor
-                            font.pixelSize: 13
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                root.readerFontChoice = modelData
-                                root.scheduleReaderPaginationRebuild()
-                                root.forceReaderRefresh += 1
-                            }
-                        }
-                    }
+                width: parent.width - 340
+                height: 44
+                radius: 7
+                color: root.surfaceColor
+                border.color: root.inkColor
+                Text {
+                    anchors.centerIn: parent
+                    text: root.readerFontChoice + " · 选择字体  ›"
+                    color: root.inkColor
+                    font.pixelSize: 22
                 }
+                MouseArea { anchors.fill: parent; onClicked: readerFontPicker.visible = true }
             }
 
             Text {
-                x: 778
+                x: parent.width - 194
                 y: 566
                 text: "字重"
                 color: root.inkColor
@@ -9548,7 +10033,7 @@ Window {
             }
 
             Row {
-                x: 840
+                x: parent.width - 128
                 y: 558
                 spacing: 6
 
@@ -9845,7 +10330,7 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     enabled: !progressSyncStore.running
-                    onClicked: progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), root.currentReaderElapsedSeconds())
+                    onClicked: root.syncCurrentReaderProgress(true)
                 }
             }
 
@@ -9871,7 +10356,7 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     enabled: !progressSyncStore.running
-                    onClicked: progressSyncStore.pullProgress(root.currentBookId)
+                    onClicked: root.requestReaderProgressPull(true)
                 }
             }
 
@@ -9880,7 +10365,9 @@ Window {
                 y: 798
                 width: parent.width - 612
                 height: 42
-                text: progressSyncStore.statusText
+                text: readingTimeStore.hasUncertainSubmission
+                    ? progressSyncStore.statusText + " · " + readingTimeStore.statusText
+                    : progressSyncStore.statusText
                 color: root.inkColor
                 font.pixelSize: 15
                 font.bold: true

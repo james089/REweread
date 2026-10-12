@@ -18,7 +18,7 @@ assert(!opener.includes('apps/reader/readerui'), 'book opener must not depend on
 assert(opener.includes('open_native_chapter'), 'book opener must open cached/native chapter content');
 assert(opener.includes('on_open_reader'), 'book opener must delegate display to native reader callback');
 assert(manager.includes('function DownloadManager:open_native_chapter'), 'download manager must expose native chapter opening');
-assert(manager.includes('first_cached_chapter_path'), 'native open must reuse cached chapter XHTML');
+assert(manager.includes('prepare_download_resume') && manager.includes('cached_chapters[chapter_index]'), 'native open must only reuse cached chapter XHTML after manifest and account-scope verification');
 assert(manager.includes('chapter_cache:write_chapter'), 'native open must cache fetched chapter XHTML');
 assert(view.includes('ReaderDocument.paginate'), 'reader view must paginate via native reader document');
 assert(view.includes('function ReaderView:nextPage'), 'reader view must support next page');

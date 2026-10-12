@@ -46,6 +46,7 @@ private:
     QString safeCoverName(const QString &bookId) const;
     QString bookDir(const QString &bookId) const;
     QString findFullEpub(const QString &bookId) const;
+    QString findPartialEpub(const QString &bookId) const;
     QVariantMap normalizeBook(const QVariantMap &raw, int index) const;
     void sortBooksByRecent(QVariantList &books) const;
     void updateRecentBook();

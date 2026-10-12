@@ -45,6 +45,11 @@ public:
     Q_INVOKABLE void loadBook(const QString &bookId, const QString &title);
     Q_INVOKABLE int savedPage(const QString &bookId) const;
     Q_INVOKABLE int savedTextOffset(const QString &bookId) const;
+    // Maps a server-provided chapter UID and reading summary back to the expanded
+    // local EPUB. It intentionally does not treat chapterOffset as a local text
+    // offset: the server and our XHTML-to-plain-text conversion use different
+    // representations. Only a unique text-summary match is accepted.
+    Q_INVOKABLE QVariantMap textAnchorForRemoteProgress(const QString &chapterUid, const QString &summary) const;
     Q_INVOKABLE void saveProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset);
     Q_INVOKABLE bool isPageBookmarked(const QString &bookId, int pageIndex) const;
     Q_INVOKABLE void toggleBookmark(const QString &bookId, const QString &title, int pageIndex, int pageCount);
@@ -57,6 +62,11 @@ public:
     Q_INVOKABLE void addPageStroke(const QString &bookId, const QString &title, int pageIndex, int pageCount, const QString &colorName, const QString &colorValue, const QVariantList &points, const QString &tool = QString(), int lineWidth = 0);
     Q_INVOKABLE void addPageStrokesBatch(const QString &bookId, const QString &title, int pageIndex, int pageCount, const QVariantList &strokes);
     Q_INVOKABLE void clearPageStrokes(const QString &bookId, int pageIndex);
+    // Remove free-ink pen strokes hit by an eraser path. The operation is
+    // intentionally restricted to one book and one rendered page.
+    Q_INVOKABLE int erasePageStrokesAtPath(const QString &bookId, int pageIndex,
+                                           const QVariantList &eraserPoints,
+                                           int eraserWidth = 20);
     Q_INVOKABLE void removePageInkBlock(const QString &bookId, int pageIndex, const QString &blockId);
     Q_INVOKABLE void setPageInkBlockOcrText(const QString &bookId, int pageIndex, const QString &blockId, const QString &text);
     Q_INVOKABLE void setPageInkBlockAiReply(const QString &bookId, int pageIndex, const QString &blockId, const QString &text);
@@ -103,8 +113,7 @@ private:
     QString chapterTitleFromXhtml(const QString &chapterPath, const QString &xhtml, int fallbackIndex) const;
     QString chapterUidFromXhtml(const QString &xhtml) const;
     QString firstImageSource(const QString &chapterPath, const QString &xhtml) const;
-    QStringList imageSourcesFromChapter(const QString &chapterPath, const QString &xhtml) const;
-    QString imageCaptionForSource(const QString &chapterPath, const QString &xhtml, const QString &imageSource) const;
+    QVariantList imageEntriesFromChapter(const QString &chapterPath, const QString &xhtml) const;
     QString annotateFootnotes(const QString &xhtml, int chapterIndex, int &noteCounter, QList<QVariantMap> *chapterFootnotes) const;
     QString plainTextFromXhtml(const QString &xhtml) const;
     void setError(const QString &title, const QString &message);

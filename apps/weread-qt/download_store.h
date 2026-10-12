@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 #include <QProcess>
 #include <QString>
@@ -53,12 +54,16 @@ private:
     void saveDownloads() const;
     void restoreQueuedDownloads();
     void recordDownload(const QString &state, const QString &progress, const QString &error);
-    void recordDownloadRow(const QString &bookId, const QString &title, const QString &state, const QString &progress, const QString &error);
+    void recordDownloadRow(const QString &bookId, const QString &title, const QString &state, const QString &progress,
+                           const QString &error, bool openingChapter = false);
     void enqueueDownload(const QString &bookId, const QString &title, bool openingChapter = false);
     void startDownloadProcess(const QString &bookId, const QString &title, bool force = false, bool openingChapter = false);
     void startNextQueuedDownload();
     void clearExpandedCache(const QString &bookId) const;
-    void appendOutput(const QString &text);
+    bool hasHelperResult(const QString &state) const;
+    void appendOutput(QByteArray &buffer, const QByteArray &bytes);
+    void flushOutput(QByteArray &buffer);
+    void processOutputLine(const QString &line);
     void finishProcess(int exitCode, QProcess::ExitStatus exitStatus);
     void setState(const QString &state, const QString &progress, const QString &error = QString());
 
@@ -68,6 +73,10 @@ private:
     QString m_state;
     QString m_progressText;
     QString m_lastError;
+    QString m_helperResultState;
+    QString m_helperResultPath;
+    QByteArray m_stdoutBuffer;
+    QByteArray m_stderrBuffer;
     bool m_openingChapterMode = false;
     QVariantList m_downloads;
     QVariantList m_queue;

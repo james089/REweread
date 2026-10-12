@@ -1,6 +1,6 @@
 {
   "name": "REweread",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "releaseType": "source-only",
   "status": "release-candidate",
   "license": "MIT",
@@ -15,12 +15,12 @@
     "resolution": "954x1696"
   },
   "tested": {
-    "deviceOs": "5.7.126",
-    "imageVersion": "3.27.3.0",
+    "deviceOs": "5.8.203",
+    "imageVersion": "3.28.0.172",
     "sdk": "5.7.119",
-    "qt": "6.8.2",
+    "qt": "6.10.3 (device); 6.8.2 (SDK)",
     "xovi": "v19-23052026",
-    "appload": "v0.5.3",
+    "appload": "v0.6.0",
     "koreader": "v2025.10"
   },
   "included": [

@@ -39,6 +39,8 @@ https://remarkable.guide/guide/software/vellum/index.html
 
 Do not blindly install the newest XOVI/AppLoad on an older device image. Their hooks track Xochitl internals and require a compatibility check after every reMarkable OS update.
 
+2026-10-12 upstream audit and subsequent authorized device validation: AppLoad v0.6.0 with a rebuilt hashtab and guarded startup passed on OS 3.28.0.172, including reboot. The table above records the older installation. XOVI core's release is v0.3.3 (the v19 identifier is the extensions bundle). Do not install the 3.28 hook set on 3.27. See [guarded recovery and evidence](xovi-appload-recovery.md) for the exact validation scope and remaining long-term tests.
+
 ## Fonts
 
 | Font | Source | License note |

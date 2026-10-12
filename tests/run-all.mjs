@@ -1,6 +1,11 @@
 import { spawnSync } from 'node:child_process';
 
 const scripts = [
+  'validate-xovi-guard.mjs',
+  'validate-xovi-installer.mjs',
+  'validate-reading-clock.mjs',
+  'validate-reading-time-store.mjs',
+  'validate-read-sync-protocol.mjs',
   'validate-agent-handoff.mjs',
   'validate-agent-developer-onboarding.mjs',
   'validate-app-manifest.mjs',
@@ -29,6 +34,7 @@ const scripts = [
   'validate-reader-word-wrap.mjs',
   'validate-reader-pagination-fill.mjs',
   'validate-reader-measured-pagination.mjs',
+  'validate-reader-image-flow.mjs',
   'validate-native-reader-view.mjs',
   'validate-native-raster.mjs',
   'validate-native-framebuffer.mjs',
@@ -51,6 +57,7 @@ const scripts = [
   'validate-pinyin-ime.mjs',
   'validate-free-note-anchor.mjs',
   'validate-fast-ink.mjs',
+  'validate-free-ink-eraser.mjs',
   'validate-baidu-ocr-flow.mjs',
   'validate-ai-handwriting.mjs',
   'validate-v1-5-guides.mjs',
@@ -59,7 +66,10 @@ const scripts = [
   'validate-weread-qt-qr-login.mjs',
   'validate-reader-social-anchor.mjs',
   'validate-reader-social-comments.mjs',
+  'validate-personal-notes-cache.mjs',
   'validate-reader-stylus-settings.mjs',
+  'validate-reading-pages.mjs',
+  'validate-progress-sync-store.mjs',
   'validate-font-downloads.mjs',
   'validate-sync-script.mjs',
   'validate-runner.mjs',

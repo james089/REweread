@@ -14,7 +14,12 @@ assert(qml.includes('readerPageMeasure.paintedHeight'), 'reader must use Qt pain
 assert(!qml.includes('safeEnd >= text.length || root.readerMeasuredPageFits'), 'the final page must also be measured for footer overflow');
 assert(qml.includes('height: root.readerTextViewportHeight(root.currentReaderTextTopY)'), 'visible text must use the complete footer-safe viewport');
 assert(qml.includes('measurement-drift page='), 'layout self-test must reject measurement drift');
-assert(qml.includes('var fonts = ["微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋"]'), 'layout self-test must cover all bundled fonts');
+const fontCases = qml.match(/var fonts = \["系统"[^;]+?\]/)?.[0] || '';
+for (const font of ['系统', '微米黑', '正黑', '霞鹜文楷', '思源黑体', '思源宋体', '寒蝉正楷', '寒蝉活宋', '马善政', '刘建毛草', '智勇行', '龙藏体', '站酷快乐'])
+    assert(fontCases.includes('"' + font + '"'), 'layout self-test must cover ' + font);
 assert(qml.includes('var lineHeights = [1.16, 1.26, 1.36, 1.46]'), 'layout self-test must cover all selectable line heights');
+assert(qml.includes('var fractions = [0.08, 0.52, 0.88]'), 'layout self-test must sample early, middle and late body paragraphs');
+assert(qml.includes('root.buildReaderPaginationWindowFromOffset(root.readerLayoutSelfTestOffsets[0] || 0, 1)'), 'layout self-test must bound pagination work per sample');
+assert(qml.includes('root.readerCanFitAnotherBodyLine(paintedHeight)'), 'underfill checks must verify a real extra line fits rather than trust an estimated percentage');
 
 console.log('reader measured pagination ok');

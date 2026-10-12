@@ -15,12 +15,13 @@ DownloadStore::DownloadStore(QObject *parent)
       m_progressText(QStringLiteral("就绪")),
       m_cacheStatusText(QStringLiteral("阅读缓存就绪")) {
     connect(&m_process, &QProcess::readyReadStandardOutput, this, [this]() {
-        appendOutput(QString::fromUtf8(m_process.readAllStandardOutput()));
+        appendOutput(m_stdoutBuffer, m_process.readAllStandardOutput());
     });
     connect(&m_process, &QProcess::readyReadStandardError, this, [this]() {
-        appendOutput(QString::fromUtf8(m_process.readAllStandardError()));
+        appendOutput(m_stderrBuffer, m_process.readAllStandardError());
     });
-    connect(&m_process, &QProcess::finished, this, &DownloadStore::finishProcess);
+    connect(&m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+            this, &DownloadStore::finishProcess);
     loadDownloads();
 }
 
@@ -222,6 +223,10 @@ void DownloadStore::startDownloadProcess(const QString &bookId, const QString &t
     m_title = title.isEmpty() ? bookId : title;
     m_openingChapterMode = openingChapter;
     m_lastError.clear();
+    m_helperResultState.clear();
+    m_helperResultPath.clear();
+    m_stdoutBuffer.clear();
+    m_stderrBuffer.clear();
 
     if (openingChapter && !findFullEpub(bookId).isEmpty()) {
         clearExpandedCache(bookId);
@@ -372,6 +377,7 @@ void DownloadStore::restoreQueuedDownloads() {
             row.insert(QStringLiteral("title"), existing.value(QStringLiteral("title")).toString().trimmed().isEmpty()
                 ? bookId
                 : existing.value(QStringLiteral("title")).toString().trimmed());
+            row.insert(QStringLiteral("openingChapter"), existing.value(QStringLiteral("openingChapter")).toBool());
             m_queue.append(row);
         }
     }
@@ -385,10 +391,11 @@ void DownloadStore::recordDownload(const QString &state, const QString &progress
         return;
     }
 
-    recordDownloadRow(m_bookId, m_title, state, progress, error);
+    recordDownloadRow(m_bookId, m_title, state, progress, error, m_openingChapterMode);
 }
 
-void DownloadStore::recordDownloadRow(const QString &bookId, const QString &title, const QString &state, const QString &progress, const QString &error) {
+void DownloadStore::recordDownloadRow(const QString &bookId, const QString &title, const QString &state,
+                                      const QString &progress, const QString &error, bool openingChapter) {
     if (bookId.isEmpty()) {
         return;
     }
@@ -399,8 +406,15 @@ void DownloadStore::recordDownloadRow(const QString &bookId, const QString &titl
     row.insert(QStringLiteral("state"), state);
     row.insert(QStringLiteral("progressText"), progress);
     row.insert(QStringLiteral("lastError"), error);
+    row.insert(QStringLiteral("openingChapter"), openingChapter);
     row.insert(QStringLiteral("updatedAt"), QDateTime::currentSecsSinceEpoch());
-    row.insert(QStringLiteral("localEpubPath"), state == QStringLiteral("partial") ? findReadableEpub(bookId) : findFullEpub(bookId));
+    QString localEpubPath;
+    if ((state == QStringLiteral("partial") || state == QStringLiteral("done")) && !m_helperResultPath.isEmpty()) {
+        localEpubPath = m_helperResultPath;
+    } else {
+        localEpubPath = state == QStringLiteral("partial") ? findReadableEpub(bookId) : findFullEpub(bookId);
+    }
+    row.insert(QStringLiteral("localEpubPath"), localEpubPath);
 
     QVariantList updated;
     updated.reserve(qMin(m_downloads.size() + 1, 20));
@@ -439,7 +453,9 @@ void DownloadStore::enqueueDownload(const QString &bookId, const QString &title,
     row.insert(QStringLiteral("title"), safeTitle);
     row.insert(QStringLiteral("openingChapter"), openingChapter);
     m_queue.append(row);
-    recordDownloadRow(bookId, safeTitle, QStringLiteral("queued"), openingChapter ? QStringLiteral("已加入开头章节队列") : QStringLiteral("已加入下载队列"), QString());
+    recordDownloadRow(bookId, safeTitle, QStringLiteral("queued"),
+                      openingChapter ? QStringLiteral("已加入开头章节队列") : QStringLiteral("已加入下载队列"),
+                      QString(), openingChapter);
     emit changed();
 }
 
@@ -463,15 +479,66 @@ void DownloadStore::clearExpandedCache(const QString &bookId) const {
     }
 }
 
-void DownloadStore::appendOutput(const QString &text) {
-    QStringList lines = text.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    for (const QString &line : lines) {
+bool DownloadStore::hasHelperResult(const QString &state) const {
+    if (m_helperResultState != state || m_helperResultPath.isEmpty()) {
+        return false;
+    }
+    const QFileInfo resultFile(m_helperResultPath);
+    const QString expectedDirectory = QFileInfo(bookDir(m_bookId)).canonicalFilePath();
+    const QString actualPath = resultFile.canonicalFilePath();
+    return !expectedDirectory.isEmpty() && resultFile.isFile() && resultFile.size() > 0
+        && !actualPath.isEmpty() && actualPath.startsWith(expectedDirectory + QLatin1Char('/'));
+}
+
+void DownloadStore::appendOutput(QByteArray &buffer, const QByteArray &bytes) {
+    buffer.append(bytes);
+    while (true) {
+        const int carriageReturn = buffer.indexOf('\r');
+        const int lineFeed = buffer.indexOf('\n');
+        const int newline = carriageReturn < 0 ? lineFeed
+            : (lineFeed < 0 ? carriageReturn : qMin(carriageReturn, lineFeed));
+        if (newline < 0) {
+            return;
+        }
+        const QByteArray lineBytes = buffer.left(newline);
+        int consumed = newline + 1;
+        while (consumed < buffer.size()
+               && (buffer.at(consumed) == '\r' || buffer.at(consumed) == '\n')) {
+            ++consumed;
+        }
+        buffer.remove(0, consumed);
+        // Decode only after a complete byte line: a UTF-8 Chinese path can
+        // otherwise be split across QProcess readyRead notifications.
+        processOutputLine(QString::fromUtf8(lineBytes).trimmed());
+    }
+}
+
+void DownloadStore::flushOutput(QByteArray &buffer) {
+    if (buffer.isEmpty()) {
+        return;
+    }
+    const QByteArray lineBytes = buffer;
+    buffer.clear();
+    processOutputLine(QString::fromUtf8(lineBytes).trimmed());
+}
+
+void DownloadStore::processOutputLine(const QString &line) {
+    if (line.isEmpty()) {
+        return;
+    }
         if (line.startsWith(QStringLiteral("state=error"))) {
             const QRegularExpressionMatch messageMatch = QRegularExpression(QStringLiteral("message=(.*)")).match(line);
             const QString helperErrorMessage = messageMatch.hasMatch()
                 ? messageMatch.captured(1).trimmed()
                 : QString();
             m_lastError = helperErrorMessage.isEmpty() ? line.trimmed() : helperErrorMessage;
+        } else if (line.startsWith(QStringLiteral("result state="))) {
+            const QRegularExpressionMatch result = QRegularExpression(
+                QStringLiteral("^result state=(full|partial|opening) path=(.+)$")).match(line);
+            if (result.hasMatch()) {
+                m_helperResultState = result.captured(1);
+                m_helperResultPath = result.captured(2).trimmed();
+            }
         } else if (line.contains(QStringLiteral("state=")) && line.contains(QStringLiteral("index="))) {
             const QRegularExpressionMatch progress = QRegularExpression(QStringLiteral("index=(\\d+)/(\\d+)")).match(line);
             const QRegularExpressionMatch failed = QRegularExpression(QStringLiteral("failed=(\\d+)")).match(line);
@@ -486,25 +553,26 @@ void DownloadStore::appendOutput(const QString &text) {
             }
         } else if (line.startsWith(QStringLiteral("chapters="))) {
             setState(QStringLiteral("running"), QStringLiteral("章节数：%1").arg(line.mid(9).trimmed()));
-        } else if (line.startsWith(QStringLiteral("done path="))) {
-            setState(QStringLiteral("done"), QStringLiteral("已下载"));
-        } else if (line.startsWith(QStringLiteral("state=done"))) {
-            setState(QStringLiteral("done"), QStringLiteral("已下载"));
         } else if (line.startsWith(QStringLiteral("stopped_after="))) {
             setState(QStringLiteral("partial"), QStringLiteral("开头章节已就绪"));
         } else if (line.contains(QStringLiteral("No readable chapter")) || line.contains(QStringLiteral("没有"))) {
             m_lastError = line.trimmed();
         }
-    }
 }
 
 void DownloadStore::finishProcess(int exitCode, QProcess::ExitStatus exitStatus) {
+    if (m_process.isOpen()) {
+        appendOutput(m_stdoutBuffer, m_process.readAllStandardOutput());
+        appendOutput(m_stderrBuffer, m_process.readAllStandardError());
+    }
+    flushOutput(m_stdoutBuffer);
+    flushOutput(m_stderrBuffer);
     if (m_state == QStringLiteral("cancelled")) {
         startNextQueuedDownload();
         return;
     }
 
-    if (m_openingChapterMode && exitStatus == QProcess::NormalExit && exitCode == 0 && !findReadableEpub(m_bookId).isEmpty()) {
+    if (m_openingChapterMode && exitStatus == QProcess::NormalExit && exitCode == 0 && hasHelperResult(QStringLiteral("opening"))) {
         clearExpandedCache(m_bookId);
         setState(QStringLiteral("partial"), QStringLiteral("开头章节已就绪"));
         emit openingChapterReady(m_bookId, m_title);
@@ -513,9 +581,18 @@ void DownloadStore::finishProcess(int exitCode, QProcess::ExitStatus exitStatus)
         return;
     }
 
-    if (exitStatus == QProcess::NormalExit && exitCode == 0 && !findFullEpub(m_bookId).isEmpty()) {
+    if (exitStatus == QProcess::NormalExit && exitCode == 0 && hasHelperResult(QStringLiteral("full"))) {
         clearExpandedCache(m_bookId);
         setState(QStringLiteral("done"), QStringLiteral("下载完成"));
+        emit epubReady(m_bookId, m_title);
+        m_openingChapterMode = false;
+        startNextQueuedDownload();
+        return;
+    }
+
+    if (exitStatus == QProcess::NormalExit && exitCode == 0 && hasHelperResult(QStringLiteral("partial"))) {
+        clearExpandedCache(m_bookId);
+        setState(QStringLiteral("partial"), QStringLiteral("部分章节已下载，可继续下载"));
         emit epubReady(m_bookId, m_title);
         m_openingChapterMode = false;
         startNextQueuedDownload();

@@ -141,6 +141,30 @@ third_party/weread.koplugin/lib/cookie.lua
   cURL/cookie 解析
 ```
 
+## 公开接口证据台账（仅供后续评估）
+
+2026-10-12 对公开源码
+[`teng-lin/weread-omni` 的 88bd2e0 提交](https://github.com/teng-lin/weread-omni/tree/88bd2e095d7d7ee423eaadf8f40653e72c5be6d4)
+进行了静态核对。该提交的 endpoint catalog 将下列接口标为 WeChat Read
+Eink 2.1.2 路径：
+
+```text
+GET   /book/bookmarklist
+POST  /book/addBookmark
+POST  /book/updateBookmark
+POST  /book/removeBookmark
+GET   /review/list
+POST  /review/add
+POST  /review/useredit
+POST  /review/delete
+```
+
+这只是“有公开实现可交叉核对”的证据，不是本项目已启用的同步协议。该源码使用的
+mobile/e-ink bearer 登录态与本项目 Web QR cookie 登录态不同；不得把 Web cookie
+直接当作 mobile 凭据，也不得据此猜测请求签名或自动开启写接口。当前版本只读取个人
+笔记并在设备上按账号哈希隔离缓存。任何文字笔记、划线或想法的云端写回，均须先具备
+经用户授权、可验证的认证和真机回归，再单独实现。
+
 ## 扫码登录待办
 
 已在 Web 前端里看到二维码登录相关路径痕迹：

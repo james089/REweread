@@ -1,5 +1,24 @@
 # Compatibility matrix
 
+## 3.0.0 current baseline
+
+| Component | Verified version / scope |
+| --- | --- |
+| Device | Paper Pro Move / chiappa, aarch64 |
+| OS | 3.28.0.172; OS package 5.8.203 |
+| Qt | Device 6.10.3; official build SDK 5.7.119 / Qt 6.8.2 |
+| AppLoad | v0.6.0, target-system hashtab rebuilt |
+| Startup | Exact-hash guarded ExecStart, stock fallback and persistent crash marker |
+| Device checks | User-confirmed entry; reboot persistence; stock return; font, image, statistics and direct-ink probe |
+
+The isolated direct-ink probe did not exercise freehand page transitions. A
+subsequent user test found retained ink and missing freehand erasing; the 3.0
+release preparation addresses these separately. Continuous pen feel, all 52
+typography combinations, long sleep/battery tests and clean install/uninstall
+are not fully accepted. See [recovery evidence](xovi-appload-recovery.md).
+
+## Historical baseline (not the current upgrade recipe)
+
 REweread 1.5.0 retains the 1.0.0-rc.1 hardware/runtime baseline below. The
 1.5 handwriting iterations were launched on the same Paper Pro Move class of
 device, but the clean-device installation and full long-duration regression
