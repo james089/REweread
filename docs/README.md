@@ -2,8 +2,10 @@
 
 - `quick-start-user-guide.md`: 面向普通用户的中文快速应用与手势指南。
 - `agent-handoff.md`: 新 Agent 的当前状态、架构、已知坑、验证基线和下一步优先级。
-- `agent-upgrade-v3.0.md`: Agent 安全升级到 3.0.0；应用文件升级与系统恢复分开，保留字体、数据和 API Key。
+- `agent-upgrade-v3.0.md`: Agent 安全升级到 3.0.1；应用文件升级与系统恢复分开，保留字体、数据和 API Key。
 - `agent-upgrade-v2.0.md`: 2.0 历史升级记录，不覆盖当前升级流程。
+- `performance-investigation-2026-10-13.md`: 启动与下载瓶颈、REA 分析、代码修复及真机性能验收。
+- `releases/v3.0.1.md`: 3.0.1 源码维护版本的修复内容与验证范围。
 - `official-client-sync-gap.md`: 阅读时长、笔记、进度与离线下载的实现及验证边界。
 - `xovi-appload-recovery.md`: 新系统映射、隔离试运行和启动崩溃保护。
 - `baidu-ocr-configuration-flow.md`: Agent 与普通用户申请、绑定和排查百度 OCR 凭据的完整指南。

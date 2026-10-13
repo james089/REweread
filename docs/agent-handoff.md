@@ -6,9 +6,19 @@
 
 ## 1. 一句话现状
 
-REweread 当前源码里程碑为 `3.0.0`：在 2.0 魔法笔记本、百度 OCR / DeepSeek 分离配置基础上，加入本机阅读统计、同步账本、个人云笔记缓存、离线章节校验续传、字体预览、图文分页及新系统启动保护。验证范围与未完成项见 `docs/releases/v3.0.0.md`，升级必读 `docs/agent-upgrade-v3.0.md`。源码更新不代表全部功能通过验收，也不附公开二进制。
+REweread 当前源码里程碑为 `3.0.1`：在 2.0 魔法笔记本、百度 OCR / DeepSeek 分离配置基础上，加入本机阅读统计、同步账本、个人云笔记缓存、离线章节校验续传、字体预览、图文分页及新系统启动保护。验证范围与未完成项见 `docs/releases/v3.0.1.md`，升级必读 `docs/agent-upgrade-v3.0.md`。源码更新不代表全部功能通过验收，也不附公开二进制。
 
 它仍不是可面向普通用户广泛分发的正式产品。当前存在服务授权、上游许可证、干净设备安装/卸载和长期电池测试等阻塞项。
+
+3.0.1 归档启动与下载性能修复、业务登录错误提示和后台下载导航修复。性能验收二进制的版本字段更新前为 3.0.0；本次同步的是 3.0.1 源码，不重新部署设备。
+
+### 2026-10-13 启动与下载性能后续修复
+
+构建默认已改为 chiappa SDK 5.8.203 / Qt 6.10.3，与设备一致。旧 Qt 6.8 预编译单元失效及现场编译的问题已通过匹配 SDK 消除，会话脚本也显式设置可写 QML 缓存路径。空缓存首次与重复启动的 Qt 首帧分别为 4957 / 4903 ms（从 main 开始，系统切换另计），均无 QML 缓存不匹配错误；不要再将初步缓存修复的 18.6 秒作为当前结果。
+
+下载客户端短时复用同一本书的阅读状态，30 秒过期，章节失败立即失效并在既有有界重试中刷新。8 个真实章节耗时 22.0 → 12.8 秒，正文/CSS/图片逐字节一致；临时目录整本下载 106/106、失败 0、184 秒。后台下载完成不再强制打开书，只响应当前明确打开意图及当前书的续传。真实 Main/ReaderStore reader-ink 隔离回归通过，退出恢复系统且 NRestarts=0。
+
+最终部署二进制 SHA-256：`0ef9170e0fac804edbf4d28a849376da831c5dc35fe79859bead0abc92a9000e`。系统、XOVI、AppLoad、字体、账号及用户内容保留；旧应用有时间戳备份。详见 [性能排查与最终修复](performance-investigation-2026-10-13.md)。本轮没有切换官方原生下载协议，没有公开发布。
 
 ### 2026-10-12 同步与离线下载开发增量
 
@@ -54,7 +64,7 @@ for file in scripts/*.sh apps/weread-move/*.sh; do bash -n "$file"; done
 预期：
 
 - 基线来自 `main`。
-- `VERSION` 与 `release-manifest.json`、`CHANGELOG.md` 和当前 `docs/releases/v<version>.md` 一致，当前为 `3.0.0`。
+- `VERSION` 与 `release-manifest.json`、`CHANGELOG.md` 和当前 `docs/releases/v<version>.md` 一致，当前为 `3.0.1`。
 - 安全检查和静态验证全部通过。
 - 不存在 SDK、字体、构建目录、第三方 checkout 或用户数据的待提交文件。
 
@@ -73,10 +83,10 @@ for file in scripts/*.sh apps/weread-move/*.sh; do bash -n "$file"; done
 
 发布状态：
 
-- `3.0.0` 是当前 source-only 源码里程碑；提交源码不等于发布普通用户二进制。
+- `3.0.1` 是当前 source-only 源码里程碑；提交源码不等于发布普通用户二进制。
 - GitHub PR #1 已合并，保留 `1.0.0-rc.1` 的历史记录。
 - `v1.0.0-rc.1` 是 Draft prerelease 名称，不是公开标签。
-- 未创建公开 `v3.0.0` 标签或 Release；不要因为 `VERSION` 已更新就自动发布。Draft 可用于源码审查，不得误称正式发布。
+- 未创建公开 `v3.0.1` 标签或 Release；不要因为 `VERSION` 已更新就自动发布。Draft 可用于源码审查，不得误称正式发布。
 - Draft 中只附源码归档和 `SHA256SUMS.txt`。
 - 源码归档 SHA-256：`2eaf1c08db968606ac539edc2247e1c3aad267cdb3ca6ab9538b323fd1e571d8`。
 - 不得擅自把 Draft 点成 Publish，也不得附加应用二进制或依赖包。
@@ -436,6 +446,6 @@ ssh "$MOVE_HOST" '/home/root/xovi/start || systemctl start xochitl'
 
 新 Agent 可以这样向用户确认：
 
-> 我已经阅读 AGENTS.md、docs/agent-handoff.md、docs/agent-upgrade-v3.0.md 和当前版本发布说明。当前源码基线是 3.0.0 source-only 里程碑，没有公开二进制或公开 v3.0.0 标签。接下来先检查 Git、仓库安全和测试；已有可用 AppLoad 时只升级应用文件。不会读取或输出账号、书架、百度或 DeepSeek 凭据和原始日志；高影响系统操作前先说明并取得授权。
+> 我已经阅读 AGENTS.md、docs/agent-handoff.md、docs/agent-upgrade-v3.0.md 和当前版本发布说明。当前源码基线是 3.0.1 source-only 里程碑，没有公开二进制或公开 v3.0.1 标签。接下来先检查 Git、仓库安全和测试；已有可用 AppLoad 时只升级应用文件。不会读取或输出账号、书架、百度或 DeepSeek 凭据和原始日志；高影响系统操作前先说明并取得授权。
 
 完成这些后，再根据用户的新目标进入实现，不要重新从旧 KOReader UI 或早期设计稿开始。

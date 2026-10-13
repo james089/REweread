@@ -17,6 +17,7 @@ KoreaderPaths.append(koreader_dir)
 local ConfigBridge = require("config_bridge")
 local Client = require("lib.client")
 local Json = require("json_util")
+local WebResponse = require("web_response")
 
 local function emit(row)
     print(Json.encode(row))
@@ -33,7 +34,7 @@ local ok, result = pcall(function()
     end
 
     local client = Client:new(config)
-    client:renew_cookie()
+    WebResponse.check(client:renew_cookie())
     config:flush()
 
     local status = config:redacted_status()

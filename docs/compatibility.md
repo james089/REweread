@@ -1,12 +1,12 @@
 # Compatibility matrix
 
-## 3.0.0 current baseline
+## 3.0.1 current baseline
 
 | Component | Verified version / scope |
 | --- | --- |
 | Device | Paper Pro Move / chiappa, aarch64 |
 | OS | 3.28.0.172; OS package 5.8.203 |
-| Qt | Device 6.10.3; official build SDK 5.7.119 / Qt 6.8.2 |
+| Qt | Device and official build SDK 5.8.203: Qt 6.10.3 |
 | AppLoad | v0.6.0, target-system hashtab rebuilt |
 | Startup | Exact-hash guarded ExecStart, stock fallback and persistent crash marker |
 | Device checks | User-confirmed entry; reboot persistence; stock return; font, image, statistics and direct-ink probe |

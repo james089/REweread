@@ -9,6 +9,11 @@ APP_BIN="$REMOTE_DIR/rm_weread_qt"
 OUT_LOG="${OUT_LOG:-/tmp/rm-weread-qt.out}"
 ERR_LOG="${ERR_LOG:-/tmp/rm-weread-qt.err}"
 SESSION_LOG="${SESSION_LOG:-/tmp/rm-weread-qt-session.log}"
+# AppLoad's systemd session may have no HOME/XDG_CACHE_HOME. The device Qt
+# must be able to cache QML compiled locally when the SDK cache ABI differs.
+QML_DISK_CACHE_PATH="${QML_DISK_CACHE_PATH:-/home/root/.cache/rm-weread/WeRead Move/qmlcache}"
+export QML_DISK_CACHE_PATH
+mkdir -p "$QML_DISK_CACHE_PATH"
 APP_STARTED=0
 DEPLOY_LOCK_NAME="rm-weread-deploy"
 

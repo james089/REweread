@@ -17,7 +17,7 @@ const uninstaller = read('scripts/uninstall-weread-qt-appload.sh');
 const changelog = read('CHANGELOG.md');
 const releaseNotes = read(`docs/releases/v${version}.md`);
 
-assert(version === '3.0.0', 'source milestone version must be explicit and stable');
+assert(version === '3.0.1', 'source milestone version must be explicit and stable');
 assert(manifest.version === version, 'release manifest must match VERSION');
 assert(manifest.releaseType === 'source-only', 'source milestone must remain source-only');
 assert(manifest.license === 'MIT', 'release manifest must identify the OSI-approved project license');

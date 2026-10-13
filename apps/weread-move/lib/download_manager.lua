@@ -4,6 +4,8 @@ local Cookie = require("lib.cookie")
 local WeRead = require("lib.weread")
 local ChapterCache = require("chapter_cache")
 local Sha256 = require("sha256")
+local WebResponse = require("web_response")
+local ReaderStateCache = require("reader_state_cache")
 
 local DEFAULT_CACHE_DIR = "/home/root/.local/share/rm-weread/books"
 
@@ -155,8 +157,15 @@ function DownloadManager:settings()
     return ContentSettings:new(self.config, self.cache_dir)
 end
 
-function DownloadManager:client(settings)
-    return Client:new(settings)
+function DownloadManager:client(settings, book_id)
+    local client = Client:new(settings)
+    local post_json = client.post_json
+    client.post_json = function(self, ...)
+        local response, code, headers = post_json(self, ...)
+        WebResponse.check(response)
+        return response, code, headers
+    end
+    return ReaderStateCache.attach(client, book_id and WeRead.reader_url(book_id) or nil)
 end
 
 function DownloadManager:account_cache_scope(settings)
@@ -207,7 +216,7 @@ function DownloadManager:probe_catalog(book)
     assert_login_cookie(settings)
     local book_id = canonical_book_id(book)
     local work_book = content_book(book, book_id)
-    local client = self:client(settings)
+    local client = self:client(settings, book_id)
     Content.ensure_reader_state(client, work_book)
     local chapters = Content.fetch_catalog(client, work_book)
     book.chapters = chapters
@@ -233,7 +242,7 @@ function DownloadManager:open(book)
     if scope and status.accountScope == scope and status.cachedFile and status.cachedFile ~= "" and file_exists(status.cachedFile) then
         return status.cachedFile
     end
-    local client = self:client(settings)
+    local client = self:client(settings, book_id)
     local work_book = content_book(book, book_id)
     local path, chapter = Content.fetch_first_chapter(client, settings, work_book)
     book.chapters = work_book.chapters
@@ -254,7 +263,7 @@ function DownloadManager:open_native_chapter(book)
     local settings = self:settings()
     assert_login_cookie(settings)
     local book_id = canonical_book_id(book)
-    local client = self:client(settings)
+    local client = self:client(settings, book_id)
     local work_book = content_book(book, book_id)
     Content.ensure_reader_state(client, work_book)
     local chapters = work_book.chapters or Content.fetch_catalog(client, work_book)
@@ -310,7 +319,7 @@ function DownloadManager:download_full(book)
         return status.fullFile, book.chapters or {}
     end
 
-    local client = self:client(settings)
+    local client = self:client(settings, book_id)
     local work_book = content_book(book, book_id)
     if self.status_store and book_id then
         self.status_store:update(book_id, {
@@ -402,7 +411,7 @@ function DownloadManager:start_full_download(book, opts)
         }
     end
 
-    local client = self:client(settings)
+    local client = self:client(settings, book_id)
     local work_book = content_book(book, book_id)
     Content.ensure_reader_state(client, work_book)
     local chapters = work_book.chapters or Content.fetch_catalog(client, work_book)
@@ -664,6 +673,9 @@ function DownloadManager:step_full_download(job)
             end
         end
     else
+        if job.client.invalidateReaderState then
+            job.client:invalidateReaderState()
+        end
         local key = self.chapter_cache:chapter_key(chapter, job.index)
         local attempts = (job.attempts[key] or 0) + 1
         job.attempts[key] = attempts

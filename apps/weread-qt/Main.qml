@@ -38,6 +38,12 @@ Window {
     property int selectedIndex: 0
     property var detailBookOverride: ({})
     property string screenName: "shelf"
+    property string pendingOpenBookId: ""
+    onScreenNameChanged: {
+        root.pendingOpenBookId = ""
+        root.pendingCatalogBookId = ""
+        root.pendingCatalogChapter = ({})
+    }
     property var magicStrokes: []
     property var magicCurrentStroke: []
     property var magicStrokeRecords: []
@@ -4936,6 +4942,7 @@ Window {
         if (!bookId || bookId === "") {
             return
         }
+        root.pendingOpenBookId = ""
         // Capture the old visible interval before the synchronous EPUB load,
         // then pause the clock so load time belongs to neither book.
         root.sampleReadingClock()
@@ -5038,6 +5045,7 @@ Window {
             root.enterReaderForBook(book.bookId, book.title)
             return
         }
+        root.pendingOpenBookId = book.bookId
         downloadStore.downloadOpeningChapter(book.bookId, book.title)
     }
 
@@ -5050,6 +5058,7 @@ Window {
             root.enterReaderForBook(record.bookId, title)
             return
         }
+        root.pendingOpenBookId = record.bookId
         downloadStore.downloadBook(record.bookId, title)
     }
 
@@ -5459,14 +5468,27 @@ Window {
                 return
             }
             if (root.readerPendingContinueDownload && root.readerPendingContinueBookId === bookId) {
-                root.continueReaderAfterFullDownload(bookId, title)
+                if (root.screenName === "reader" && root.currentBookId === bookId) {
+                    root.continueReaderAfterFullDownload(bookId, title)
+                } else {
+                    root.readerPendingContinueDownload = false
+                    root.readerPendingContinueBookId = ""
+                    root.readerPendingContinueTitle = ""
+                    root.readerPendingContinueSnippet = ""
+                }
                 return
             }
-            root.enterReaderForBook(bookId, title)
+            if (root.pendingOpenBookId === bookId) {
+                root.pendingOpenBookId = ""
+                root.enterReaderForBook(bookId, title)
+            }
         }
         function onOpeningChapterReady(bookId, title) {
             shelfStore.reload()
-            root.enterReaderForBook(bookId, title)
+            if (root.pendingOpenBookId === bookId) {
+                root.pendingOpenBookId = ""
+                root.enterReaderForBook(bookId, title)
+            }
         }
     }
 

@@ -29,10 +29,13 @@ package.preload["json"] = function()
     }
 end
 
-local content = { catalog = {}, fetches = {}, failures = {}, saved = {} }
+local content = { catalog = {}, fetches = {}, failures = {}, saved = {}, invalidations = 0 }
 
 package.preload["lib.client"] = function()
-    return { new = function(_, settings) return { settings = settings } end }
+    return { new = function(_, settings) return {
+        settings = settings,
+        invalidateReaderState = function() content.invalidations = content.invalidations + 1 end,
+    } end }
 end
 
 package.preload["lib.cookie"] = function()
@@ -40,7 +43,10 @@ package.preload["lib.cookie"] = function()
 end
 
 package.preload["lib.weread"] = function()
-    return { normalize_cover_url = function() return "" end }
+    return {
+        normalize_cover_url = function() return "" end,
+        reader_url = function(id) return "https://weread.qq.com/web/reader/" .. id end,
+    }
 end
 
 package.preload["lib.content"] = function()
@@ -180,6 +186,7 @@ content.catalog = {
 content.failures.retry = 2
 local retried = run_to_end(new_manager(), book, { force = true })
 assert(content.fetches.retry == 2 and #retried.failed == 1, "failed chapter must retry a bounded number of times")
+assert(content.invalidations == 2, "each failed chapter attempt must invalidate reused reader state")
 assert(content.saved[#content.saved].suffix == "partial", "bounded failure must produce a partial EPUB")
 
 print("download resume behavior ok")

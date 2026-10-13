@@ -13,7 +13,7 @@ const quick = read('docs/quick-start-user-guide.md');
 const ocr = read('docs/baidu-ocr-configuration-flow.md');
 const upgrade = read('docs/agent-upgrade-v3.0.md');
 
-assert(readme.includes('`3.0.0`') && readme.includes('agent-upgrade-v3.0.md'), 'README must route agents into the current upgrade flow');
+assert(readme.includes('`3.0.1`') && readme.includes('agent-upgrade-v3.0.md'), 'README must route agents into the current upgrade flow');
 assert(quick.includes('颜色选择与工具选择相互独立') && quick.includes('自由手写'), 'user guide must explain the 1.5 pen capsule');
 assert(quick.includes('不会识别整页') && quick.includes('原始笔迹仍保留'), 'user guide must describe selected-block optional OCR');
 assert(quick.includes('上页/下页') && quick.includes('手写模式不会每写两笔就自动识别'), 'user guide must explain candidate paging and explicit handwriting recognition');

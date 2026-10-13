@@ -4,7 +4,28 @@ All notable changes to REweread are documented here.
 
 ## [Unreleased]
 
-### Fixed — 2026-10-13
+## [3.0.1] - 2026-10-13
+
+Source-only maintenance milestone; no public binary distribution.
+
+### Changed
+
+- Build with official chiappa SDK 5.8.203 / Qt 6.10.3 to match OS 3.28.0.172.
+- Reject incompatible SDK Qt versions before removing a previous build; support
+  direct SDK builds on aarch64 Linux as well as the existing Docker workflow.
+- Record QML readiness and the first Qt frame without logging user content.
+
+### Fixed
+
+- Eliminate startup QML ABI fallback compilation and provide a writable disk
+  cache. Empty-cache and repeated application first frames measured about 5 s.
+- Reuse reader state for the same book/client for up to 30 s; invalidate it on
+  chapter failure before the existing bounded retry. An 8-chapter comparison
+  reduced 22.0 s to 12.8 s with identical text, CSS and images.
+- Keep background download completion on the current screen; open a book only
+  for an explicit current request or continuation of the active reader.
+- Report HTTP-success business login errors instead of claiming a book has no
+  readable chapters or falsely reporting successful Cookie renewal.
 
 - Fix the QML self-test mode scope that skipped ink loading during normal
   page turns; activate the correct book/page ink model on every pagination path.
@@ -14,6 +35,16 @@ All notable changes to REweread are documented here.
 - Add isolated real-reader regression coverage for saving, page turns, returning,
   erasing, clearing and rebuilding pagination. Two device runs passed; the user
   then confirmed all reported page-turn, erase and clear issues were resolved.
+
+### Validation
+
+- Full source validators, repository safety, shell syntax, SDK-version rejection,
+  download navigation and isolated LuaJIT cache/retry/error regressions passed.
+- Official SDK build and the real Main/ReaderStore ink device regression passed.
+- Isolated full-book download: 106/106 chapters, no failures, 184 s; preserved
+  existing account, book, progress, font and annotation data.
+- Timings describe the measured sample; the Qt first-frame timer starts at main
+  and excludes launcher/system switching and physical e-paper settling.
 
 ## [3.0.0] - 2026-10-12
 

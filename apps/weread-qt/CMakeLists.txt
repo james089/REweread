@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(rm_weread_qt VERSION 3.0.0 LANGUAGES CXX)
+project(rm_weread_qt VERSION 3.0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

@@ -1,10 +1,19 @@
-# Agent 升级到 REweread 3.0.0
+# Agent 升级到 REweread 3.0.1
 
 先读 `AGENTS.md` 和 `docs/agent-handoff.md`。本次是 source-only 源码里程碑，不附二进制或第三方依赖，不代表全部功能已完成实机验收。
 
+## 3.0.1 升级重点
+
+使用匹配系统 3.28.0.172 的 chiappa SDK 5.8.203 / Qt 6.10.3，避免旧 SDK
+导致每次启动重新编译 QML。构建脚本会拒绝不匹配的 Qt，不删除旧构建产物。
+3.0.1 增加同书短时阅读状态复用、失败后刷新和明确的下载后打开意图。
+更新后验证首次启动、正文图文页、手写翻页/擦除，以及后台下载完成不会切书。
+详见 [3.0.1 发布说明](releases/v3.0.1.md) 和
+[性能验证记录](performance-investigation-2026-10-13.md)。
+
 ## 已安装设备
 
-1. 确认工作区没有需要保留的未提交修改，然后 `git pull --ff-only`，核对 `VERSION` 为 `3.0.0`。
+1. 确认工作区没有需要保留的未提交修改，然后 `git pull --ff-only`，核对 `VERSION` 为 `3.0.1`。
 2. 运行 `node scripts/check-repository.mjs`、`node tests/run-all.mjs`，对 shell 脚本执行 `bash -n`。
 3. 需要字体时运行 `scripts/download-reader-fonts.sh`；运行 `scripts/build-weread-qt.sh` 使用官方 chiappa SDK 构建。字体不进 Git。
 4. 获得设备操作授权后，确认当前连接、系统版本、运行中的应用和备份。严禁删除 `/home/root/.local/share/rm-weread/`，不读取或输出凭据。

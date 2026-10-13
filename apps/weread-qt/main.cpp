@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -63,6 +64,8 @@ bool prepareReaderInkSelfTestBook(const QString &dataDir) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    QElapsedTimer startupClock;
+    startupClock.start();
     std::fputs("rm-weread: initializing Qt platform\n", stderr);
     QGuiApplication app(argc, argv);
     std::fputs("rm-weread: Qt platform ready\n", stderr);
@@ -249,5 +252,17 @@ int main(int argc, char *argv[]) {
         []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
     engine.loadFromModule("WeReadMove", "Main");
+    std::fprintf(stderr, "rm-weread: qml ready elapsed-ms=%lld\n", startupClock.elapsed());
+    if (!engine.rootObjects().isEmpty()) {
+        if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
+            QObject::connect(window, &QQuickWindow::frameSwapped, &app,
+                [&startupClock, reported = false]() mutable {
+                    if (!reported) {
+                        reported = true;
+                        std::fprintf(stderr, "rm-weread: first frame elapsed-ms=%lld\n", startupClock.elapsed());
+                    }
+                }, Qt::QueuedConnection);
+        }
+    }
     return app.exec();
 }

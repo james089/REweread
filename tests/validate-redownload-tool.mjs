@@ -14,6 +14,11 @@ const downloadStore = read('apps/weread-qt/download_store.cpp');
 const shelfStore = read('apps/weread-qt/shelf_store.cpp');
 const readerStore = read('apps/weread-qt/reader_store.cpp');
 const runner = read('tests/run-all.mjs');
+const renewal = read('apps/weread-move/tools/renew-cookie.lua');
+
+assert(manager.includes('WebResponse.check(response)'), 'download client must reject HTTP-success business errors before parsing an empty catalog');
+assert(renewal.includes('WebResponse.check(client:renew_cookie())'), 'renewal helper must reject HTTP-success business errors');
+assert(manager.includes('ReaderStateCache.attach(client') && manager.includes('job.client:invalidateReaderState()'), 'download manager must reuse bounded reader state and discard it on chapter failure');
 
 assert(tool.includes('DownloadManager'), 'redownload tool must call the standalone download manager');
 assert(tool.includes('ConfigBridge'), 'redownload tool must reuse the app config bridge');

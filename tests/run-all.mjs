@@ -28,6 +28,8 @@ const scripts = [
   'validate-release-metadata.mjs',
   'validate-book-images.mjs',
   'validate-redownload-tool.mjs',
+  'validate-download-navigation.mjs',
+  'validate-sdk-version.mjs',
   'validate-koreader-paths.mjs',
   'validate-chapter-cache.mjs',
   'validate-reader-document.mjs',

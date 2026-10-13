@@ -7,18 +7,21 @@ Dependencies are downloaded at build/install time or installed on the device. Th
 | Dependency | Tested version | Source | Local location |
 | --- | --- | --- | --- |
 | Docker | 29.2.0 | https://www.docker.com/ | host installation |
-| reMarkable chiappa SDK | 5.7.119, aarch64 host | https://developer.remarkable.com/links | Docker volume `rm_chiappa_sdk` |
-| Qt | 6.8.2 from SDK/device | included by reMarkable SDK | SDK sysroot |
+| reMarkable chiappa SDK | 5.8.203, aarch64 host | https://developer.remarkable.com/links | Docker volume `rm_chiappa_sdk` |
+| Qt | 6.10.3 from SDK/device | included by reMarkable SDK | SDK sysroot |
 | QR Code Generator | v1.8.0 | https://github.com/nayuki/QR-Code-generator | ignored `downloads/sources/` |
 | Node.js | 18+ | https://nodejs.org/ | host installation |
 
 The official SDK URL used by `scripts/bootstrap-remarkable-sdk.sh` is:
 
 ```text
-https://storage.googleapis.com/remarkable-codex-toolchain/remarkable-production-image-5.7.119-chiappa-public-aarch64-toolchain.sh
+https://storage.googleapis.com/remarkable-codex-toolchain/3.28.0.172/remarkable-production-image-5.8.203-chiappa-public-aarch64-toolchain.sh
 ```
 
 If reMarkable changes the link, use the official links page and update the URL and SHA-256 together. Never bypass a checksum mismatch.
+
+The pinned SDK SHA-256 is `ae0dcec8ff161a90f72b5bbeb77f11c5a14c6c6045c1655584561935994c1832`.
+An aarch64 Linux host with the official SDK installed at `/opt/codex/chiappa/5.8.203` can build directly without Docker. macOS hosts still need a Linux build environment. The scripts retain the Docker volume workflow.
 
 ## Device dependencies
 

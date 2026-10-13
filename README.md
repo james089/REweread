@@ -2,9 +2,9 @@
 
 面向 reMarkable Paper Pro Move 的非官方微信读书客户端实验项目。
 
-当前阶段版本：`3.0.0`。这是源码里程碑，不提供公开二进制安装包，也不因本次更新自动创建公开标签或 Release。版本说明见 [CHANGELOG](CHANGELOG.md) 和 [3.0.0 发布说明](docs/releases/v3.0.0.md)。已有设备升级请读 [3.0 Agent 升级指南](docs/agent-upgrade-v3.0.md)。
+当前阶段版本：`3.0.1`。这是源码里程碑，不提供公开二进制安装包，也不因本次更新自动创建公开标签或 Release。版本说明见 [CHANGELOG](CHANGELOG.md) 和 [3.0.1 发布说明](docs/releases/v3.0.1.md)。已有设备升级请读 [3.0 Agent 升级指南](docs/agent-upgrade-v3.0.md)。
 
-3.0 新增本机阅读统计、账号范围的阅读时长账本、个人云笔记缓存、章节校验续传、字体预览和图文分页改进，并适配系统 3.28.0.172 / AppLoad v0.6.0。真实账号时长上传、整本离线下载验收和完整字体排版矩阵仍有待验证；本地手写笔记不会自动上传到微信读书。详见[同步能力与限制](docs/official-client-sync-gap.md)。
+3.0 新增本机阅读统计、账号范围的阅读时长账本、个人云笔记缓存、章节校验续传、字体预览和图文分页改进，并适配系统 3.28.0.172 / AppLoad v0.6.0。3.0.1 修复慢启动、重复阅读网页请求和后台下载自动切书；真机应用首帧约 5 秒，同组章节下载耗时约降低 42%，单本整本隔离下载验收通过。真实账号时长上传和完整字体排版矩阵仍有待验证；本地手写笔记不会自动上传到微信读书。详见[性能验收记录](docs/performance-investigation-2026-10-13.md)和[同步能力与限制](docs/official-client-sync-gap.md)。
 
 本仓库的主要读者是接手开发、构建、部署和排障的 AI Agent。仓库只保存源码、测试和操作文档；SDK、XOVI、AppLoad、KOReader、字体、登录态、书架缓存、封面和电子书文件都必须从外部获取，不能提交到 Git。
 
@@ -87,8 +87,8 @@ Qt Quick UI
 | 设备 | reMarkable Paper Pro Move (`chiappa`) |
 | 分辨率 | 954 x 1696，RGB565 彩色墨水屏 |
 | 设备系统镜像 | 5.8.203，系统 3.28.0.172；旧基线见兼容矩阵 |
-| 官方 SDK | chiappa 5.7.119 |
-| Qt | 设备 Qt 6.10.3；构建 SDK Qt 6.8.2 |
+| 官方 SDK | chiappa 5.8.203 |
+| Qt | 设备及构建 SDK Qt 6.10.3 |
 | KOReader 运行时 | v2025.10（建议后续验证更新版） |
 | XOVI | 现有 v19-23052026 扩展基线，按目标系统重建映射并启用启动保护 |
 | AppLoad | v0.6.0（3.28）；不要向旧系统盲目安装 |
@@ -264,7 +264,7 @@ apps/weread-qt/build/rm_weread_qt
 
 ## 安装与开发部署
 
-从旧版本升级到 3.0.0 时，Agent 应先阅读
+从旧版本升级到 3.0.1 时，Agent 应先阅读
 [3.0 Agent 升级指南](docs/agent-upgrade-v3.0.md)。已有可用 AppLoad 的设备优先使用 `scripts/upgrade-weread-qt-files.sh`，仅替换应用文件并保留字体和数据；首次安装使用下列
 原子安装器，但必须保留 `/home/root/.local/share/rm-weread/`，不能为了处理
 OCR、笔迹或登录问题删除用户数据。
