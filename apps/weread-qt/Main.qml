@@ -5903,7 +5903,7 @@ Window {
         Text {
             x: 46
             y: 112
-            width: root.width - 540
+            width: root.width - 260
             elide: Text.ElideRight
             text: shelfStore.shelfProgress !== "" ? shelfStore.shelfProgress : "微信读书 · 已同步 " + shelfStore.books.length + " 本"
             color: root.mutedInk
@@ -6019,9 +6019,9 @@ Window {
         Item {
             id: shelfGrid
             x: 44
-            y: 180
+            y: 142
             width: root.width - 88
-            height: root.height - 270
+            height: root.height - 232
             visible: root.shelfTab === "书架" && shelfStore.books.length > 0
             property real cellWidth: width / root.shelfColumns
             property real cellHeight: height / 3
@@ -6221,56 +6221,16 @@ Window {
             }
         }
 
-        Row {
-            id: shelfPageNavigation
-            x: root.width - width - 44
-            y: 108
-            height: 56
-            spacing: 16
+        Text {
+            id: shelfPageCounter
+            x: root.width - 162
+            y: 112
+            width: 118
+            text: (root.shelfPageIndex + 1) + " / " + root.shelfPageCount
+            color: root.inkColor
+            font.pixelSize: 23
+            horizontalAlignment: Text.AlignRight
             visible: root.shelfTab === "书架" && root.shelfPageCount > 1
-
-            Rectangle {
-                width: 128; height: 56; radius: 4
-                color: root.paperColor
-                border.color: root.shelfPageIndex > 0 ? root.inkColor : "#555555"
-                Text {
-                    anchors.centerIn: parent
-                    text: "上一页"
-                    font.pixelSize: 23
-                    color: root.shelfPageIndex > 0 ? root.inkColor : "#555555"
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    id: shelfPreviousPageTap
-                    enabled: root.shelfPageIndex > 0
-                    onClicked: root.goShelfPage(-1)
-                }
-            }
-            Text {
-                width: 116; height: 56
-                text: (root.shelfPageIndex + 1) + " / " + root.shelfPageCount
-                color: root.inkColor
-                font.pixelSize: 23
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-            Rectangle {
-                width: 128; height: 56; radius: 4
-                color: root.paperColor
-                border.color: root.shelfPageIndex < root.shelfPageCount - 1 ? root.inkColor : "#555555"
-                Text {
-                    anchors.centerIn: parent
-                    text: "下一页"
-                    font.pixelSize: 23
-                    color: root.shelfPageIndex < root.shelfPageCount - 1 ? root.inkColor : "#555555"
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    id: shelfNextPageTap
-                    enabled: root.shelfPageIndex < root.shelfPageCount - 1
-                    onClicked: root.goShelfPage(1)
-                }
-            }
         }
 
         Item {
@@ -11646,17 +11606,16 @@ Window {
             passed = passed && root.shelfPageIndex === 0 && root.screenName === "shelf"
             console.log("shelf-swipe-selftest=" + (passed ? "ok" : "fail"))
             for (var page = 1; page < 22; ++page) {
-                shelfNextPageTap.clicked(null)
+                appControl.injectSelfTestSwipe(700, 400, 550, 420)
                 passed = passed && root.shelfPageIndex === page
                     && shelfBooksRepeater.itemAt(0).bookIndex === page * 9
             }
-            passed = passed && !shelfNextPageTap.enabled
-                && root.currentShelfPageBooks().length === 6
+            passed = passed && root.currentShelfPageBooks().length === 6
                 && !shelfBooksRepeater.itemAt(6).visible
-            shelfPreviousPageTap.clicked(null)
+            appControl.injectSelfTestSwipe(550, 400, 700, 380)
             passed = passed && root.shelfPageIndex === 20
             root.goShelfPage(-100)
-            passed = passed && root.shelfPageIndex === 0 && !shelfPreviousPageTap.enabled
+            passed = passed && root.shelfPageIndex === 0
             console.log("shelf-pagination-selftest=" + (passed ? "ok" : "fail"))
             root.enterReaderForBook("ink-probe", "Gesture probe")
             var initialPage = root.pageIndex

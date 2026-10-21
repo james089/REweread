@@ -529,7 +529,7 @@ assert(qml.includes('property real cellHeight: height / 3'), 'shelf must calcula
 assert(qml.includes('property real coverWidth:'), 'shelf must size covers from available cell height');
 assert(!qml.includes(', 184)'), 'shelf covers must not keep the old small 184px width cap');
 assert(qml.includes('cellWidth - 24'), 'shelf covers must use most of each 3x3 cell width');
-assert(qml.includes('height: root.height - 270'), 'shelf grid must leave room for chrome while making 3x3 covers large');
+assert(qml.includes('height: root.height - 232'), 'shelf grid must leave room for chrome while making 3x3 covers large');
 assert(!qml.includes('positionViewAtIndex'), 'shelf page changes must avoid GridView animated positioning');
 assert(!qml.includes('contentX'), 'shelf page changes must avoid animated flickable content movement');
 assert(qml.includes('property real coverAspectRatio: 0.68'), 'covers must keep phone-book cover ratio');
