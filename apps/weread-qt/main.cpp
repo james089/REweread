@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <memory>
 
+#include "startup_splash.h"
 #include "account_store.h"
 #include "ai_reply_store.h"
 #include "app_control.h"
@@ -72,6 +73,9 @@ int main(int argc, char *argv[]) {
     std::fputs("rm-weread: Qt platform ready\n", stderr);
     QCoreApplication::setApplicationName("WeRead Move");
     QCoreApplication::setOrganizationName("rm-weread");
+    if (app.arguments().contains(QStringLiteral("--startup-splash"))
+            || qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("startup-splash"))
+        return runStartupSplash(app);
     std::unique_ptr<QTemporaryDir> readerInkSelfTestDir;
     if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-ink")) {
         // This mode is a real QML/ReaderStore exercise, but it must never

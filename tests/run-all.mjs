@@ -24,6 +24,7 @@ const scripts = [
   'validate-detail-rating.mjs',
   'validate-eink-contrast.mjs',
   'validate-launcher-cleanup.mjs',
+  'validate-startup-splash.mjs',
   'validate-license-policy.mjs',
   'validate-release-metadata.mjs',
   'validate-book-images.mjs',

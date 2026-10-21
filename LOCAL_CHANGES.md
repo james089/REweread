@@ -16,7 +16,7 @@
 ## 已保存的可执行文件
 
 build/local-artifacts/rm_weread_qt 是设备已安装的 ARM64 程序。
-SHA-256：a6d5d8ab703633a3979babe5c92813d465b9e35b18c14a7859d5e74868869bf6
+SHA-256：7acecb0cc3d2d3953b16f0e8ef0e7f9c1c6b0a17daf78fa2ce5ea336f6361c46
 同目录 SHA256SUMS 可验证文件；helper/ 保存匹配的 Lua 辅助代码。
 build/ 按上游规则被 Git 忽略，二进制仍保存在本地项目文件夹内。备份整个项目时应包含它。
 
@@ -92,3 +92,11 @@ docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work node:24-bookworm
 - tests/settings_persistence_smoke.cpp 使用真实 Qt Settings，在临时目录写入非默认字体字号后不执行析构直接结束，再由独立进程验证恢复；本地和设备均通过。
 - tests/validate-reader-preferences.mjs 验证即时保存、迁移标记与初始化/测试模式保护，纳入完整检查。
 - 此前未成功保存的选择无法恢复，升级后需用户重新选择一次。
+
+## 启动提示画面
+
+- 正常从 AppLoad 启动时，系统界面退出后先运行轻量中文启动画面“正在启动 REweread…”，再启动完整应用。
+- 启动画面不创建账号、书架或正文数据存储，也不加载 Main.qml；等待首帧显示后释放显示设备，由电子纸保留画面直至主界面覆盖。
+- 无首帧时有超时，画面进程失败仍继续尝试主程序；中断时复用会话脚本的系统界面恢复逻辑。
+- 其他隔离自检跳过额外启动画面；startup-splash 自检仅显示静态画面，可生成自己的静态预览。
+- 这项修改提供启动反馈，不承诺缩短完整应用的启动耗时。

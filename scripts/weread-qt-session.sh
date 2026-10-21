@@ -107,6 +107,14 @@ if [ -n "$pids" ]; then
   kill $pids 2>/dev/null || true
   sleep 1
 fi
+# Own the UI handoff before the splash so interruption also restores Xochitl.
+APP_STARTED=1
+if [ -z "$SELFTEST_MODE" ]; then
+  QT_QUICK_BACKEND=epaper "$APP_BIN" -platform epaper --startup-splash > /tmp/rm-weread-splash.out 2> /tmp/rm-weread-splash.err &
+  APP_PID="$!"
+  wait "$APP_PID" || printf '%s startup-splash unavailable; continuing\n' "$(timestamp)" >>"$SESSION_LOG"
+  APP_PID=""
+fi
 QT_QUICK_BACKEND=epaper RM_WEREAD_QT_SELFTEST="$SELFTEST_MODE" RM_WEREAD_POWER_DRY_RUN="$POWER_DRY_RUN" "$APP_BIN" -platform epaper >"$OUT_LOG" 2>"$ERR_LOG" &
 APP_PID="$!"
 APP_STARTED=1
