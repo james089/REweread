@@ -133,6 +133,21 @@ end
 function ContentSettings:flush()
 end
 
+function ContentSettings:merge_set_cookie(value)
+    self.values.cookies = Cookie.merge_set_cookie(self.values.cookies or {}, value)
+end
+
+function ContentSettings:update_auth(updates, options)
+    if type(updates.cookies) == "table" then
+        self.values.cookies = options and options.replace_cookies and deepcopy(updates.cookies)
+            or Cookie.merge(self.values.cookies or {}, updates.cookies)
+    end
+    for _, key in ipairs({ "wr_ticket", "wr_wrpa" }) do
+        if updates[key] ~= nil then self.values[key] = updates[key] end
+    end
+    return true
+end
+
 function ContentSettings:get_download_dir()
     return self.cache_dir
 end

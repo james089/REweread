@@ -83,6 +83,14 @@ int main(int argc, char **argv) {
     qputenv("RM_WEREAD_DATA_DIR", temporary.path().toUtf8());
     qputenv("RM_WEREAD_SESSION_PATH", sessionPath.toUtf8());
 
+    NotesStore quietStore;
+    expect(!quietStore.socialEnabled(), "personal build must disable public reading activity");
+    quietStore.refreshPopularMarks(QStringLiteral("fixture-book"));
+    quietStore.refreshPopularReviews(QStringLiteral("fixture-book"), QStringLiteral("1"), QStringLiteral("1-2"));
+    quietStore.bufferPopularMarksForContext(QStringLiteral("fixture-book"), QStringLiteral("chapter:1"));
+    expect(!quietStore.running() && quietStore.m_mode.isEmpty() && quietStore.popularMarks().isEmpty(),
+           "disabled public activity must not start a helper or load cached marks");
+
     const QString accountA = QStringLiteral("fixture-account-a");
     const QString accountB = QStringLiteral("fixture-account-b");
     writeAccountACache(temporary.filePath(QStringLiteral("personal-notes-cache.json")), scopeFor(accountA));

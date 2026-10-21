@@ -650,7 +650,7 @@ assert(qml.includes('reader-pagination-complete pages='), 'device logs must repo
 assert(qml.includes('function buildReaderPaginationBatch'), 'reader pagination must build page starts incrementally');
 assert(qml.includes('function startReaderPaginationBuild'), 'explicit full-book self-tests must retain a cooperative pagination builder');
 assert(qml.includes('function buildReaderPaginationWindowFromOffset'), 'reader must render the saved reading offset immediately without waiting for full-book pagination');
-assert(qml.includes('root.buildReaderPaginationWindowFromOffset(savedOffset, 12)'), 'reader entry must preload only the current window from saved progress');
+assert(qml.includes('root.buildReaderPaginationWindowFromOffset(savedOffset, 2)'), 'reader entry must preload only the current window from saved progress');
 assert(qml.includes('function extendReaderPaginationWindow'), 'reader must append a small next-page window on demand');
 assert(qml.includes('function ensureReaderPaginationWindowAhead'), 'reader must refill the pagination window before the user reaches its end');
 const readerEntryFunction = qml.slice(qml.indexOf('function enterReaderForBook'), qml.indexOf('function readerPageForCatalogChapter'));
@@ -697,7 +697,7 @@ assert(!qml.includes('readerPageForTextOffset(modelData.textStart'), 'reader cat
 assert(qml.includes('readerFontSize'), 'reader must expose font-size controls');
 assert(qml.includes('readerLineHeight'), 'reader must expose line-height controls');
 assert(qml.includes('readerParagraphSpacing'), 'reader must expose paragraph-spacing controls');
-assert(qml.includes('property int readerFontSize: 38'), 'Chinese body text must default to a Move-friendly large font size');
+assert(qml.includes('property int readerFontSize: 42'), 'Chinese body text must default to a Move-friendly large font size');
 assert(qml.includes('property real readerLineHeight: 1.26'), 'Chinese body text must default to compact large-type line spacing');
 assert(qml.includes('property int readerParagraphSpacing: 12'), 'Chinese body text must default to visible but compact paragraph spacing');
 assert(qml.includes('property int readerFontWeight: Font.DemiBold'), 'Chinese body text must default to an e-ink-friendly darker synthetic font weight');
@@ -706,7 +706,7 @@ assert(qml.includes('property bool typographyTuningMigrated'), 'reader settings 
 assert(qml.includes('property bool wenkaiDefaultMigrated'), 'reader settings must remember the WenKai/38 default migration');
 assert(qml.includes('function migrateReaderDefaults'), 'reader startup must migrate old zero paragraph-spacing defaults once');
 assert(qml.includes('root.readerFontSize === 32 && root.readerLineHeight >= 1.4 && root.readerParagraphSpacing >= 24'), 'reader startup must repair old self-test-polluted typography settings');
-assert(qml.includes('root.readerFontSize = 38') && qml.includes('root.readerLineHeight = 1.26') && qml.includes('root.readerParagraphSpacing = 12'), 'old self-test typography settings must migrate to the tuned large-type defaults');
+assert(qml.includes('root.readerFontSize = 42') && qml.includes('root.readerLineHeight = 1.26') && qml.includes('root.readerParagraphSpacing = 12'), 'old self-test typography settings must migrate to the tuned large-type defaults');
 assert(qml.includes('property string readerFontChoice: "霞鹜文楷"'), 'reader must default to LXGW WenKai instead of the system font');
 assert(qml.includes('root.readerFontChoice === "系统"') && qml.includes('root.readerFontChoice = "霞鹜文楷"'), 'reader startup must migrate old system-font defaults to WenKai');
 assert(qml.includes('readerFirstLineIndentChars'), 'reader must expose first-line indent controls as Chinese character count');
@@ -725,7 +725,7 @@ assert(qml.includes('readerLineHeightSteps'), 'reader line spacing must use disc
 assert(qml.includes('readerParagraphSpacingSteps'), 'reader paragraph spacing must use discrete capsule choices');
 assert(!qml.includes('lineSpacingSlider'), 'reader line spacing must not use a continuous slider on e-ink');
 assert(!qml.includes('paragraphSpacingSlider'), 'reader paragraph spacing must not use a continuous slider on e-ink');
-assert(qml.includes('readerSettingsPanel.adjust("readerFontSize", -4, 30, 38)'), 'reader font size choices must avoid tiny sizes that hurt Move readability');
+assert(qml.includes('readerSettingsPanel.adjust("readerFontSize", -4, 30, 64)'), 'reader font size choices must avoid tiny sizes that hurt Move readability');
 assert(qml.includes('{"label": "紧", "value": 1.16}') && qml.includes('{"label": "宽", "value": 1.46}'), 'reader line-height capsules must stay in a compact large-type range');
 assert(qml.includes('{"label": "无", "value": 0}') && qml.includes('{"label": "宽", "value": 20}'), 'reader paragraph spacing capsules must avoid excessive large-type page gaps');
 assert(!qml.includes('setReaderSettingSlider'), 'reader typography settings must avoid continuous drag updates');

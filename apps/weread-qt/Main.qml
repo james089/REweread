@@ -93,7 +93,7 @@ Window {
     property int readerTextTopMargin: 96
     property int readerImageTopMargin: 72
     property int readerImageTextTopY: Math.round(root.height * 0.78)
-    property int readerFontSize: 38
+    property int readerFontSize: 42
     property real readerLineHeight: 1.26
     property int readerParagraphSpacing: 12
     property int readerFontWeight: Font.DemiBold
@@ -104,6 +104,7 @@ Window {
     property int readerMinWidowLines: 1
     property int readerCaptionParagraphLimit: 3
     property int forceReaderRefresh: 0
+    readonly property bool readerSocialEnabled: notesStore.socialEnabled
     property int readerSocialGeometryToken: 0
     property var readerSocialDashRects: []
     property var readerSocialHitRects: []
@@ -743,6 +744,7 @@ Window {
     }
 
     function readerPopularMarksForRange(start, end) {
+        if (!root.readerSocialEnabled) return []
         var rows = notesStore.popularMarks || []
         var matches = []
         var rangeStart = Math.max(0, Math.floor(Number(start) || 0))
@@ -772,6 +774,7 @@ Window {
     }
 
     function readerChapterSocialRows() {
+        if (!root.readerSocialEnabled) return []
         var rows = notesStore.popularMarks || []
         var current = root.readerChapterForOffset(root.currentReaderTextStart)
         var currentUid = String(current.chapterUid || "")
@@ -1049,6 +1052,10 @@ Window {
     }
 
     function rebuildReaderSocialGeometry() {
+        if (!root.readerSocialEnabled) {
+            root.clearReaderSocialGeometry()
+            return 0
+        }
         var dashes = root.readerSocialDashRectsForPage()
         var hits = root.readerSocialHitRectsFromDashes(dashes)
         root.readerSocialDashRects = dashes
@@ -1108,6 +1115,7 @@ Window {
     }
 
     function openReaderSocialPopup(index) {
+        if (!root.readerSocialEnabled) return
         var mark = root.popularMarkByIndex(index)
         if (!mark || root.readerSocialDisplayText(mark).length === 0) {
             return
@@ -1141,6 +1149,7 @@ Window {
     }
 
     function openReaderChapterSocialPopup() {
+        if (!root.readerSocialEnabled) return
         var rows = root.readerChapterSocialRows()
         if (rows.length === 0) {
             return
@@ -1286,7 +1295,7 @@ Window {
         }
         if (!persistedReaderSettings.typographyTuningMigrated) {
             if (root.readerFontSize === 32 && root.readerLineHeight >= 1.4 && root.readerParagraphSpacing >= 24) {
-                root.readerFontSize = 38
+                root.readerFontSize = 42
                 root.readerLineHeight = 1.26
                 root.readerParagraphSpacing = 12
                 root.readerMargin = 64
@@ -1301,7 +1310,7 @@ Window {
                 root.markReaderPaginationDirty()
             }
             if (root.readerFontSize <= 34) {
-                root.readerFontSize = 38
+                root.readerFontSize = 42
                 root.markReaderPaginationDirty()
             }
             persistedReaderSettings.wenkaiDefaultMigrated = true
@@ -1742,6 +1751,7 @@ Window {
         interval: 3000
         repeat: false
         onTriggered: {
+            if (!root.readerSocialEnabled) return
             if (selfTestMode !== "" || root.screenName !== "reader" || root.currentBookId === "") {
                 return
             }
@@ -1759,6 +1769,7 @@ Window {
 
     Connections {
         id: readerSocialRefreshOnNotesChanged
+        enabled: root.readerSocialEnabled
         target: notesStore
         function onChanged() {
             root.refreshActiveReaderSocialMark()
@@ -1780,6 +1791,7 @@ Window {
         interval: 650
         repeat: false
         onTriggered: {
+            if (!root.readerSocialEnabled) return
             if (root.screenName !== "reader" || root.currentBookId === "") {
                 return
             }
@@ -1800,6 +1812,7 @@ Window {
         interval: 180
         repeat: false
         onTriggered: {
+            if (!root.readerSocialEnabled) return
             if (root.screenName !== "reader" || root.currentBookId === "") {
                 return
             }
@@ -3150,6 +3163,7 @@ Window {
     }
 
     function scheduleReaderSocialPrefetch() {
+        if (!root.readerSocialEnabled) return
         if (selfTestMode !== "" || root.screenName !== "reader" || root.currentBookId === "") {
             return
         }
@@ -4957,8 +4971,10 @@ Window {
             root.flushPendingFreeInkStrokes()
         }
         readerInkCanvas.clearLive()
+        var openStartedMs = Date.now()
         var safeTitle = title || bookId
         readerStore.loadBook(bookId, safeTitle)
+        var contentLoadedMs = Date.now()
         root.currentBookId = bookId
         root.sampleReadingClock()
         root.readerSocialPrefetchKey = ""
@@ -4968,12 +4984,14 @@ Window {
         if (savedOffset >= 0) {
             root.readerFastOpenAnchorOffset = savedOffset
             root.readerFastOpenMode = false
-            root.buildReaderPaginationWindowFromOffset(savedOffset, 12)
+            root.buildReaderPaginationWindowFromOffset(savedOffset, 2)
             root.screenName = "reader"
         } else {
-            root.buildReaderPaginationWindowFromOffset(root.readerDefaultStartOffset(), 12)
+            root.buildReaderPaginationWindowFromOffset(root.readerDefaultStartOffset(), 2)
             root.screenName = "reader"
         }
+        console.log("reader-open-ui load-ms=" + (contentLoadedMs - openStartedMs) +
+                    " layout-ms=" + (Date.now() - contentLoadedMs))
         // buildReaderPaginationWindowFromOffset deliberately builds a small
         // local page window and assigns index 0 directly.  Explicitly activate
         // that first page so existing free ink is visible immediately.
@@ -5212,12 +5230,12 @@ Window {
 
         var fontStepperX = Math.round((readerSettingsPanel.width - 246) / 2)
         if (root.readerPointInRect(lx, ly, fontStepperX, 118, 90, 70)) {
-            root.readerFontSize = root.clamp(root.readerFontSize - 4, 30, 38)
+            root.readerFontSize = root.clamp(root.readerFontSize - 4, 30, 64)
             root.applyReaderSettingChange(true)
             return true
         }
         if (root.readerPointInRect(lx, ly, fontStepperX + 156, 118, 90, 70)) {
-            root.readerFontSize = root.clamp(root.readerFontSize + 4, 30, 38)
+            root.readerFontSize = root.clamp(root.readerFontSize + 4, 30, 64)
             root.applyReaderSettingChange(true)
             return true
         }
@@ -9959,7 +9977,7 @@ Window {
                     y: 0
                     width: 78
                     height: parent.height
-                    onClicked: readerSettingsPanel.adjust("readerFontSize", -4, 30, 38)
+                    onClicked: readerSettingsPanel.adjust("readerFontSize", -4, 30, 64)
                 }
 
                 Text {
@@ -9993,7 +10011,7 @@ Window {
                     y: 0
                     width: 78
                     height: parent.height
-                    onClicked: readerSettingsPanel.adjust("readerFontSize", 4, 30, 38)
+                    onClicked: readerSettingsPanel.adjust("readerFontSize", 4, 30, 64)
                 }
             }
 

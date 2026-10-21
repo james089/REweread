@@ -114,6 +114,9 @@ private:
     void loadBookmarksForBook(const QString &bookId);
     void loadHighlightsForBook(const QString &bookId);
     void loadParagraphNotesForBook(const QString &bookId);
+    QByteArray documentFingerprint(const QString &expandedDir, const QStringList &chapters) const;
+    bool restoreDocumentCache(const QString &bookId, const QByteArray &fingerprint);
+    void saveDocumentCache(const QString &bookId, const QByteArray &fingerprint) const;
     QStringList chapterPaths(const QString &expandedDir) const;
     QString chapterTitleFromXhtml(const QString &chapterPath, const QString &xhtml, int fallbackIndex) const;
     QString chapterUidFromXhtml(const QString &xhtml) const;

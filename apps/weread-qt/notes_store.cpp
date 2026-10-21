@@ -40,6 +40,11 @@ NotesStore::NotesStore(QObject *parent)
             this, &NotesStore::finishProcess);
 }
 
+bool NotesStore::socialEnabled() const {
+    // Personal build: keep personal notes, disable public reading activity.
+    return false;
+}
+
 bool NotesStore::running() const {
     return m_running;
 }
@@ -377,6 +382,7 @@ void NotesStore::refreshBookNotes(const QString &bookId) {
 }
 
 void NotesStore::refreshPopularMarks(const QString &bookId) {
+    if (!socialEnabled()) return;
     const QString trimmed = bookId.trimmed();
     if (trimmed.isEmpty()) {
         setState(false, QStringLiteral("先打开一本书"));
@@ -423,6 +429,7 @@ void NotesStore::refreshPopularMarks(const QString &bookId) {
 }
 
 void NotesStore::refreshPopularReviews(const QString &bookId, const QString &chapterUid, const QString &range) {
+    if (!socialEnabled()) return;
     const QString trimmedBookId = bookId.trimmed();
     const QString trimmedChapterUid = chapterUid.trimmed();
     const QString trimmedRange = range.trimmed();
@@ -452,6 +459,7 @@ void NotesStore::bufferPopularMarks(const QString &bookId) {
 }
 
 void NotesStore::bufferPopularMarksForContext(const QString &bookId, const QString &contextKey) {
+    if (!socialEnabled()) return;
     const QString trimmed = bookId.trimmed();
     const QString key = contextKey.trimmed().isEmpty() ? QStringLiteral("book") : contextKey.trimmed();
     if (trimmed.isEmpty()) {

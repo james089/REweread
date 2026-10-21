@@ -8,6 +8,7 @@
 
 class NotesStore : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool socialEnabled READ socialEnabled CONSTANT)
     Q_PROPERTY(bool running READ running NOTIFY changed)
     Q_PROPERTY(QString statusText READ statusText NOTIFY changed)
     Q_PROPERTY(QVariantList notebooks READ notebooks NOTIFY changed)
@@ -17,6 +18,7 @@ class NotesStore : public QObject {
 public:
     explicit NotesStore(QObject *parent = nullptr);
 
+    bool socialEnabled() const;
     bool running() const;
     QString statusText() const;
     QVariantList notebooks() const;

@@ -105,6 +105,9 @@ end
 
 local function cookies_from_config(config)
     local imported = {}
+    if type(config.cookies) == "table" and Cookie.has_login_cookie(config.cookies) then
+        imported = deepcopy(config.cookies)
+    end
     local raw_cookie = ""
 
     if has_text(config.curl) then
@@ -135,8 +138,17 @@ end
 
 function ConfigBridge:new(opts)
     opts = opts or {}
+    local config_path = opts.config_path or DEFAULT_CONFIG_PATH
+    if not opts.config_path then
+        local legacy = io.open(config_path, "r")
+        if legacy then
+            legacy:close()
+        else
+            config_path = "/home/root/xovi/exthome/appload/koreader/settings/weread.lua"
+        end
+    end
     local obj = {
-        config_path = opts.config_path or DEFAULT_CONFIG_PATH,
+        config_path = config_path,
         session_path = opts.session_path or os.getenv("RM_WEREAD_SESSION_PATH") or DEFAULT_SESSION_PATH,
         values = {},
     }
@@ -190,6 +202,24 @@ end
 
 function ConfigBridge:flush()
     save_session(self.session_path, self.values)
+end
+
+function ConfigBridge:update_auth(updates, options)
+    options = options or {}
+    if type(updates.cookies) == "table" then
+        self.values.cookies = options.replace_cookies and deepcopy(updates.cookies)
+            or Cookie.merge(self.values.cookies, updates.cookies)
+    end
+    for _, key in ipairs({ "wr_ticket", "wr_wrpa" }) do
+        if updates[key] ~= nil then self.values[key] = updates[key] end
+    end
+    if options.flush ~= false then self:flush() end
+    return true
+end
+
+function ConfigBridge:merge_set_cookie(value, options)
+    return self:update_auth({ cookies = Cookie.merge_set_cookie(self:get("cookies", {}), value) },
+        { replace_cookies = true, flush = not options or options.flush ~= false })
 end
 
 function ConfigBridge:is_api_configured()

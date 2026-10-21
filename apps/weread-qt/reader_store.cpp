@@ -1,6 +1,10 @@
 #include "reader_store.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QDirIterator>
+#include <QElapsedTimer>
+#include <QSaveFile>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -443,6 +447,8 @@ QVariantMap ReaderStore::textAnchorForRemoteProgress(const QString &chapterUid, 
 }
 
 void ReaderStore::loadBook(const QString &bookId, const QString &title) {
+    QElapsedTimer openClock;
+    openClock.start();
     m_title = title.isEmpty() ? bookId : title;
     m_status = QStringLiteral("loading");
     m_bodyText = QStringLiteral("正在打开本地缓存...");
@@ -482,6 +488,14 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
     loadBookmarksForBook(bookId);
     loadHighlightsForBook(bookId);
     loadParagraphNotesForBook(bookId);
+    const QByteArray fingerprint = documentFingerprint(expandedDir, chapters);
+    if (!fingerprint.isEmpty() && restoreDocumentCache(bookId, fingerprint)) {
+        m_status = QStringLiteral("chapters:%1").arg(chapters.size());
+        persistTextLengthForProgress(bookId);
+        emit contentChanged();
+        qInfo("reader-open cache=hit elapsed-ms=%lld", openClock.elapsed());
+        return;
+    }
 
     QStringList parts;
     parts.reserve(chapters.size());
@@ -556,8 +570,10 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
         m_bodyText = QStringLiteral("这本书暂时没有可显示文字。");
     }
     m_status = QStringLiteral("chapters:%1").arg(chapters.size());
+    if (!fingerprint.isEmpty()) saveDocumentCache(bookId, fingerprint);
     persistTextLengthForProgress(bookId);
     emit contentChanged();
+    qInfo("reader-open cache=miss elapsed-ms=%lld", openClock.elapsed());
 }
 
 void ReaderStore::searchText(const QString &query, int maxResults) {
@@ -1419,6 +1435,79 @@ QString ReaderStore::ensureExpandedEpub(const QString &bookId) {
         return {};
     }
     return expandedDir;
+}
+
+// Derived cache only: personal annotations and progress are loaded independently.
+QByteArray ReaderStore::documentFingerprint(const QString &expandedDir, const QStringList &chapters) const {
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    hash.addData(QByteArrayLiteral("reader-document-v1\0"));
+    hash.addData(expandedDir.toUtf8());
+    QStringList files;
+    QDirIterator it(expandedDir, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) files.append(it.next());
+    files.sort();
+    for (const QString &path : files) {
+        const QFileInfo info(path);
+        hash.addData(QDir(expandedDir).relativeFilePath(path).toUtf8());
+        hash.addData(QByteArray::number(info.size()));
+        hash.addData(QByteArray::number(info.lastModified().toMSecsSinceEpoch()));
+    }
+    // Hash source text as well, so same-size chapter edits cannot reuse old text.
+    QStringList sources = chapters;
+    sources.append(QDir(expandedDir).filePath(QStringLiteral("OEBPS/content.opf")));
+    for (const QString &path : sources) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return {};
+        hash.addData(file.readAll());
+    }
+    return hash.result().toHex();
+}
+
+bool ReaderStore::restoreDocumentCache(const QString &bookId, const QByteArray &fingerprint) {
+    QFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-document-v1.json")));
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024) return false;
+    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    if (root.value(QStringLiteral("version")).toInt() != 1
+            || root.value(QStringLiteral("fingerprint")).toString().toLatin1() != fingerprint) return false;
+    const QJsonObject payload = root.value(QStringLiteral("document")).toObject();
+    const QByteArray encoded = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    if (QString::fromLatin1(QCryptographicHash::hash(encoded, QCryptographicHash::Sha256).toHex())
+            != root.value(QStringLiteral("checksum")).toString()) return false;
+    if (!payload.value(QStringLiteral("body")).isString()
+            || !payload.value(QStringLiteral("chapters")).isArray()
+            || !payload.value(QStringLiteral("images")).isArray()
+            || !payload.value(QStringLiteral("footnotes")).isArray()) return false;
+    if (payload.value(QStringLiteral("body")).toString().isEmpty()
+            || payload.value(QStringLiteral("chapters")).toVariant().toList().isEmpty()) return false;
+    m_bodyText = payload.value(QStringLiteral("body")).toString();
+    m_imageSource = payload.value(QStringLiteral("image")).toString();
+    m_imageSources = payload.value(QStringLiteral("images")).toVariant().toList();
+    m_chapters = payload.value(QStringLiteral("chapters")).toVariant().toList();
+    m_footnotes = payload.value(QStringLiteral("footnotes")).toVariant().toList();
+    return !m_bodyText.isEmpty() && !m_chapters.isEmpty();
+}
+
+void ReaderStore::saveDocumentCache(const QString &bookId, const QByteArray &fingerprint) const {
+    if (m_bodyText.isEmpty() || m_chapters.isEmpty()) return;
+    QVariantMap values;
+    values.insert(QStringLiteral("body"), m_bodyText);
+    values.insert(QStringLiteral("image"), m_imageSource);
+    values.insert(QStringLiteral("images"), m_imageSources);
+    values.insert(QStringLiteral("chapters"), m_chapters);
+    values.insert(QStringLiteral("footnotes"), m_footnotes);
+    const QJsonObject payload = QJsonObject::fromVariantMap(values);
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("fingerprint"), QString::fromLatin1(fingerprint));
+    root.insert(QStringLiteral("document"), payload);
+    root.insert(QStringLiteral("checksum"), QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(payload).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex()));
+    QSaveFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-document-v1.json")));
+    if (!file.open(QIODevice::WriteOnly)) return;
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    if (file.write(data) != data.size()) { file.cancelWriting(); return; }
+    file.commit();
 }
 
 QStringList ReaderStore::chapterPaths(const QString &expandedDir) const {
