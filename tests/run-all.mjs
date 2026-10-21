@@ -30,6 +30,7 @@ const scripts = [
   'validate-book-images.mjs',
   'validate-redownload-tool.mjs',
   'validate-persistent-http.mjs',
+  'validate-epub-compatibility.mjs',
   'validate-download-navigation.mjs',
   'validate-sdk-version.mjs',
   'validate-koreader-paths.mjs',

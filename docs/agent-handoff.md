@@ -4,6 +4,18 @@
 
 这份文档面向第一次接手仓库的新 AI Agent。先读 `AGENTS.md`，再从头读完本文，然后才运行命令或接触设备。本文只记录可公开的项目状态，不包含设备地址、账号、书名、Cookie、API Key、二维码 UID、用户缓存或原始日志。
 
+### 2026-10-21 EPUB 兼容性修复（已部署）
+
+用户提供的本地 EPUB 严格检查发现 XHTML 未声明的 `&nbsp;`，以及内容相同的重复 ZIP 图片成员和 OPF href；用户确认手动规范实体并去重后的副本可在原系统打开。ZIP CRC 正常不等于 EPUB/XML 合法，不要再以 unzip -t 代替章节 XML 验证。
+
+Qt 当前 DownloadManager 的 finish_full_download（完整/部分）和 finish_opening_download 在调用外部 Content.save_book_epub 前，经过自有 epub_compatibility.lua：复制正文输入，将 &nbsp; 转成等价 &#160;；按 href 对资源去重，仅允许媒体类型和实际字节一致的重复。同名不同内容报错，避免静默丢图；缓存正文和校验清单不变，续传读回的旧正文也在打包前规范。当前未支持 workspace_text_dir，明确拒绝而非跳过。旧 download_full 同步原型路径未改，不要宣称所有上游插件打包入口都已修复。
+
+完整 Linux 测试、17 个 shell 语法检查、官方 chiappa SDK 增量构建通过。宿主 Lua 及设备 LuaJIT 合成行为测试通过；设备实际 Content/ZIP 写入集成覆盖 full、partial、opening，逐成员 libxml2 严格解析、OPF 单一图片 href、ZIP 唯一路径、CRC 与原始图片字节通过，合成续传回归通过。未将用户正文或书籍文件入库。用户确认的是此前手动修复副本；新自动生成文件尚待实际原系统导入验收，未改变 UI，无新增正文页面渲染验收。
+
+仅原子升级 helper/lib/epub_compatibility.lua 和 download_manager.lua；后者备份为 download_manager.lua.before-epub-compatibility。无需重启，后续 helper 进程生效；现有已完成 EPUB 不自动迁移，命中 fullFile 缓存会继续返回旧文件，不能让用户误以为再次普通点击下载必然重打包。设备 Xochitl active、NRestarts=0；账号、已有下载、进度和中文系统保留。
+
+后续另一份本地样本发现空 media-type，且同一 href 的重复清单项分别为空与 image/png；该文件仅在仓库外手动修复。当前自动兼容层要求重复资源 media_type 相同，尚未处理这种情况；后续应增加独立合成用例再实现类型识别，不能宣称已全部覆盖。字体讨论没有新增代码或系统修改。
+
 ### 2026-10-21 下载 HTTPS 连接复用（已部署）
 
 仅 DownloadManager 的 Lua 客户端新增 persistent_http.lua，使用设备现有 libcurl，每个任务复用连接/DNS/TLS，会话选项逐请求重置；旧客户端仍处理认证、业务错误、跨来源重定向与有界重试。保留图片、章节缓存和原有 30 秒阅读状态缓存，没有增加并发。TLS 证书与主机名验证开启，设备需指定标准 ECDHE/AES-GCM 套件；不要通过关闭验证来解决握手兼容性。缺少库或 RM_WEREAD_PERSISTENT_HTTP=0 时在发请求前沿用旧传输，已发送请求失败不做隐式传输切换重试。

@@ -1,0 +1,26 @@
+package.path = 'apps/weread-move/lib/?.lua;' .. package.path
+local C = require('epub_compatibility')
+local original = { ['1'] = '<p>测试&nbsp;正文 &amp; &#160; &lt;nbsp;&amp;nbsp;</p>' }
+local image = { href='images/test.png', media_type='image/png', data='\000\255synthetic' }
+local bodies, assets = C.prepare(original, {image, image, image})
+assert(bodies['1'] == '<p>测试&#160;正文 &amp; &#160; &lt;nbsp;&amp;nbsp;</p>')
+assert(original['1']:find('&nbsp;', 1, true), 'cache must remain untouched')
+assert(#assets == 1 and assets[1] == image)
+assert(C.xhtml(bodies['1']) == bodies['1'], 'normalization is idempotent')
+local function conflict(other)
+ local ok, err = pcall(C.prepare, original, {image, other})
+ assert(not ok and tostring(err):find('Conflicting duplicate EPUB resource',1,true))
+end
+conflict({href=image.href, media_type=image.media_type, data='different'})
+conflict({href=image.href, media_type='image/jpeg', data=image.data})
+local path = os.tmpname()
+local f = assert(io.open(path,'wb')); f:write(image.data); f:close()
+local ok, err = pcall(function()
+ local _, disk = C.prepare(original, {image, {href=image.href,media_type=image.media_type,path=path}})
+ assert(#disk==1, 'file-backed duplicate must compare actual bytes')
+ local _, distinct = C.prepare(original, {image, {href='images/other.png',media_type=image.media_type,path=path}})
+ assert(#distinct==2)
+end)
+os.remove(path); assert(ok, err)
+assert(not pcall(C.prepare, {__workspace_text_dir='/not-supported'}, {}))
+print('EPUB compatibility behavior ok')

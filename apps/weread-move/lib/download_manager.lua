@@ -7,6 +7,7 @@ local Sha256 = require("sha256")
 local WebResponse = require("web_response")
 local ReaderStateCache = require("reader_state_cache")
 local PersistentHttp = require("persistent_http")
+local EpubCompatibility = require("epub_compatibility")
 
 local DEFAULT_CACHE_DIR = "/home/root/.local/share/rm-weread/books"
 
@@ -550,9 +551,10 @@ function DownloadManager:finish_full_download(job)
         end)
     end
     local partial_state = (#job.failed > 0) and "partial" or "full"
+    local epub_bodies, epub_assets = EpubCompatibility.prepare(job.bodies, job.assets)
     local path = Content.save_book_epub(
-        job.settings, job.work_book, job.selected, job.bodies,
-        partial_state == "full" and "full" or "partial", job.assets, job.content_state.css, cover_data
+        job.settings, job.work_book, job.selected, epub_bodies,
+        partial_state == "full" and "full" or "partial", epub_assets, job.content_state.css, cover_data
     )
     job.book.chapters = job.chapters
     local last_error = ""
@@ -598,9 +600,10 @@ function DownloadManager:finish_opening_download(job)
         end
         error(message, 0)
     end
+    local epub_bodies, epub_assets = EpubCompatibility.prepare(job.bodies, job.assets)
     local path = Content.save_book_epub(
-        job.settings, job.work_book, job.selected, job.bodies,
-        "opening", job.assets, job.content_state.css
+        job.settings, job.work_book, job.selected, epub_bodies,
+        "opening", epub_assets, job.content_state.css
     )
     job.book.chapters = job.chapters
     if self.status_store and job.book_id then
