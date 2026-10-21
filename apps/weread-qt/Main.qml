@@ -40,6 +40,7 @@ Window {
     property string screenName: "shelf"
     property string pendingOpenBookId: ""
     onScreenNameChanged: {
+        if (root.screenName !== "reader") paginationAheadTimer.stop()
         root.pendingOpenBookId = ""
         root.pendingCatalogBookId = ""
         root.pendingCatalogChapter = ({})
@@ -1535,6 +1536,7 @@ Window {
     }
 
     function markReaderPaginationDirty() {
+        paginationAheadTimer.stop()
         root.readerPaginationDirty = true
     }
 
@@ -2270,6 +2272,7 @@ Window {
     }
 
     function buildReaderPaginationWindowFromOffset(offset, pageCount) {
+        paginationAheadTimer.stop()
         var text = String(readerStore.bodyText || "")
         var start = root.clamp(Math.floor(Number(offset) || 0), 0, Math.max(0, text.length - 1))
         var starts = []
@@ -2388,9 +2391,38 @@ Window {
     }
 
     function ensureReaderPaginationWindowAhead() {
-        if (root.readerCachedPageCount - root.pageIndex <= 4) {
-            root.extendReaderPaginationWindow(8)
+        if (root.screenName !== "reader" || root.currentBookId === ""
+                || root.readerPaginationDirty || root.selfTestMode !== "") {
+            paginationAheadTimer.stop()
+            return
         }
+        if (root.readerCachedPageCount - root.pageIndex < 6) {
+            paginationAheadTimer.bookId = root.currentBookId
+            paginationAheadTimer.signature = root.readerPaginationSignature
+            paginationAheadTimer.restart()
+        }
+    }
+
+    function prefetchReaderPaginationPage(bookId, signature) {
+        if (root.screenName !== "reader" || bookId !== root.currentBookId
+                || signature !== root.readerPaginationSignature
+                || root.readerPaginationDirty || root.selfTestMode !== "") return
+        if (root.showReaderSettings || root.showReaderCatalog
+                || root.annotationMode || (root.pendingFreeInkStrokes || []).length > 0) return
+        // One page per event-loop slice; never compute a batch inside a turn.
+        if (root.readerCachedPageCount - root.pageIndex < 6
+                && root.extendReaderPaginationWindow(1)) {
+            root.ensureReaderPaginationWindowAhead()
+        }
+    }
+
+    Timer {
+        id: paginationAheadTimer
+        property string bookId: ""
+        property string signature: ""
+        interval: 400
+        repeat: false
+        onTriggered: root.prefetchReaderPaginationPage(bookId, signature)
     }
 
     function rebuildReaderPaginationWindowBackward() {
@@ -4997,6 +5029,7 @@ Window {
         // that first page so existing free ink is visible immediately.
         root.prepareReaderInkPageChange()
         root.loadReaderInkForCurrentPage()
+        root.ensureReaderPaginationWindowAhead()
         if (selfTestMode === "") {
             root.requestReaderProgressPull(false)
             root.scheduleReaderSocialPrefetch()
@@ -5146,6 +5179,7 @@ Window {
     }
 
     function setReaderPage(value) {
+        paginationAheadTimer.stop()
         if (root.readerInkStoreAllowed()) {
             root.flushPendingFreeInkStrokes()
         }
@@ -5160,7 +5194,7 @@ Window {
             value = root.pageIndex
         }
         if (Number(value) >= count) {
-            root.extendReaderPaginationWindow(8)
+            root.extendReaderPaginationWindow(1)
             count = root.readerCachedPageCount
         }
         root.pageIndex = root.clamp(value, 0, count - 1)

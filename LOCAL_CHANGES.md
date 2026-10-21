@@ -16,7 +16,7 @@
 ## 已保存的可执行文件
 
 build/local-artifacts/rm_weread_qt 是设备已安装的 ARM64 程序。
-SHA-256：8da9872bf449c2a774397902e8c3edff753d95f682b6df7581c59c30746980a9
+SHA-256：a7b1c2d74d8be476d27f72d4621a7d9b191625a9a5d5ca9942f18dd6c6789a71
 同目录 SHA256SUMS 可验证文件；helper/ 保存匹配的 Lua 辅助代码。
 build/ 按上游规则被 Git 忽略，二进制仍保存在本地项目文件夹内。备份整个项目时应包含它。
 
@@ -57,3 +57,11 @@ docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work node:24-bookworm
 
 当前设备已独立配置 AppLoad、系统汉化和拼音输入法。不要为了更新此程序再次运行会改写 Xovi/系统启动配置的首次安装脚本。
 正常更新仅备份和替换 /home/root/weread-qt/rm_weread_qt，必要时同步 helper 文件；用户数据在 /home/root/.local/share/rm-weread/，应保留。
+
+## 后续翻页预排优化
+
+- 原先翻页时同步补算 8 页，改为显示页面后由 400 ms 单次计时器逐次预排 1 页，最多保留当前页及后续约 5 页。
+- 快速翻页耗尽缓存时仅同步补算所需的下一页；书末不重复调度。
+- 切书、改字号、离开阅读页时取消旧任务；打开设置/目录或批注时暂停预排。
+- 这仍在 Qt 界面线程分片执行，不是独立后台线程；复杂单页和向前翻出当前窗口时仍可能等待排版。
+- 新增 tests/validate-reader-idle-pagination.mjs 行为验证，并纳入完整检查。实际翻页速度仍需设备体验确认。
