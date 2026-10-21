@@ -28,7 +28,7 @@ assert(main.includes('QTemporaryDir') && main.includes('prepareReaderInkSelfTest
   'reader ink self-test must force a temporary data directory and a synthetic EPUB');
 assert(main.includes('RM_WEREAD_SESSION_PATH') && main.includes('logged_out'),
   'reader ink self-test must override the session path with a temporary logged-out file');
-assert(qml.includes('if (root.selfTestMode !== "reader-ink") {\n            readingTimeStore.reloadAccount()'),
+assert(qml.includes('if (root.selfTestMode !== "reader-ink" && root.selfTestMode !== "exit-ui") {\n            readingTimeStore.reloadAccount()'),
   'reader ink self-test must not start account/session helpers at QML startup');
 assert(ocr.includes('qgetenv("RM_WEREAD_DATA_DIR")') && ai.includes('qgetenv("RM_WEREAD_DATA_DIR")'),
   'OCR and AI credentials must honor the isolated reader-ink data directory');

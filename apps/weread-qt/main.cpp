@@ -11,6 +11,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
 #include <cstdio>
 #include <memory>
 
@@ -94,6 +97,22 @@ int main(int argc, char *argv[]) {
             std::fputs("reader-ink-selftest=session-setup-failed\n", stderr);
             return 2;
         }
+    }
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("exit-ui")) {
+        readerInkSelfTestDir = std::make_unique<QTemporaryDir>(QStringLiteral("/tmp/rm-weread-exit-ui-XXXXXX"));
+        if (!readerInkSelfTestDir->isValid()) return 2;
+        const QString path = readerInkSelfTestDir->path();
+        qputenv("RM_WEREAD_DATA_DIR", path.toUtf8());
+        qputenv("RM_WEREAD_SESSION_PATH", QDir(path).filePath("session.json").toUtf8());
+        QJsonArray books;
+        for (int i = 0; i < 195; ++i) {
+            books.append(QJsonObject{{"bookId", QString("shelf-probe-%1").arg(i)},
+                                     {"title", QStringLiteral("翻页测试 %1").arg(i + 1)}});
+        }
+        if (!writeReaderInkSelfTestFile(QDir(path).filePath("shelf.json"),
+                QJsonDocument(QJsonObject{{"books", books}}).toJson()) ||
+            !writeReaderInkSelfTestFile(qEnvironmentVariable("RM_WEREAD_SESSION_PATH"),
+                QByteArray("{\"logged_out\":true}"))) return 2;
     }
     const QString userSettingsDir = qEnvironmentVariable("XDG_CONFIG_HOME", "/home/root/.config");
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, userSettingsDir);

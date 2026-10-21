@@ -422,7 +422,7 @@ Window {
         // reader-ink is a synthetic page/lifecycle test.  It must not spawn
         // account helpers or inspect a real session merely because the full
         // UI component was constructed.
-        if (root.selfTestMode !== "reader-ink") {
+        if (root.selfTestMode !== "reader-ink" && root.selfTestMode !== "exit-ui") {
             readingTimeStore.reloadAccount()
             root.restoreReadingClockFromLedger()
             notesStore.reloadAccountScope()
@@ -5912,7 +5912,8 @@ Window {
         Text {
             x: 46
             y: 112
-            width: root.width - 260
+            width: root.width - 540
+            elide: Text.ElideRight
             text: shelfStore.shelfProgress !== "" ? shelfStore.shelfProgress : "微信读书 · 已同步 " + shelfStore.books.length + " 本"
             color: root.mutedInk
             font.pixelSize: 23
@@ -6027,9 +6028,9 @@ Window {
         Item {
             id: shelfGrid
             x: 44
-            y: 142
+            y: 180
             width: root.width - 88
-            height: root.height - 232
+            height: root.height - 270
             visible: root.shelfTab === "书架" && shelfStore.books.length > 0
             property real cellWidth: width / root.shelfColumns
             property real cellHeight: height / 3
@@ -6061,6 +6062,7 @@ Window {
 
             Repeater {
                 model: 9
+                id: shelfBooksRepeater
 
                 delegate: Item {
                 property int bookIndex: root.shelfPageIndex * 9 + index
@@ -6224,16 +6226,56 @@ Window {
             }
         }
 
-        Text {
-            x: root.width - 258
-            y: 116
-            width: 96
-            text: (root.shelfPageIndex + 1) + " / " + root.shelfPageCount
-            color: root.inkColor
-            font.pixelSize: 20
-            font.bold: true
-            horizontalAlignment: Text.AlignRight
+        Row {
+            id: shelfPageNavigation
+            x: root.width - width - 44
+            y: 108
+            height: 56
+            spacing: 16
             visible: root.shelfTab === "书架" && root.shelfPageCount > 1
+
+            Rectangle {
+                width: 128; height: 56; radius: 4
+                color: root.paperColor
+                border.color: root.shelfPageIndex > 0 ? root.inkColor : "#555555"
+                Text {
+                    anchors.centerIn: parent
+                    text: "上一页"
+                    font.pixelSize: 23
+                    color: root.shelfPageIndex > 0 ? root.inkColor : "#555555"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    id: shelfPreviousPageTap
+                    enabled: root.shelfPageIndex > 0
+                    onClicked: root.goShelfPage(-1)
+                }
+            }
+            Text {
+                width: 116; height: 56
+                text: (root.shelfPageIndex + 1) + " / " + root.shelfPageCount
+                color: root.inkColor
+                font.pixelSize: 23
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            Rectangle {
+                width: 128; height: 56; radius: 4
+                color: root.paperColor
+                border.color: root.shelfPageIndex < root.shelfPageCount - 1 ? root.inkColor : "#555555"
+                Text {
+                    anchors.centerIn: parent
+                    text: "下一页"
+                    font.pixelSize: 23
+                    color: root.shelfPageIndex < root.shelfPageCount - 1 ? root.inkColor : "#555555"
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    id: shelfNextPageTap
+                    enabled: root.shelfPageIndex < root.shelfPageCount - 1
+                    onClicked: root.goShelfPage(1)
+                }
+            }
         }
 
         Item {
@@ -11572,6 +11614,77 @@ Window {
         loginStatusText: accountStore.loginStatusText
         onCancelRequested: root.closeQrLogin()
         onRetryRequested: root.openQrLogin()
+    }
+
+    property bool exitingToSystem: false
+    Connections {
+        target: appControl
+        function onQuitRequested() {
+            root.exitingToSystem = true
+        }
+    }
+    Connections {
+        target: root
+        function onFrameSwapped() {
+            if (root.exitingToSystem && !exitFeedbackTimer.running) exitFeedbackTimer.start()
+        }
+    }
+    Timer {
+        id: exitFeedbackTimer
+        interval: 250
+        onTriggered: {
+            if (root.selfTestMode === "exit-ui") {
+                console.log("exit-ui-selftest=shown")
+                appControl.saveSelfTestScreen()
+            }
+            appControl.finishQuitToSystem()
+        }
+    }
+    Timer {
+        interval: 1200
+        running: root.selfTestMode === "exit-ui"
+        onTriggered: {
+            var passed = shelfStore.books.length === 195 && root.shelfPageCount === 22
+            for (var page = 1; page < 22; ++page) {
+                shelfNextPageTap.clicked(null)
+                passed = passed && root.shelfPageIndex === page
+                    && shelfBooksRepeater.itemAt(0).bookIndex === page * 9
+            }
+            passed = passed && !shelfNextPageTap.enabled
+                && root.currentShelfPageBooks().length === 6
+                && !shelfBooksRepeater.itemAt(6).visible
+            shelfPreviousPageTap.clicked(null)
+            passed = passed && root.shelfPageIndex === 20
+            root.goShelfPage(-100)
+            passed = passed && root.shelfPageIndex === 0 && !shelfPreviousPageTap.enabled
+            console.log("shelf-pagination-selftest=" + (passed ? "ok" : "fail"))
+            appControl.quitToSystem()
+        }
+    }
+    Rectangle {
+        id: exitFeedbackOverlay
+        anchors.fill: parent
+        z: 100000
+        visible: root.exitingToSystem
+        color: "white"
+        MouseArea { anchors.fill: parent }
+        Column {
+            anchors.centerIn: parent
+            spacing: 24
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "正在退出 REweread…"
+                color: "black"
+                font.pixelSize: 34
+                font.bold: true
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "返回系统中，请稍候"
+                color: "black"
+                font.pixelSize: 23
+            }
+        }
     }
 
 }

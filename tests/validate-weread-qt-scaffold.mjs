@@ -529,7 +529,7 @@ assert(qml.includes('property real cellHeight: height / 3'), 'shelf must calcula
 assert(qml.includes('property real coverWidth:'), 'shelf must size covers from available cell height');
 assert(!qml.includes(', 184)'), 'shelf covers must not keep the old small 184px width cap');
 assert(qml.includes('cellWidth - 24'), 'shelf covers must use most of each 3x3 cell width');
-assert(qml.includes('height: root.height - 232'), 'shelf grid must leave room for chrome while making 3x3 covers large');
+assert(qml.includes('height: root.height - 270'), 'shelf grid must leave room for chrome while making 3x3 covers large');
 assert(!qml.includes('positionViewAtIndex'), 'shelf page changes must avoid GridView animated positioning');
 assert(!qml.includes('contentX'), 'shelf page changes must avoid animated flickable content movement');
 assert(qml.includes('property real coverAspectRatio: 0.68'), 'covers must keep phone-book cover ratio');
@@ -995,7 +995,7 @@ assert(enterReaderSnippet.includes('if (selfTestMode === "")'), 'reader self-tes
 assert(enterReaderSnippet.includes('root.requestReaderProgressPull(false)') && enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must fetch progress and schedule current-page comments');
 assert(!enterReaderSnippet.includes('notesStore.refreshBookNotes(bookId)'), 'normal reader opens must not block current-page comments behind full-book note sync');
 assert(enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must schedule non-blocking popular community comment prefetch');
-assert(!qml.includes('返回系统'), 'reader settings must not show an ugly return-to-system button');
+assert(!qml.includes('text: "返回系统"'), 'reader settings must not show an ugly return-to-system button');
 assert(qml.includes('text: "继续阅读"'), 'primary action text should be explicit and centered');
 assert(qml.includes('detailPage.book.downloadActionText'), 'download action should reflect real cached/offline state');
 assert(qml.includes('id: detailProgressBar'), 'detail page must include a visible reading progress bar');

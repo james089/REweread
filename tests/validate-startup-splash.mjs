@@ -17,3 +17,13 @@ assert(session.lastIndexOf('APP_STARTED=1',launch)>session.indexOf('xochitl-stat
 assert(session.slice(launch,full).includes('wait "$APP_PID"'),'splash must release its display before the full app starts');
 assert(session.slice(0,launch).includes('if [ -z "$SELFTEST_MODE" ]'),'other isolated tests must not start an extra splash');
 console.log('startup splash handoff checks ok');
+
+const qml=fs.readFileSync('apps/weread-qt/Main.qml','utf8');
+const control=fs.readFileSync('apps/weread-qt/app_control.cpp','utf8');
+assert(qml.includes('正在退出 REweread…') && qml.includes('返回系统中，请稍候'));
+assert(qml.includes('function onFrameSwapped()') && qml.includes('exitFeedbackTimer.start()'));
+assert(control.includes('emit quitRequested()') && control.includes('QTimer::singleShot(2500'));
+assert(qml.includes('id: shelfPageNavigation') && qml.includes('text: "上一页"') && qml.includes('text: "下一页"'));
+assert(qml.includes('enabled: root.shelfPageIndex > 0') && qml.includes('enabled: root.shelfPageIndex < root.shelfPageCount - 1'));
+assert(main.includes('i < 195') && main.includes('/tmp/rm-weread-exit-ui-'), 'pagination/exit test must use isolated synthetic data');
+assert(qml.includes('shelfNextPageTap.clicked(null)') && qml.includes('shelf-pagination-selftest='), 'device test must exercise the actual page button handler');

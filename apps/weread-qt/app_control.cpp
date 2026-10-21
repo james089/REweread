@@ -5,12 +5,26 @@
 #include <QCryptographicHash>
 #include <QImage>
 #include <QSaveFile>
+#include <QTimer>
 
 AppControl::AppControl(QObject *parent)
     : QObject(parent) {
 }
 
 void AppControl::quitToSystem() {
+    if (!qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST") &&
+        qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") != QStringLiteral("exit-ui")) {
+        QCoreApplication::quit();
+        return;
+    }
+    if (m_quitting) return;
+    m_quitting = true;
+    emit quitRequested();
+    // Still return to the system if the display cannot produce another frame.
+    QTimer::singleShot(2500, this, &AppControl::finishQuitToSystem);
+}
+
+void AppControl::finishQuitToSystem() {
     QCoreApplication::quit();
 }
 
