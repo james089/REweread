@@ -4,6 +4,14 @@
 
 这份文档面向第一次接手仓库的新 AI Agent。先读 `AGENTS.md`，再从头读完本文，然后才运行命令或接触设备。本文只记录可公开的项目状态，不包含设备地址、账号、书名、Cookie、API Key、二维码 UID、用户缓存或原始日志。
 
+### 2026-10-21 下载 HTTPS 连接复用（已部署）
+
+仅 DownloadManager 的 Lua 客户端新增 persistent_http.lua，使用设备现有 libcurl，每个任务复用连接/DNS/TLS，会话选项逐请求重置；旧客户端仍处理认证、业务错误、跨来源重定向与有界重试。保留图片、章节缓存和原有 30 秒阅读状态缓存，没有增加并发。TLS 证书与主机名验证开启，设备需指定标准 ECDHE/AES-GCM 套件；不要通过关闭验证来解决握手兼容性。缺少库或 RM_WEREAD_PERSISTENT_HTTP=0 时在发请求前沿用旧传输，已发送请求失败不做隐式传输切换重试。
+
+同组 8 章原方式 66.966 / 64.139 秒，新方式 22.070 / 22.195 秒；新方式正文、CSS、图片均与基准一致。最后一轮原方式请求失败，未计入性能样本。临时目录 8 章实际流程验证中断后复用已完成 2 章且无需 HTTP，最终失败 0、EPUB 完整性通过；临时内容已删除。现有完整检查、shell 语法、官方 SDK 构建、设备虚拟 HTTP 行为与合成续传/状态缓存检查通过。不得宣称所有整本书固定快三倍。
+
+仅原子升级 helper/lib 两个 Lua 文件，无需重启 App，新任务生效；旧 download_manager.lua.before-persistent-http 可回退。安装时用户 App 已退出，系统界面 active、NRestarts=0，未强行重新打开；账号和用户缓存保留。详见 docs/download-connection-reuse-2026-10-21.md。
+
 ### 2026-10-21 完整下载封面角标
 
 用户要求在书架已完整下载的封面右下角显示完成标记。Main.qml 的 coverDownloadBadge 为白底黑字“✓ 已下载”，图片之上 z=1、右下间距 8；只有 downloadState=full 且 localEpubPath 非空时显示，partial/remote 不显示。角标无输入处理器，沿用整本完成时 shelfStore.reload 的自动刷新。

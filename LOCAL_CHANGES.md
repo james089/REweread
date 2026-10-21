@@ -128,3 +128,10 @@ docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work node:24-bookworm
 
 - 书架封面右下角增加白底黑字“✓ 已下载”角标，位于封面图片上方，不增加任何输入拦截层。
 - 仅当书架模型为 full 且本地 EPUB 路径非空时显示；部分下载、未下载不显示。沿用整本完成后的书架 reload，自动更新角标。
+
+## 下载连接复用提速
+
+- DownloadManager 使用自有 persistent_http.lua 适配设备现有 libcurl，按下载客户端复用连接、DNS 和 TLS 会话；保留原协议、图片、认证、重定向、有界重试与章节续传。
+- 同组 8 章原方式约 64–67 秒，新方式两次约 22 秒，正文/CSS/图片一致。仅代表此样本；最后一次原方式请求失败，未计入耗时。
+- 设备本机网络行为测试及实际 8 章中断续传/EPUB 完整性测试通过，完整检查与官方 SDK 构建通过。
+- 只更新 Lua helper，无需重启 App，新建下载任务生效；旧下载器在设备保留备份。详见 docs/download-connection-reuse-2026-10-21.md。

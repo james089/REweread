@@ -1,0 +1,15 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync('apps/weread-move/lib/persistent_http.lua','utf8');
+const smoke=fs.readFileSync('tests/persistent_http_smoke.lua','utf8');
+assert(source.includes('curl.curl_easy_reset(self.handle)'), 'reuse a per-job handle without retaining request options');
+assert(source.includes('long(64, 1); long(81, 2)'), 'require peer and hostname verification');
+assert(source.includes('long(52, 0)'), 'redirects must remain with the existing credential-aware client');
+assert(source.includes('long(181, 3)'), 'restrict transport protocols to HTTP/HTTPS');
+assert(source.includes('http.request = original_http') && source.includes('pcall(original, self, ...)'), 'restore original transport even on client errors');
+assert(source.includes('RM_WEREAD_PERSISTENT_HTTP') && source.includes('if not owner then return client end'), 'allow rollback and compatibility fallback before any request is sent');
+assert(!source.includes('curl_easy_setopt(self.handle, 64, 0)'), 'never disable certificate validation');
+assert(source.includes('jit.off(owner.request, true)'), 'keep callbacks outside JIT-compiled FFI calls');
+assert(smoke.includes('owner.connections == 1') && smoke.includes('POST method/body reset') && smoke.includes('request headers must not leak'), 'behavior test must validate reuse and request isolation');
+assert(smoke.includes('reject truncated body') && smoke.includes('total timeout') && smoke.includes('sink abort'), 'behavior test must validate failed transfers');
+console.log('persistent HTTP contracts ok');

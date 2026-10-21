@@ -6,6 +6,7 @@ local ChapterCache = require("chapter_cache")
 local Sha256 = require("sha256")
 local WebResponse = require("web_response")
 local ReaderStateCache = require("reader_state_cache")
+local PersistentHttp = require("persistent_http")
 
 local DEFAULT_CACHE_DIR = "/home/root/.local/share/rm-weread/books"
 
@@ -180,6 +181,7 @@ function DownloadManager:client(settings, book_id)
         WebResponse.check(response)
         return response, code, headers
     end
+    PersistentHttp.attach(client)
     return ReaderStateCache.attach(client, book_id and WeRead.reader_url(book_id) or nil)
 end
 
