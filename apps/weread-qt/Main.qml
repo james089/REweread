@@ -5,6 +5,7 @@ import "SocialAnchor.js" as SocialAnchor
 import "PinyinEngine.js" as PinyinEngine
 import "FreeNoteAnchor.js" as FreeNoteAnchor
 import "ReadingClock.js" as ReadingClock
+import "PageGesture.js" as PageGesture
 
 Window {
     id: root
@@ -5304,18 +5305,8 @@ Window {
         if (root.showReaderSettings || root.showReaderCatalog || root.showReaderSocialPopup) {
             return
         }
-        var dx = endX - startX
-        var dy = endY - startY
-        if (Math.abs(dy) > 108) {
-            return
-        }
-        if (side === "left") {
-            if (dx > 42 || Math.abs(dx) < 12) {
-                root.setReaderPage(root.pageIndex - 1)
-            }
-        } else if (dx < -42 || Math.abs(dx) < 12) {
-            root.setReaderPage(root.pageIndex + 1)
-        }
+        var delta = PageGesture.readerDelta(side, endX - startX, endY - startY)
+        if (delta !== 0) root.setReaderPage(root.pageIndex + delta)
     }
 
     function readerPointInRect(x, y, rx, ry, rw, rh) {
@@ -6041,22 +6032,26 @@ Window {
                 target: null
                 acceptedDevices: PointerDevice.TouchScreen | PointerDevice.Mouse
                 grabPermissions: PointerHandler.CanTakeOverFromAnything
-                dragThreshold: 18
+                dragThreshold: 12
 
+                property real swipeDx: 0
+                property real swipeDy: 0
+                onActiveTranslationChanged: {
+                    if (active) {
+                        swipeDx = activeTranslation.x
+                        swipeDy = activeTranslation.y
+                    }
+                }
                 onActiveChanged: {
                     if (active) {
+                        swipeDx = 0
+                        swipeDy = 0
                         return
                     }
-                    var dx = translation.x
-                    var dy = translation.y
-                    if (Math.abs(dx) < 92 || Math.abs(dx) < Math.abs(dy) * 1.35) {
-                        return
-                    }
-                    if (dx < 0 && root.shelfPageIndex < root.shelfPageCount - 1) {
-                        root.goShelfPage(1)
-                    } else if (dx > 0 && root.shelfPageIndex > 0) {
-                        root.goShelfPage(-1)
-                    }
+                    // Device Qt resets activeTranslation before this release
+                    // callback. Retain the last displacement while active.
+                    var delta = PageGesture.swipeDelta(swipeDx, swipeDy)
+                    if (delta !== 0) root.goShelfPage(delta)
                 }
             }
 
@@ -6104,7 +6099,7 @@ Window {
 
                     TapHandler {
                         acceptedDevices: PointerDevice.TouchScreen | PointerDevice.Mouse | PointerDevice.Stylus
-                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        gesturePolicy: TapHandler.DragThreshold
                         onTapped: {
                             root.detailBookOverride = ({})
                             root.selectedIndex = bookIndex
@@ -11645,6 +11640,11 @@ Window {
         running: root.selfTestMode === "exit-ui"
         onTriggered: {
             var passed = shelfStore.books.length === 195 && root.shelfPageCount === 22
+            appControl.injectSelfTestSwipe(700, 400, 550, 420)
+            passed = passed && root.shelfPageIndex === 1 && root.screenName === "shelf"
+            appControl.injectSelfTestSwipe(550, 400, 700, 380)
+            passed = passed && root.shelfPageIndex === 0 && root.screenName === "shelf"
+            console.log("shelf-swipe-selftest=" + (passed ? "ok" : "fail"))
             for (var page = 1; page < 22; ++page) {
                 shelfNextPageTap.clicked(null)
                 passed = passed && root.shelfPageIndex === page
@@ -11658,6 +11658,13 @@ Window {
             root.goShelfPage(-100)
             passed = passed && root.shelfPageIndex === 0 && !shelfPreviousPageTap.enabled
             console.log("shelf-pagination-selftest=" + (passed ? "ok" : "fail"))
+            root.enterReaderForBook("ink-probe", "Gesture probe")
+            var initialPage = root.pageIndex
+            appControl.injectSelfTestSwipe(360, 500, 240, 520)
+            var readerPassed = root.pageIndex === initialPage + 1
+            appControl.injectSelfTestSwipe(650, 500, 790, 480)
+            readerPassed = readerPassed && root.pageIndex === initialPage
+            console.log("reader-swipe-selftest=" + (readerPassed ? "ok" : "fail"))
             appControl.quitToSystem()
         }
     }

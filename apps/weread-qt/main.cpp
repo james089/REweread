@@ -100,7 +100,7 @@ int main(int argc, char *argv[]) {
     }
     if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("exit-ui")) {
         readerInkSelfTestDir = std::make_unique<QTemporaryDir>(QStringLiteral("/tmp/rm-weread-exit-ui-XXXXXX"));
-        if (!readerInkSelfTestDir->isValid()) return 2;
+        if (!readerInkSelfTestDir->isValid() || !prepareReaderInkSelfTestBook(readerInkSelfTestDir->path())) return 2;
         const QString path = readerInkSelfTestDir->path();
         qputenv("RM_WEREAD_DATA_DIR", path.toUtf8());
         qputenv("RM_WEREAD_SESSION_PATH", QDir(path).filePath("session.json").toUtf8());

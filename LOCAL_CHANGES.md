@@ -108,3 +108,12 @@ docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work node:24-bookworm
 - 新增 exit-ui 隔离自检：临时生成 195 本虚拟书，触发真实按钮处理器逐页检查 22 页及末页 6 本，再测试退出提示；不使用用户书架或账号辅助进程。
 
 - 已部署：设备 reader-ink 隔离回归、195 本虚拟书架分页及退出首帧自检通过；退出后系统恢复且 NRestarts=0。静态退出画面中文字已检查，真实触摸待用户确认。
+
+## 书架与正文滑动修复
+
+- 书架 DragHandler 改读 Qt 6 的 activeTranslation 并缓存活动期间最后位移；独立设备探针复现释放回调中的 activeTranslation 已归零，不能在释放时直接读取。避免读取不存在的 translation；封面 TapHandler 使用 DragThreshold，被识别为拖动时取消开书。
+- 单次水平滑动达到 36 逻辑像素、水平位移大于垂直位移的 1.15 倍时翻页。正文滑动方向不再受起手半屏限制；轻触仍按左右区域翻页，设置/目录/评论和笔触抑制守卫保留。
+- PageGesture.js 的方向、斜滑、轻触抖动、短拖、竖滑、连续反向滑动行为检查纳入完整测试。
+- exit-ui 的临时书架新增真实 Qt 鼠标事件注入，通过封面区域左右拖动，再在合成正文左半屏向左滑、右半屏向右滑，检查真实页码变化；该注入仅允许隔离自检模式使用。
+
+- 已部署并通过设备真实 Qt 指针事件路由自检：shelf-swipe、shelf-pagination、reader-swipe 均 ok；reader-ink 七阶段通过，退出恢复系统且 NRestarts=0。用户实际触摸手感待确认。
