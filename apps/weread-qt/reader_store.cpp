@@ -11,6 +11,7 @@
 #include <QHash>
 #include <QImageReader>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QRectF>
@@ -446,9 +447,59 @@ QVariantMap ReaderStore::textAnchorForRemoteProgress(const QString &chapterUid, 
     return result;
 }
 
+bool ReaderStore::canReuseBook(const QString &bookId) const {
+    if (bookId != m_loadedBookId || m_loadedFingerprint.isEmpty() || m_chapters.isEmpty()) return false;
+    const QString expanded = QDir(bookDir(bookId)).filePath(QStringLiteral("epub-expanded"));
+    if (findReadableEpub(bookId).isEmpty()) return false;
+    return documentFingerprint(expanded, chapterPaths(expanded)) == m_loadedFingerprint;
+}
+
+QVariantMap ReaderStore::loadPageWindow(const QString &bookId, const QString &layout, int savedOffset) const {
+    if (bookId != m_loadedBookId || m_loadedFingerprint.isEmpty() || savedOffset < 0) return {};
+    QFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-window-v1.json")));
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024) return {};
+    const auto root = QJsonDocument::fromJson(file.readAll()).object();
+    if (root.value(QStringLiteral("source")).toString().toLatin1() != m_loadedFingerprint
+            || root.value(QStringLiteral("layout")).toString() != layout) return {};
+    const auto window = root.value(QStringLiteral("window")).toObject();
+    if (QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(window).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex()) != root.value(QStringLiteral("checksum")).toString()) return {};
+    const auto starts = window.value(QStringLiteral("starts")).toArray();
+    const auto images = window.value(QStringLiteral("images")).toArray();
+    const int page = window.value(QStringLiteral("page")).toInt(-1);
+    if (starts.isEmpty() || starts.size() != images.size() || page < 0 || page >= starts.size()) return {};
+    int previous = -1;
+    for (const auto &value : starts) {
+        const double raw = value.toDouble(-1);
+        if (raw < 0 || raw > m_bodyText.size() || raw != int(raw) || int(raw) <= previous) return {};
+        previous = int(raw);
+    }
+    if (starts.at(page).toInt(-1) != savedOffset) return {};
+    return window.toVariantMap();
+}
+
+void ReaderStore::savePageWindow(const QString &bookId, const QString &layout, const QVariantMap &window) const {
+    if (bookId != m_loadedBookId || m_loadedFingerprint.isEmpty()) return;
+    QJsonObject root;
+    root.insert(QStringLiteral("source"), QString::fromLatin1(m_loadedFingerprint));
+    root.insert(QStringLiteral("layout"), layout);
+    root.insert(QStringLiteral("window"), QJsonObject::fromVariantMap(window));
+    root.insert(QStringLiteral("checksum"), QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(QJsonObject::fromVariantMap(window)).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex()));
+    const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    if (bytes.size() > 4 * 1024 * 1024) return;
+    QSaveFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-window-v1.json")));
+    if (!file.open(QIODevice::WriteOnly)) return;
+    file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    if (file.write(bytes) != bytes.size()) { file.cancelWriting(); return; }
+    file.commit();
+}
+
 void ReaderStore::loadBook(const QString &bookId, const QString &title) {
     QElapsedTimer openClock;
     openClock.start();
+    m_loadedBookId.clear();
+    m_loadedFingerprint.clear();
     m_title = title.isEmpty() ? bookId : title;
     m_status = QStringLiteral("loading");
     m_bodyText = QStringLiteral("正在打开本地缓存...");
@@ -489,6 +540,8 @@ void ReaderStore::loadBook(const QString &bookId, const QString &title) {
     loadHighlightsForBook(bookId);
     loadParagraphNotesForBook(bookId);
     const QByteArray fingerprint = documentFingerprint(expandedDir, chapters);
+    m_loadedBookId = bookId;
+    m_loadedFingerprint = fingerprint;
     if (!fingerprint.isEmpty() && restoreDocumentCache(bookId, fingerprint)) {
         m_status = QStringLiteral("chapters:%1").arg(chapters.size());
         persistTextLengthForProgress(bookId);

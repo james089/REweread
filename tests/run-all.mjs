@@ -36,6 +36,7 @@ const scripts = [
   'validate-reader-word-wrap.mjs',
   'validate-reader-pagination-fill.mjs',
   'validate-reader-idle-pagination.mjs',
+  'validate-reader-resume.mjs',
   'validate-reader-measured-pagination.mjs',
   'validate-reader-image-flow.mjs',
   'validate-native-reader-view.mjs',

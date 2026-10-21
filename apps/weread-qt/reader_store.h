@@ -46,6 +46,9 @@ public:
     QString status() const;
     bool openingCache() const;
 
+    Q_INVOKABLE bool canReuseBook(const QString &bookId) const;
+    Q_INVOKABLE QVariantMap loadPageWindow(const QString &bookId, const QString &layout, int savedOffset) const;
+    Q_INVOKABLE void savePageWindow(const QString &bookId, const QString &layout, const QVariantMap &window) const;
     Q_INVOKABLE void loadBook(const QString &bookId, const QString &title);
     Q_INVOKABLE int savedPage(const QString &bookId) const;
     Q_INVOKABLE int savedTextOffset(const QString &bookId) const;
@@ -126,6 +129,8 @@ private:
     QString plainTextFromXhtml(const QString &xhtml) const;
     void setError(const QString &title, const QString &message);
 
+    QString m_loadedBookId;
+    QByteArray m_loadedFingerprint;
     QString m_title;
     QString m_bodyText;
     QString m_imageSource;

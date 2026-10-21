@@ -990,7 +990,7 @@ const readerLayoutSelfTestSnippet = qml.slice(qml.indexOf('function prepareReade
 assert(readerLayoutSelfTestSnippet.includes('var fractions = [0.08, 0.52, 0.88]') && readerLayoutSelfTestSnippet.includes('body.indexOf("\\n", offset)'), 'reader layout self-test must skip front matter and sample real body paragraph starts');
 assert(!readerLayoutSelfTestSnippet.includes('[\n            0,'), 'reader layout self-test must not use page zero front matter as the typography proof');
 const enterReaderIndex = qml.indexOf('function enterReaderForBook');
-const enterReaderSnippet = qml.slice(enterReaderIndex, enterReaderIndex + 3200);
+const enterReaderSnippet = qml.slice(enterReaderIndex, qml.indexOf("function readerTextOffsetForCatalogChapter", enterReaderIndex));
 assert(enterReaderSnippet.includes('if (selfTestMode === "")'), 'reader self-tests must skip async helper fetches so luajit processes are not destroyed during test shutdown');
 assert(enterReaderSnippet.includes('root.requestReaderProgressPull(false)') && enterReaderSnippet.includes('root.scheduleReaderSocialPrefetch()'), 'normal reader opens must fetch progress and schedule current-page comments');
 assert(!enterReaderSnippet.includes('notesStore.refreshBookNotes(bookId)'), 'normal reader opens must not block current-page comments behind full-book note sync');

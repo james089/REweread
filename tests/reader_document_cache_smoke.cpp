@@ -32,13 +32,25 @@ int main(int argc, char **argv) {
     expect(QFile::exists(base+"/reader-document-v1.json"), "derived cache missing");
     ReaderStore second; timer.restart(); second.loadBook("fixture","Fixture"); const auto warm=timer.elapsed();
     expect(second.bodyText()==body && second.chapters()==first.chapters() && second.footnotes()==first.footnotes() && second.imageSources()==first.imageSources(), "cache changed document coordinates");
+    expect(second.canReuseBook("fixture"), "unchanged loaded book must be reusable");
+    QVariantMap window;
+    window.insert("starts",QVariantList{0,10});window.insert("images",QVariantList{"",""});window.insert("page",1);
+    second.savePageWindow("fixture","font42",window);
+    expect(!second.loadPageWindow("fixture","font42",10).isEmpty(),"saved page window did not restore");
+    expect(second.loadPageWindow("fixture","font46",10).isEmpty(),"changed typography reused page window");
+    expect(second.loadPageWindow("fixture","font42",11).isEmpty(),"different reading offset reused page window");
+    write(base+"/reader-window-v1.json","broken");
+    expect(second.loadPageWindow("fixture","font42",10).isEmpty(),"corrupt page window was accepted");
+    second.savePageWindow("fixture","font42",window);
     const auto fingerprint=second.documentFingerprint(base+"/epub-expanded", second.chapterPaths(base+"/epub-expanded"));
     write(base+"/reader-document-v1.json", "broken");
     expect(!second.restoreDocumentCache("fixture",fingerprint), "corrupt cache accepted");
     second.loadBook("fixture","Fixture"); expect(second.bodyText()==body, "corrupt cache did not rebuild");
     chapter.replace("Temporary", "Different");
     write(base+"/epub-expanded/OEBPS/text/000.xhtml",chapter);
+    expect(!second.canReuseBook("fixture"), "modified source must reject in-memory resume");
     ReaderStore changed; changed.loadBook("fixture","Fixture");
+    expect(changed.loadPageWindow("fixture","font42",10).isEmpty(),"changed source reused page window");
     expect(changed.bodyText()!=body, "source change reused stale cache");
     qInfo("document-cache-test passed cold-ms=%lld warm-ms=%lld",cold,warm);
 }

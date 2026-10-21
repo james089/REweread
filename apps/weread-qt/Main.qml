@@ -38,8 +38,18 @@ Window {
     property int selectedIndex: 0
     property var detailBookOverride: ({})
     property string screenName: "shelf"
+    property string readerLastScreen: "shelf"
+    property bool readerOpening: false
+    property string deferredReaderBookId: ""
+    property string deferredReaderTitle: ""
     property string pendingOpenBookId: ""
     onScreenNameChanged: {
+        if (root.readerLastScreen === "reader" && root.screenName !== "reader" && !root.readerOpening
+                && root.selfTestMode === "" && root.currentBookId !== "") {
+            readerStore.saveProgress(root.currentBookId, root.pageIndex, root.readerCachedPageCount, root.currentReaderTextStart)
+            root.saveReaderWindow()
+        }
+        root.readerLastScreen = root.screenName
         if (root.screenName !== "reader") paginationAheadTimer.stop()
         root.pendingOpenBookId = ""
         root.pendingCatalogBookId = ""
@@ -323,7 +333,7 @@ Window {
     property string readingTimeSubmissionBookId: ""
     property int readingTimeSubmissionSeconds: 0
     readonly property bool readingClockActive: root.screenName === "reader"
-        && !root.sleepOverlayVisible && root.visible && root.active
+        && !root.sleepOverlayVisible && !root.readerOpening && root.visible && root.active
         && accountStore.cookieConfigured && readerStore.bodyText !== ""
         && root.selfTestMode === ""
     onReadingClockActiveChanged: {
@@ -4984,10 +4994,66 @@ Window {
         return rows
     }
 
+    function saveReaderWindow() {
+        if (root.currentBookId === "" || root.readerPaginationDirty || root.selfTestMode !== "") return
+        readerStore.savePageWindow(root.currentBookId, root.readerPaginationBuildSignature(), {
+            "starts": root.readerPageStarts, "images": root.readerPageImages, "page": root.pageIndex
+        })
+    }
+
+    function resumeLoadedReader(bookId) {
+        var started = Date.now()
+        if (root.selfTestMode !== "" || bookId !== root.currentBookId || root.readerPaginationDirty
+                || root.readerPaginationSignature !== root.readerPaginationBuildSignature()
+                || readerStore.savedTextOffset(bookId) !== root.currentReaderTextStart
+                || !readerStore.canReuseBook(bookId)) return false
+        root.screenName = "reader"
+        root.sampleReadingClock()
+        root.loadReaderInkForCurrentPage()
+        root.ensureReaderPaginationWindowAhead()
+        console.log("reader-open-ui mode=resume elapsed-ms=" + (Date.now() - started))
+        return true
+    }
+
+    function openCachedReader(bookId, title) {
+        if (root.resumeLoadedReader(bookId)) return
+        root.deferredReaderBookId = bookId
+        root.deferredReaderTitle = title || bookId
+        root.readerOpening = true
+        root.screenName = "reader"
+        deferredReaderOpenTimer.restart()
+    }
+
+    Timer {
+        id: deferredReaderOpenTimer
+        interval: 80
+        repeat: false
+        onTriggered: {
+            try { root.enterReaderForBook(root.deferredReaderBookId, root.deferredReaderTitle) }
+            finally { root.readerOpening = false }
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        z: 99999
+        color: root.paperColor
+        visible: root.readerOpening
+        Text {
+            anchors.centerIn: parent
+            text: "正在打开…"
+            font.pixelSize: 32
+            color: root.inkColor
+        }
+        MouseArea { anchors.fill: parent }
+    }
+
     function enterReaderForBook(bookId, title) {
         if (!bookId || bookId === "") {
             return
         }
+        if (root.resumeLoadedReader(bookId)) return
+        root.saveReaderWindow()
         root.pendingOpenBookId = ""
         // Capture the old visible interval before the synchronous EPUB load,
         // then pause the clock so load time belongs to neither book.
@@ -5013,7 +5079,21 @@ Window {
         root.closeReaderSocialPopup()
         var savedOffset = readerStore.savedTextOffset(bookId)
         root.readerOpenedWithLocalProgress = savedOffset >= 0
-        if (savedOffset >= 0) {
+        var restoredWindow = readerStore.loadPageWindow(bookId, root.readerPaginationBuildSignature(), savedOffset)
+        if (restoredWindow.starts && restoredWindow.starts.length > 0) {
+            root.readerPageStarts = restoredWindow.starts
+            root.readerPageImages = restoredWindow.images
+            root.readerCachedPageCount = restoredWindow.starts.length
+            root.readerChapterPageLabels = ({})
+            root.readerPaginationSignature = root.readerPaginationBuildSignature()
+            root.readerPaginationDirty = false
+            root.readerPaginationBuilding = false
+            root.readerFastOpenMode = false
+            readerPaginationBatchTimer.stop()
+            root.pageIndex = restoredWindow.page
+            root.refreshReaderPageCache()
+            root.screenName = "reader"
+        } else if (savedOffset >= 0) {
             root.readerFastOpenAnchorOffset = savedOffset
             root.readerFastOpenMode = false
             root.buildReaderPaginationWindowFromOffset(savedOffset, 2)
@@ -5093,7 +5173,7 @@ Window {
             return
         }
         if (book.downloadState === "full" || book.localEpubPath !== "") {
-            root.enterReaderForBook(book.bookId, book.title)
+            root.openCachedReader(book.bookId, book.title)
             return
         }
         root.pendingOpenBookId = book.bookId
