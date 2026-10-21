@@ -5136,7 +5136,6 @@ Window {
             "reviewSnippets": book.intro ? [book.intro] : ["暂无公开书评缓存，下载后可阅读。"]
         }
         shelfStore.refreshBookDetails(book.bookId)
-        bookCatalogStore.loadCatalog(book.bookId, book.title || book.bookId)
         root.showDetailCatalog = false
         root.screenName = "detail"
     }
@@ -8520,7 +8519,12 @@ Window {
                 y: 1018
                 width: root.width - 96
                 height: 52
-                text: "推荐书评"
+                text: shelfStore.refreshingDetails ? "正在刷新书籍信息…" : "刷新书籍信息（联网）"
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: !shelfStore.refreshingDetails
+                    onClicked: shelfStore.refreshBookDetails(detailPage.book.bookId, true)
+                }
                 color: root.inkColor
                 font.pixelSize: 34
                 font.weight: Font.Bold
@@ -8529,6 +8533,7 @@ Window {
 
             Flickable {
                 id: detailReviewList
+                visible: false
                 x: 48
                 y: 1084
                 width: root.width - 96

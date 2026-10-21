@@ -22,8 +22,8 @@ assert(shelfStore.includes('remoteProgress'), 'detail progress must fall back to
 assert(!shelfStore.includes('QStringLiteral("第 %1 / %2 页")'), 'detail progress must never expose pagination-dependent page counts');
 assert(shelfStore.includes('QStringLiteral("%1%")'), 'detail progress label must be a percentage');
 assert(readerStore.includes('row.insert(QStringLiteral("textLength")'), 'reader progress persistence must store the full text length');
-assert(refreshDetail.includes('gateway("/book/getprogress"'), 'detail refresh must fetch the official WeRead percentage');
-assert(refreshDetail.includes('remoteProgress'), 'detail refresh must cache the official WeRead percentage');
+assert(!refreshDetail.includes('/book/getprogress'), 'detail metadata refresh must not fetch cloud progress');
+assert(shelfStore.includes('!forceNetwork && hasLocalInfo'), 'cached detail must bypass network refresh');
 for (const id of ['detailHero', 'detailProgressPercent', 'detailPrimaryAction', 'detailReviewList']) {
   assert(qml.includes(`id: ${id}`), `redesigned detail page must include ${id}`);
 }

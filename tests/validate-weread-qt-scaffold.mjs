@@ -423,8 +423,8 @@ assert(fetchProgressTool.includes('progress ='), 'progress pull helper must prin
 
 const refreshDetailTool = read('apps/weread-move/tools/refresh-detail.lua');
 assert(refreshDetailTool.includes('BookInfoService'), 'detail refresh helper must load WeRead book metadata');
-assert(refreshDetailTool.includes('ReviewService'), 'detail refresh helper must load WeRead public reviews');
-assert(refreshDetailTool.includes('save_reviews'), 'detail refresh helper must cache normalized review rows');
+assert(!refreshDetailTool.includes('ReviewService'), 'lite detail refresh must not fetch public reviews');
+assert(!refreshDetailTool.includes('/book/getprogress'), 'metadata refresh must not request cloud reading progress');
 assert(refreshDetailTool.includes('state=done'), 'detail refresh helper must print completion state');
 
 const refreshShelfTool = read('apps/weread-move/tools/refresh-shelf.lua');

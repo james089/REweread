@@ -33,7 +33,7 @@ public:
 
     Q_INVOKABLE void reload();
     Q_INVOKABLE void refreshShelf();
-    Q_INVOKABLE void refreshBookDetails(const QString &bookId);
+    Q_INVOKABLE void refreshBookDetails(const QString &bookId, bool forceNetwork = false);
 
 signals:
     void booksChanged();

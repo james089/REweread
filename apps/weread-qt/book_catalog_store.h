@@ -24,6 +24,7 @@ signals:
     void changed();
 
 private:
+    bool loadLocalCatalog(const QString &bookId);
     void appendOutput(const QString &text);
     void finishProcess(int exitCode, QProcess::ExitStatus exitStatus);
     void setState(bool running, const QString &statusText);

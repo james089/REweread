@@ -142,8 +142,22 @@ void ShelfStore::refreshShelf() {
     }
 }
 
-void ShelfStore::refreshBookDetails(const QString &bookId) {
+void ShelfStore::refreshBookDetails(const QString &bookId, bool forceNetwork) {
     if (bookId.isEmpty()) {
+        return;
+    }
+    const QVariantMap cached = loadStatusMap().value(bookId).toMap();
+    const bool hasLocalInfo = !findFullEpub(bookId).isEmpty() || !findPartialEpub(bookId).isEmpty()
+        || cached.value(QStringLiteral("infoUpdatedAt")).toLongLong() > 0;
+    if (!forceNetwork && hasLocalInfo) {
+        if (refreshingDetails()) {
+            m_detailProcess.kill();
+            m_detailProcess.waitForFinished(1000);
+        }
+        m_detailBookId = bookId;
+        m_detachedDetailBook = loadDetachedDetailBook(bookId);
+        m_detailProgress = QStringLiteral("已显示本地信息");
+        emit detailRefreshChanged();
         return;
     }
     if (refreshingDetails()) {
@@ -263,7 +277,7 @@ QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
     book.insert(QStringLiteral("categoryName"), categoryName);
     book.insert(QStringLiteral("intro"), intro.isEmpty() ? QStringLiteral("暂无简介。打开详情后会自动尝试更新。") : intro);
     if (reviewSnippets.isEmpty()) {
-        reviewSnippets.append(review.isEmpty() ? QStringLiteral("暂无公开书评缓存，打开详情后会自动尝试加载。") : review);
+        reviewSnippets.append(review.isEmpty() ? QStringLiteral("已关闭公开书评加载。") : review);
     }
     book.insert(QStringLiteral("review"), review.isEmpty() ? reviewSnippets.first().toString() : review);
     book.insert(QStringLiteral("reviewSnippets"), reviewSnippets);

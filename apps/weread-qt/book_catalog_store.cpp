@@ -1,6 +1,9 @@
 #include "book_catalog_store.h"
 
 #include <QFileInfo>
+#include <QDir>
+#include <QHash>
+#include <QXmlStreamReader>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
@@ -37,6 +40,7 @@ void BookCatalogStore::loadCatalog(const QString &bookId, const QString &title) 
         setState(false, QStringLiteral("缺少书籍 ID"));
         return;
     }
+    if (loadLocalCatalog(trimmed)) return;
     if (m_running) {
         return;
     }
@@ -63,6 +67,68 @@ void BookCatalogStore::loadCatalog(const QString &bookId, const QString &title) 
     if (!m_process.waitForStarted(3000)) {
         setState(false, QStringLiteral("目录组件无法启动"));
     }
+}
+
+bool BookCatalogStore::loadLocalCatalog(const QString &bookId) {
+    QString safe;
+    for (const QChar ch : bookId) safe += (ch.isLetterOrNumber() || ch == '_' || ch == '-' || ch == '.') ? ch : QChar('_');
+    if (safe.isEmpty() || safe == "." || safe == "..") return false;
+    const QString data = qEnvironmentVariable("RM_WEREAD_DATA_DIR", "/home/root/.local/share/rm-weread");
+    const QDir dir(QDir(data).filePath(QStringLiteral("books/%1").arg(safe)));
+    const auto files = dir.entryInfoList({QStringLiteral("*full.epub")}, QDir::Files, QDir::Name);
+    if (files.isEmpty()) return false;
+    if (m_running) { m_process.kill(); m_process.waitForFinished(1000); }
+    m_bookId = bookId;
+    m_chapters.clear();
+    const QString epub = files.first().absoluteFilePath();
+    auto member = [&epub](const QString &name) {
+        QProcess unzip;
+        unzip.start(QStringLiteral("/usr/bin/unzip"), {QStringLiteral("-p"), epub, name});
+        if (!unzip.waitForFinished(3000) || unzip.exitCode() != 0) return QByteArray();
+        return unzip.readAllStandardOutput();
+    };
+    QHash<QString, QString> uids;
+    QXmlStreamReader opf(member(QStringLiteral("OEBPS/content.opf")));
+    while (!opf.atEnd()) {
+        opf.readNext();
+        if (opf.isStartElement() && opf.name() == QLatin1String("item")) {
+            const auto attrs = opf.attributes();
+            const QString id = attrs.value(QLatin1String("id")).toString();
+            if (QRegularExpression(QStringLiteral("^chapter_[0-9]+$")).match(id).hasMatch())
+                uids.insert(attrs.value(QLatin1String("href")).toString(), id.mid(8));
+        }
+    }
+    QXmlStreamReader toc(member(QStringLiteral("OEBPS/toc.ncx")));
+    QList<int> stack;
+    while (!toc.atEnd()) {
+        toc.readNext();
+        if (toc.isStartElement()) {
+            if (toc.name() == QLatin1String("navPoint")) {
+                QVariantMap row;
+                row.insert(QStringLiteral("index"), m_chapters.size() + 1);
+                row.insert(QStringLiteral("chapterIdx"), m_chapters.size() + 1);
+                stack.append(m_chapters.size());
+                m_chapters.append(row);
+            } else if (!stack.isEmpty() && toc.name() == QLatin1String("text")) {
+                auto row = m_chapters.at(stack.last()).toMap();
+                row.insert(QStringLiteral("title"), toc.readElementText());
+                m_chapters[stack.last()] = row;
+            } else if (!stack.isEmpty() && toc.name() == QLatin1String("content")) {
+                auto row = m_chapters.at(stack.last()).toMap();
+                row.insert(QStringLiteral("chapterUid"), uids.value(toc.attributes().value(QLatin1String("src")).toString().section('#', 0, 0)));
+                m_chapters[stack.last()] = row;
+            }
+        } else if (toc.isEndElement() && toc.name() == QLatin1String("navPoint") && !stack.isEmpty()) stack.removeLast();
+    }
+    if (toc.hasError()) m_chapters.clear();
+    for (int i = 0; i < m_chapters.size(); ++i) {
+        auto row = m_chapters.at(i).toMap();
+        row.insert(QStringLiteral("label"), QStringLiteral("%1. %2").arg(i + 1).arg(row.value(QStringLiteral("title")).toString()));
+        m_chapters[i] = row;
+    }
+    setState(false, m_chapters.isEmpty() ? QStringLiteral("本地目录不可用，请进入阅读页查看目录")
+                                      : QStringLiteral("本地目录：%1 章").arg(m_chapters.size()));
+    return true; // A full local book must never silently fall back to the network.
 }
 
 void BookCatalogStore::appendOutput(const QString &text) {
