@@ -14,6 +14,11 @@ SESSION_LOG="${SESSION_LOG:-/tmp/rm-weread-qt-session.log}"
 QML_DISK_CACHE_PATH="${QML_DISK_CACHE_PATH:-/home/root/.cache/rm-weread/WeRead Move/qmlcache}"
 export QML_DISK_CACHE_PATH
 mkdir -p "$QML_DISK_CACHE_PATH"
+# systemd-run/AppLoad does not always provide a user home or config directory.
+HOME="${HOME:-/home/root}"
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/home/root/.config}"
+export HOME XDG_CONFIG_HOME
+mkdir -p "$XDG_CONFIG_HOME"
 APP_STARTED=0
 DEPLOY_LOCK_NAME="rm-weread-deploy"
 

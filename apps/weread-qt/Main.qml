@@ -39,6 +39,7 @@ Window {
     property var detailBookOverride: ({})
     property string screenName: "shelf"
     property string readerLastScreen: "shelf"
+    property bool readerPreferencesReady: false
     property bool readerOpening: false
     property string deferredReaderBookId: ""
     property string deferredReaderTitle: ""
@@ -379,12 +380,14 @@ Window {
 
     onShowReaderSettingsChanged: {
         if (!showReaderSettings) {
+            root.persistReaderPreferences()
             settingsDragOffset = 0
         }
     }
 
     Settings {
         id: persistedReaderSettings
+        location: runtimeSettingsUrl
         category: "reader"
         property alias fontSize: root.readerFontSize
         property alias lineHeight: root.readerLineHeight
@@ -402,6 +405,7 @@ Window {
 
     Settings {
         id: persistedMagicBookSettings
+        location: runtimeSettingsUrl
         category: "magicBook"
         property alias fontChoice: root.magicFontChoice
         property alias personaChoice: root.magicPersonaChoice
@@ -410,6 +414,7 @@ Window {
 
     Component.onCompleted: {
         root.migrateReaderDefaults()
+        root.readerPreferencesReady = true
         if (!persistedMagicBookSettings.longCangDefaultMigrated) {
             root.magicFontChoice = "龙藏体"
             persistedMagicBookSettings.longCangDefaultMigrated = true
@@ -5317,7 +5322,19 @@ Window {
         return x >= rx && x <= rx + rw && y >= ry && y <= ry + rh
     }
 
+    function persistReaderPreferences() {
+        if (!root.readerPreferencesReady || root.selfTestMode !== "") return
+        // Explicit writes also cover abrupt process stops before alias updates flush.
+        var values = root.captureReaderSettings()
+        for (var key in values) persistedReaderSettings.setValue(key, values[key])
+        persistedReaderSettings.setValue("paragraphSpacingDefaultMigrated", true)
+        persistedReaderSettings.setValue("typographyTuningMigrated", true)
+        persistedReaderSettings.setValue("wenkaiDefaultMigrated", true)
+        persistedReaderSettings.sync()
+    }
+
     function applyReaderSettingChange(needsPagination) {
+        root.persistReaderPreferences()
         if (needsPagination) {
             root.scheduleReaderPaginationRebuild()
         }
@@ -9986,6 +10003,7 @@ Window {
 
             function adjust(prop, delta, minValue, maxValue) {
                 root[prop] = root.clamp(root[prop] + delta, minValue, maxValue)
+                root.persistReaderPreferences()
                 root.scheduleReaderPaginationRebuild()
                 root.forceReaderRefresh += 1
             }

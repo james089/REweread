@@ -16,7 +16,7 @@
 ## 已保存的可执行文件
 
 build/local-artifacts/rm_weread_qt 是设备已安装的 ARM64 程序。
-SHA-256：d0fb2722e4bc21ad00d27a105d4f4b2e4e387256d16a1ef60ece59e2405fe23d
+SHA-256：a6d5d8ab703633a3979babe5c92813d465b9e35b18c14a7859d5e74868869bf6
 同目录 SHA256SUMS 可验证文件；helper/ 保存匹配的 Lua 辅助代码。
 build/ 按上游规则被 Git 忽略，二进制仍保存在本地项目文件夹内。备份整个项目时应包含它。
 
@@ -82,3 +82,13 @@ docker run --rm --platform linux/arm64 -v "$PWD:/work" -w /work node:24-bookworm
 - 普通“继续阅读”的冷打开先切换阅读界面并遮住旧书，延迟执行加载；载入时间不计为阅读时长。
 - 新增 tests/validate-reader-resume.mjs；扩充合成书测试，验证内存复用、窗口恢复与失效规则。完整检查与设备隔离缓存测试通过。
 - 尚未宣称真实书籍端到端零延迟；首次建立缓存仍需要加载，需用户实际点击确认速度。
+
+## 字体与字号持久化修复
+
+- 正常应用先前未找到字体配置文件；启动环境缺少 HOME/XDG_CONFIG_HOME。
+- 启动脚本明确用户目录与可写配置目录，主程序提供固定的 Settings URL；测试模式仍使用隔离配置目录。
+- 选字体、调字号和关闭阅读设置时显式写入并同步；初始化完成前禁止保存，避免默认值覆盖加载值。
+- 设置保存在 /home/root/.config/rm-weread/WeRead Move.conf。不会删除账号、书籍或阅读记录。
+- tests/settings_persistence_smoke.cpp 使用真实 Qt Settings，在临时目录写入非默认字体字号后不执行析构直接结束，再由独立进程验证恢复；本地和设备均通过。
+- tests/validate-reader-preferences.mjs 验证即时保存、迁移标记与初始化/测试模式保护，纳入完整检查。
+- 此前未成功保存的选择无法恢复，升级后需用户重新选择一次。

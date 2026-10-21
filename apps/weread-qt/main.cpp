@@ -4,6 +4,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QSettings>
+#include <QUrl>
 #include <QTimer>
 #include <QQuickWindow>
 #include <QDir>
@@ -90,6 +91,9 @@ int main(int argc, char *argv[]) {
             return 2;
         }
     }
+    const QString userSettingsDir = qEnvironmentVariable("XDG_CONFIG_HOME", "/home/root/.config");
+    QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, userSettingsDir);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, userSettingsDir);
     if (!qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST")) {
         // QML's device-provided Settings type has no fileName property.
         // Isolate preferences below it so interrupted UI tests cannot change
@@ -251,6 +255,9 @@ int main(int argc, char *argv[]) {
         &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
         []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
 
+    const QUrl settingsUrl = QUrl::fromLocalFile(QSettings().fileName());
+    QDir().mkpath(QFileInfo(settingsUrl.toLocalFile()).absolutePath());
+    engine.rootContext()->setContextProperty("runtimeSettingsUrl", settingsUrl);
     engine.loadFromModule("WeReadMove", "Main");
     std::fprintf(stderr, "rm-weread: qml ready elapsed-ms=%lld\n", startupClock.elapsed());
     if (!engine.rootObjects().isEmpty()) {
