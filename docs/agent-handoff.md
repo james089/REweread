@@ -4,6 +4,12 @@
 
 这份文档面向第一次接手仓库的新 AI Agent。先读 `AGENTS.md`，再从头读完本文，然后才运行命令或接触设备。本文只记录可公开的项目状态，不包含设备地址、账号、书名、Cookie、API Key、二维码 UID、用户缓存或原始日志。
 
+### 2026-10-21 完整下载封面角标
+
+用户要求在书架已完整下载的封面右下角显示完成标记。Main.qml 的 coverDownloadBadge 为白底黑字“✓ 已下载”，图片之上 z=1、右下间距 8；只有 downloadState=full 且 localEpubPath 非空时显示，partial/remote 不显示。角标无输入处理器，沿用整本完成时 shelfStore.reload 的自动刷新。
+
+现有完整 Linux 检查、shell 语法和官方 SDK 构建通过，应用文件已升级，设备 reader-ink 隔离回归成功。正常应用已重新打开；角标在用户实际封面上的视觉验收待用户确认，未读取或导出用户封面截图。账号、下载内容和阅读记录保留。
+
 ### 2026-10-21 用户验收手势，移除书架按钮
 
 用户明确确认手势“很好”，要求移除书架上一页/下一页。已删除可见按钮，保留页码和手势，封面网格恢复 y=142 / height=root.height-232。exit-ui 自检改为用真实 Qt 注入滑动逐页遍历 195 本虚拟书的 22 页；shelf-swipe、shelf-pagination、reader-swipe 均 ok，exit-ui shown，系统恢复 active、NRestarts=0。完整 Linux 检查、shell 语法、官方 SDK 构建、设备 reader-ink 隔离回归通过；已更新并重新打开正常应用，账号和下载内容保留。

@@ -6097,6 +6097,29 @@ Window {
                         visible: source !== ""
                     }
 
+                    Rectangle {
+                        id: coverDownloadBadge
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 8
+                        width: 112
+                        height: 38
+                        radius: 5
+                        z: 1
+                        visible: parent.parent.book.downloadState === "full"
+                                 && String(parent.parent.book.localEpubPath || "") !== ""
+                        color: "white"
+                        border.color: root.inkColor
+                        border.width: 2
+                        Text {
+                            anchors.centerIn: parent
+                            text: "✓ 已下载"
+                            color: root.inkColor
+                            font.pixelSize: 19
+                            font.bold: true
+                        }
+                    }
+
                     TapHandler {
                         acceptedDevices: PointerDevice.TouchScreen | PointerDevice.Mouse | PointerDevice.Stylus
                         gesturePolicy: TapHandler.DragThreshold
