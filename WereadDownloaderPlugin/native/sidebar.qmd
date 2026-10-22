@@ -37,6 +37,18 @@ AFFECT /qml/device/view/main/MainView.qml
                     source: "qrc:/weread-downloader/DownloaderPage.qml"
                 }
                 Connections {
+                    target: Downloader
+                    function onRestoreRequested(uuid, page, bookId) {
+                        let entry = Library.entryForId(uuid);
+                        if (!entry || page < 0 || page >= entry.pageCount) {
+                            Downloader.completeRestore(bookId, false);
+                            return;
+                        }
+                        LibraryController.setLastOpenedPage(entry.id, page);
+                        Qt.callLater(function() { Downloader.completeRestore(bookId, entry.lastOpenedPage === page); });
+                    }
+                }
+                Connections {
                     target: PowerManager
                     function onPowerButtonShortPress() { Downloader.closePage() }
                 }

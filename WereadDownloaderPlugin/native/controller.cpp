@@ -43,6 +43,8 @@ void LoginImage::update(const QString &url) {
 DownloaderController::DownloaderController(LoginImage *image, QObject *parent, const QString &workerProgram, const QString &coverRoot)
     : QObject(parent), m_covers(this, coverRoot), m_image(image), m_workerProgram(workerProgram) {
     m_status = QStringLiteral("微信读书下载");
+    connect(&m_progressProcess, &QProcess::readyReadStandardOutput, this, &DownloaderController::readProgress);
+    connect(&m_progressProcess, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this](int,QProcess::ExitStatus){readProgress();});
     m_covers.ready = [this] { ++m_coverRevision; emit coversChanged(); };
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &DownloaderController::readOutput);
     connect(&m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &DownloaderController::finish);
@@ -54,6 +56,7 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     });
 }
 DownloaderController::~DownloaderController() {
+    stopProgress();
     if (busy()) {
         m_process.terminate();
         if (!m_process.waitForFinished(1500)) { m_process.kill(); m_process.waitForFinished(500); }
@@ -89,6 +92,7 @@ QString DownloaderController::coverSource(const QString &id, const QString &url)
     return m_opened && m_loggedIn ? m_covers.source(id, url) : QString();
 }
 void DownloaderController::closePage() {
+    stopProgress();
     m_covers.stop();
     m_opened = false; cancel();
     m_qrImage.clear(); m_image->update({}); emit changed();
@@ -108,13 +112,79 @@ void DownloaderController::login() {
     m_accountName.clear(); m_qrImage.clear(); m_image->update({}); start("login");
 }
 void DownloaderController::logout() { if (m_loggedIn && !busy()) start("logout"); }
-void DownloaderController::refresh() { if (!busy()) start(m_loggedIn ? "shelf" : "status"); }
+void DownloaderController::refresh() { if (!busy()) { m_autoRestoreTried.clear(); start(m_loggedIn ? "shelf" : "status"); } }
 QString DownloaderController::currentTitle() const {
     for (const auto &row : m_books) {
         const auto book = row.toMap();
         if (book.value("bookId") == m_currentId) return book.value("title").toString();
     }
     return {};
+}
+void DownloaderController::stopProgress() {
+    if (m_progressProcess.state() != QProcess::NotRunning) {
+        m_progressProcess.terminate();
+        if (!m_progressProcess.waitForFinished(1500)) { m_progressProcess.kill(); m_progressProcess.waitForFinished(500); }
+    }
+    m_progressBuffer.clear();
+}
+void DownloaderController::startProgress() {
+    if (!m_opened || !m_loggedIn || busy() || m_progressProcess.state()!=QProcess::NotRunning) return;
+    bool imported=false;
+    for (const auto &row:m_books) if (row.toMap().value("importState")=="imported") imported=true;
+    if (!imported) return;
+    QProcessEnvironment env;
+    env.insert("PATH","/usr/bin:/bin:/usr/sbin:/sbin"); env.insert("HOME","/home/root");
+    env.insert("LANG","C.UTF-8"); env.insert("LC_ALL","C.UTF-8");
+    m_progressProcess.setProcessEnvironment(env); m_progressProcess.setStandardErrorFile(QProcess::nullDevice());
+    m_progressProcess.start(m_workerProgram,QStringList{"reading-progress"});
+}
+void DownloaderController::applyProgress(const QJsonObject &row) {
+    if (!m_opened || !m_loggedIn || row.value("accountScope").toString()!=m_scope) return;
+    const auto id=row.value("bookId").toString();
+    for(int i=0;i<m_books.size();++i) {
+        auto book=m_books[i].toMap();
+        if(book.value("bookId")!=id || book.value("importState")!="imported") continue;
+        for(const auto &key:{"cloudProgress","localProgress","cloudProgressStale","cloudChapter","localChapter","restorePending","restoreAutomatic"})
+            if(row.contains(key)) book[key]=row.value(key).toVariant();
+        m_books[i]=book; emit bookUpdated(id,book);
+    }
+}
+void DownloaderController::readProgress() {
+    m_progressBuffer+=m_progressProcess.readAllStandardOutput();
+    if(m_progressBuffer.size()>8*1024*1024) { m_progressProcess.kill();m_progressBuffer.clear();return; }
+    int end;
+    while((end=m_progressBuffer.indexOf('\n'))>=0) {
+        auto row=QJsonDocument::fromJson(m_progressBuffer.left(end)).object();m_progressBuffer.remove(0,end+1);
+        if(row.value("state")=="reading_progress") {
+            applyProgress(row);
+            const auto id=row.value("bookId").toString();
+            if(row.value("accountScope").toString()==m_scope && row.value("restorePending").toBool() && row.value("restoreAutomatic").toBool() && !m_autoRestoreTried.contains(id)) {
+                QTimer::singleShot(0,this,[this,id]{ if(m_opened && m_loggedIn && !busy() && !m_autoRestoreTried.contains(id)) downloadProgress(id); });
+            }
+        }
+    }
+}
+void DownloaderController::uploadProgress(const QString &id) {
+    if (!m_opened || !m_loggedIn || busy()) return;
+    for(const auto &row:m_books) {
+        auto book=row.toMap();
+        if(book.value("bookId")==id && book.value("importState")=="imported") {
+            m_autoRestoreTried.insert(id);
+            start("sync-progress",id);return;
+        }
+    }
+}
+void DownloaderController::downloadProgress(const QString &id) {
+    if (!m_opened || !m_loggedIn || busy()) return;
+    for (const auto &row:m_books) {
+        const auto book=row.toMap();
+        if(book.value("bookId")==id && book.value("importState")=="imported") {
+            m_autoRestoreTried.insert(id); start("restore-progress",id); return;
+        }
+    }
+}
+void DownloaderController::completeRestore(const QString &id,bool ok) {
+    if (busy() && id==m_restoreId) { m_process.write(ok?"ok\n":"no\n");m_restoreId.clear(); }
 }
 void DownloaderController::importBooks(const QVariantList &ids) {
     if (!m_opened || !canQueue()) return;
@@ -156,10 +226,13 @@ void DownloaderController::next() {
 }
 void DownloaderController::start(const QString &operation, const QString &id) {
     if (busy()) return;
+    stopProgress();
     ++m_generation;
     m_operation = operation; m_currentId = id; m_error = false; m_final = false; m_loginRequired = false; m_refreshNeeded = false; m_buffer.clear();
     m_status = operation == "login" ? QStringLiteral("正在创建登录二维码…")
         : operation == "shelf" ? QStringLiteral("正在同步书库和导入状态…")
+        : operation == "sync-progress" ? QStringLiteral("正在同步《%1》阅读进度…").arg(currentTitle())
+        : operation == "restore-progress" ? QStringLiteral("正在恢复《%1》云端阅读位置…").arg(currentTitle())
         : operation == "clear-cache" ? QStringLiteral("正在清理《%1》缓存…").arg(currentTitle())
         : operation == "import" ? QStringLiteral("正在下载《%1》…").arg(currentTitle()) : QStringLiteral("正在检查独立账号…");
     if (operation == "import") { m_covers.pause(); bookState("preparing"); }
@@ -212,6 +285,16 @@ void DownloaderController::readOutput() {
             ++m_coverRevision; emit coversChanged(); emit booksChanged();
             m_refreshNeeded = row.value("stale").toBool();
             m_status = row.value("cached").toBool() ? QStringLiteral("已显示本地书架，导入状态已核对") : QStringLiteral("书库已更新"); m_final = true;
+        } else if (state == "restore_position") {
+            m_restoreId = row.value("bookId").toString();
+            m_status = QStringLiteral("正在恢复云端阅读位置…");
+            emit restoreRequested(row.value("uuid").toString(), row.value("page").toInt(-1), m_restoreId);
+        } else if (state == "restore_skipped") {
+            m_autoRestoreTried.insert(m_currentId);
+            m_status = QStringLiteral("已导入；云端位置暂未恢复，可点击下载进度重试"); m_final = true;
+        } else if (state == "progress_synced" || state == "progress_restored") {
+            applyProgress(row); m_final = true;
+            m_status = state == "progress_synced" ? QStringLiteral("阅读进度已同步到微信读书") : QStringLiteral("已恢复云端阅读位置");
         } else if (state == "progress") {
             int total = row.value("total").toInt(), done = row.value("done").toInt();
             int percent = total > 0 ? qBound(0, int(qint64(done) * 100 / total), 99) : 0;
@@ -248,7 +331,13 @@ void DownloaderController::readOutput() {
                 continue;
             }
             if (row.value("importState") == "failed") { bookState("failed"); m_final = true; }
-            m_status = row.value("code") == "native_rejected"
+            m_status = (m_operation == "sync-progress" || m_operation == "restore-progress")
+                ? (row.value("code") == "cloud_progress_changed" ? QStringLiteral("云端进度已变化，请刷新后再同步")
+                   : row.value("code") == "progress_sync_unconfirmed" ? QStringLiteral("同步结果待核对，请刷新查看云端进度")
+                   : row.value("code") == "cloud_progress_unavailable" ? QStringLiteral("云端进度尚未读取，请刷新后重试")
+                   : row.value("code") == "progress_network_failed" ? QStringLiteral("进度读取失败，请检查网络后重试")
+                   : QStringLiteral("暂不能准确定位阅读位置，请确认已读到正文并刷新后重试"))
+                : row.value("code") == "native_rejected"
                 ? QStringLiteral("系统拒绝了上传，EPUB 缓存已保留，可重新导入")
                 : row.value("code") == "cover_unavailable" ? QStringLiteral("封面获取失败，正文缓存已保留，可重试")
                 : m_operation == "shelf" && m_loggedIn
@@ -279,7 +368,8 @@ void DownloaderController::finish(int code, QProcess::ExitStatus exitStatus) {
             else if (operation == "status") start("cached-shelf"); else refresh();
         } else if (!good && m_loginRequired) login();
         else if (good && operation == "cached-shelf" && m_refreshNeeded) refresh();
-        else if (good) next();
+        else if (good) { next(); if (!busy()) startProgress(); }
+        else if (operation == "restore-progress" && m_loggedIn) startProgress();
     });
 }
 bool DownloaderController::enableImporter() {

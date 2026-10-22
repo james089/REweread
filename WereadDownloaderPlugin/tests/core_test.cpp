@@ -1,5 +1,6 @@
 #include "epub.h"
 #include "cache_cleanup.h"
+#include "reading_progress.h"
 #include "import_registry.h"
 #include <QCoreApplication>
 #include <QFile>
@@ -21,6 +22,14 @@ int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
         check(argc == 2);
+        QJsonObject progressMetadata{{"lastOpenedPage",1}};
+        QJsonObject progressContent{{"pageCount",3},{"pages",QJsonArray{"a","b","c"}}};
+        check(nativeReadingPercent(progressMetadata,progressContent)==50);
+        progressMetadata["lastOpenedPage"]=2; check(nativeReadingPercent(progressMetadata,progressContent)==100);
+        progressMetadata["lastOpenedPage"]=0; check(nativeReadingPercent(progressMetadata,progressContent)==0);
+        progressMetadata["lastOpenedPage"]=3; check(nativeReadingPercent(progressMetadata,progressContent)<0);
+        progressMetadata["lastOpenedPage"]=0.5; check(nativeReadingPercent(progressMetadata,progressContent)<0);
+        progressMetadata["lastOpenedPage"]=0; progressMetadata["parent"]="trash"; check(nativeReadingPercent(progressMetadata,progressContent)<0);
         const QString fixtures = QString::fromLocal8Bit(argv[1]);
         QTemporaryDir temporary; check(temporary.isValid());
         const auto stamped = temporary.path() + "/stamped.epub";

@@ -285,3 +285,201 @@ Download optimization and single/multi-select deployment (2026-10-22):
 - Install 20261022180347 confirmed fresh host/sidebar readiness. Import/queued/cache
   actions now use fixed 164×104px dimensions side by side; focused host UI size
   assertions and SDK build passed. Temporary install wake lock released.
+
+### Reading progress and smaller fixed actions (2026-10-22)
+
+- Per-book import, queued, cache removal and progress sync actions use fixed
+  144×88px geometry, 20px horizontal padding (four-character labels fit).
+- Only imported books show local/cloud percentages. Local is current native
+  page-position estimate (first page 0%, last page 100%); unknown remains “—”.
+  Cached cloud values are labelled pending update. Refresh returns the shelf
+  first, then a cancellable independent worker reads only imported books.
+  Per-book notifications preserve delegates/green badges; downloads/closing/
+  account transitions stop the progress reader.
+- Manual “同步进度” uploads native → WeRead using verified source book identity,
+  current account, cache checksums/catalog fingerprint, unique PDF text anchor,
+  original HTML coordinates and a fresh cloud-record conflict check. Unicode
+  and UTF-16 coordinates must agree at the target; edited native page maps are
+  rejected. Reading time is zero, business acknowledgement and position readback
+  are required. Whole-book percent uses catalog word weights, or cached text
+  byte weights when word counts are unavailable, so it is an estimate; the
+  chapter/offset is mapped separately and never inferred from native percent.
+- New imports instead restore cloud → native. Persist restore intent before
+  submission, find the cloud anchor uniquely in the generated native PDF, then
+  request the host QML to call LibraryController.setLastOpenedPage. No direct
+  writes to native metadata. Worker confirms the saved page before clearing
+  intent. Late-confirmed imports retry on refresh. Failed restores remain
+  pending; their sync button retries cloud restoration instead of pushing 0%.
+- Native API comes from exact-firmware DocumentView use; current QMD host hook
+  includes a guarded Library.entryForId lookup and an acknowledgement. Exact
+  firmware/peer replay validates the hook; real-user restoration/upload is not
+  performed as QA. No fake positions or reading time are sent to real accounts.
+- Lua behavior tests in an isolated device temp directory cover imported-only
+  reads, checksum/identity mapping, zero-time exact upload, cloud conflict,
+  business rejection, restore candidate and edited-layout refusal. Qt tests
+  cover background updates/foreign scope refusal, sync dimensions/dispatch and
+  automatic-restore acknowledgement. Root Linux validations, local core/UI,
+  device Qt6 UI tests, shell syntax and official SDK build passed.
+- A read-only integration fetch using independent plugin credentials retrieved
+  cloud percentages for all 4 currently imported records, with 0 unknown/error
+  rows. Private progress cache stays in the account directory, mode 0600.
+- Install 20261022204613 confirmed fresh host/sidebar readiness and guarded timer
+  cancellation. Installed worker then returned local and cloud percentages for
+  all 4 imported records (0 errors). Temporary test fixtures/diagnostics removed
+  and install wake lock released. Synthetic Qt6 progress-row screenshot checked:
+  both percentages and the full 144×88 sync label fit without clipping.
+
+### Sync action visibility follow-up
+
+- Action RowLayout visibility must derive from book state, never child.visible:
+  effective child visibility inherits the parent, creating a dependency cycle
+  when shelf delegates are created while the worker is busy. Imported rows now
+  keep their sync action visible in single-select mode (disabled during a
+  foreground operation). Cached removal visibility also uses explicit state.
+- Focused Qt UI regression loads a fresh shelf while the worker remains alive,
+  checks visible/disabled sync, then visible/enabled sync after completion.
+  Host UI regression, full Linux validation and official SDK build passed.
+- Install 20261022205116 confirmed fresh host/sidebar readiness; temporary wake
+  lock released. User does their own visual acceptance.
+
+### Explicit upload/download actions and progress line (2026-10-22)
+
+- Replaced the ambiguous sync action with separate “上传进度” and “下载进度”
+  buttons, each fixed 144×88px. Upload always invokes native→cloud even if a
+  prior restore is pending; successful upload clears that pending intent.
+  Download always invokes cloud→native. Automatic new-import restoration also
+  invokes the explicit download path. Neither manual action silently reverses.
+- Both percentages now occupy a dedicated line BELOW imported status/green
+  badge, rather than sharing the author line. Delegate height is 208px and page
+  capacity uses 212px stride so long titles plus the extra line fit.
+- Qt UI tests assert both action dimensions, explicit download handshake,
+  refresh-time visibility and progress-line placement below status. Lua isolated
+  test covers explicit upload while restore intent exists. Host UI, device Lua,
+  root Linux validation and official SDK build passed; no real progress changed
+  by tests.
+- Device Qt6 UI also passed the explicit actions and below-status placement.
+  Install 20261022205641 confirmed fresh host/sidebar readiness. Temporary
+  synthetic fixtures removed and install wake lock released.
+
+### Compact inline reading progress (2026-10-22)
+
+- User requested percentages on the SAME row as imported status/green badge.
+  Progress now follows the badge, with safe eliding on constrained widths.
+  Restored 176px delegate height and 180px pagination stride. Explicit upload
+  and download actions remain 144×88px. Host Qt behavior test checks horizontal
+  placement and equal vertical center; full Linux validations and SDK passed.
+
+### Cloud restoration corrections and automatic-intent separation
+
+- A real saved cloud offset can refer to invisible HTML markup/whitespace just
+  before the summary. Source.savedPosition resolves both raw Unicode/UTF-16
+  interpretations to the next visible character and validates the exact summary
+  there. It does not relax matching with a guessed offset tolerance. The
+  originally failing pending book now yields an in-bounds native page in a
+  read-only diagnostic (no metadata changes or cache save during diagnostics).
+- Snapshot SHA-256 now uses the tablet's existing libcrypto.so.3 through FFI in
+  the isolated helper. The shared pure-Lua account-ID hash is unsuitable for
+  large .content files because its byte-varargs expansion can exceed LuaJIT's
+  stack. Namespace hashing remains unchanged. Standard abc/100000-byte vectors
+  and native fixture restore passed; no crypto library is redistributed.
+- Worker preserves sanitized restore helper errors instead of converting every
+  failure to progress_not_located. Concurrent native metadata/layout changes
+  continue to refuse restoration; a retry with a stable snapshot passed.
+- restorePending means a manual retry is available, NOT permission to restore
+  on entry/refresh. Only prepareRestore before a new import sets the separate
+  restoreAutomatic flag. Starting ANY restore consumes that automatic intent,
+  including failures. Legacy pending records with no automatic flag never
+  auto-run. Success/upload clears both intents. New imports retain their one
+  initial cloud→local restore; existing books require the download button.
+- Device synthetic Lua tests cover bookmark-in-markup resolution, wrong summary,
+  Unicode-unit ambiguity and long snapshot hashing. Qt regression covers a
+  manual pending restore staying idle across refresh, plus automatic new-import
+  intent dispatch. Full Linux regression and official SDK build passed.
+- Compact layout install 20261022205911 was confirmed before this diagnostic.
+  Initial correction install 20261022210743 encountered canceled system restart
+  and restored the previous build. Retry 20261022210831 confirmed fresh
+  host/sidebar readiness. Temporary diagnostic fixtures removed and install wake
+  lock released. User can retry download; no actual existing-book page was
+  changed during the diagnostic itself.
+
+### Percent semantics follow-up (read-only investigation)
+
+- User reported that the displayed cloud percentage disagrees strongly with
+  the current page/total in the phone reader, despite correct position restore.
+  Read-only checks found reader-state and web/book/getProgress agree with each
+  other on raw progress and chapter/offset, while catalog/current-position
+  estimates differ materially from that raw percentage. This does not establish
+  whether raw progress means historical extent, a client-supplied value or
+  another provider convention. Do not claim that semantic without verification.
+- Current UI displays raw record.progress as cloud percent and native page
+  fraction as local percent. Neither establishes a common content-progress
+  denominator. The earlier blanket explanation blaming pagination/local alone
+  was premature. No account progress or native position changed in this check.
+
+### Chapter-position percentage implementation
+
+- Cloud display now uses chapter word-count weights and the saved chapter UID
+  plus intra-chapter original-HTML offset. The offset is mapped to normalized
+  visible text before calculating the chapter fraction; raw HTML length is not
+  treated as word count. Raw record.progress remains private sync/conflict data
+  and is never used as a display fallback. Local percent still uses native pages.
+- Derived values have a separate method marker, position key and five-minute
+  calculation cache. Legacy raw-only cache entries display unknown until a
+  successful calculation. Missing/ambiguous chapter weights or bookmark mapping
+  display unknown rather than a guessed percentage. Position sync is unchanged.
+- Synthetic device tests passed weighted chapters, raw-percent independence and
+  invalid catalogs, alongside existing upload/restore safeguards. Full Linux
+  regression and official SDK build passed. A read-only real-account probe
+  calculated two imported books and left two unknown; the reason for those
+  unknown values still needs investigation. No real reading position was changed.
+- Follow-up USB connection timed out before further diagnosis/deployment. The
+  installed release remains 20261022210831 and still displays raw cloud percent.
+- Connection subsequently recovered. Read-only diagnosis confirmed one unknown
+  record has a chapter UID absent from its catalog; another has an offset that
+  does not match its saved summary in the original chapter. Both remain unknown
+  rather than guessing. Synthetic device tests passed again. Install
+  20261022225227 confirmed fresh host/sidebar readiness and the exact success
+  marker. The installed release now uses the chapter-position percentage.
+  Temporary synthetic fixtures removed; install wake lock released. No actual
+  cloud progress or native reading position was changed by verification.
+
+### Display bookmark compatibility correction
+
+- Strict original-offset validation rejected usable saved summaries from other
+  source serializations. Percentage display now accepts an exact unique summary
+  of at least six normalized characters in the confirmed chapter. This fallback
+  is display-only; upload/restore still use their existing strict mappings.
+- Missing chapter UID may be resolved from a complete verified download only:
+  account and catalog identity, every chapter checksum/fingerprint, bounded
+  total bytes/time, and a unique summary match across the entire book are
+  required. The selected chapter's original source is fetched for the final
+  weighted percentage. No raw server percent fallback or guessed chapter index.
+- Synthetic device tests cover wrong offset with unique summary, short/repeated
+  summary rejection, missing chapter ID resolution, and modified-cache refusal.
+  Full Linux regression and official SDK build passed. Read-only verification
+  calculated all four imported books without changing reading positions.
+- Install 20261022225800 confirmed fresh host/sidebar readiness and exact success
+  marker. Temporary synthetic fixtures removed; install wake lock released.
+
+### Chapter names and compact progress controls
+
+- Imported rows show local and cloud percentages plus chapter names above the
+  side-by-side upload/download buttons. These two buttons are now 144×56;
+  import/cache-delete remain 144×88. Delegate height/paging density unchanged.
+- Cloud name uses the resolved real catalog chapter, including verified summary
+  recovery for missing IDs. Local name matches current native PDF page text
+  against the complete checksum/catalog-verified download. Native metadata and
+  content snapshots must remain stable; no percentage-based chapter inference.
+  A loaded page with no text reports 当前页无正文. Ambiguous matches remain unknown.
+- Local and cloud title fields are forwarded through controller row updates;
+  cloud title is kept in private progress cache. Names render as plain text with
+  independent single-line elision. No reading position changes during refresh.
+- Device synthetic tests cover both names and empty pages; host Qt interaction
+  test checks title propagation, 144×56 buttons and information above controls.
+  Read-only real-book checks found cloud names for all four imported books,
+  two local chapter matches and two native pages with no text.
+- Full Linux regression and official SDK build passed. Host Qt5 and device Qt6
+  offscreen interaction tests passed; inspected synthetic device screenshot for
+  chapter/percentage placement above the shorter controls without row growth.
+- Install 20261022230840 confirmed fresh host/sidebar readiness and the exact
+  success marker. Synthetic device fixtures removed; install wake lock released.

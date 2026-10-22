@@ -1,5 +1,6 @@
 #include "epub.h"
 #include "cache_cleanup.h"
+#include "reading_progress.h"
 #include "import_registry.h"
 #include "native_address.h"
 #include "native_http.h"
@@ -84,19 +85,31 @@ QJsonObject helper(const QString &operation, const QString &id = {}) {
             auto line = pending.left(newline); pending.remove(0, newline + 1);
             auto object = QJsonDocument::fromJson(line).object();
             auto state = object.value("state").toString();
-            if (state == "qr" || state == "progress") emitRow(object);
+            if (state == "reading_progress") {
+                try {
+                    const auto id = object.value("bookId").toString();
+                    need(Epub::validBookId(id), "invalid_book_id");
+                    const auto registry = readJson(root + "/imports.json", 4*1024*1024).value("books").toObject();
+                    const auto record = registry.value(id).toObject();
+                    if (record.value("state") != "imported" || record.value("accountScope") != object.value("accountScope")) continue;
+                    const auto uuid = record.value("uuid").toString();
+                    need(QRegularExpression("\\A[0-9a-fA-F-]{36}\\z").match(uuid).hasMatch(), "invalid_document_id");
+                    object["localProgress"] = nativeReadingPercent(readJson(libraryRoot+'/'+uuid+".metadata"),readJson(libraryRoot+'/'+uuid+".content",8*1024*1024));
+                    emitRow(object);
+                } catch (const std::exception &) {}
+            } else if (state == "qr" || state == "progress") emitRow(object);
             else if (!state.isEmpty()) final = object;
         }
     };
     while (process.state() != QProcess::NotRunning) {
         process.waitForReadyRead(250); consume();
         if (canceled) { process.kill(); process.waitForFinished(1000); throw std::runtime_error("operation_canceled"); }
-        const qint64 maximum = operation == "download" ? 2 * 60 * 60 * 1000 : 4 * 60 * 1000;
+        const qint64 maximum = (operation == "download" || operation == "reading-progress") ? 2 * 60 * 60 * 1000 : 4 * 60 * 1000;
         if (elapsed.elapsed() > maximum) { process.kill(); process.waitForFinished(3000); throw std::runtime_error("helper_timeout"); }
     }
     consume();
     need(!protocolError && pending.trimmed().isEmpty() && process.exitStatus() == QProcess::NormalExit
-        && process.exitCode() == 0 && final.value("state") != "error" && !final.isEmpty(), "helper_failed");
+        && process.exitCode() == 0 && !final.isEmpty(), "helper_failed");
     if (operation != "status" && operation != "login" && final.value("state") == "login_required")
         throw std::runtime_error("login_required");
     return final;
@@ -155,6 +168,45 @@ QByteArray coverImage(const QString &scope, const QString &id, const QString &ur
     need(image.startsWith(QByteArray::fromHex("89504e470d0a1a0a")) || image.startsWith(QByteArray::fromHex("ffd8ff")), "cover_unavailable");
     return image;
 }
+bool restoreProgress(const QString &id, bool afterImport) {
+    auto result = helper("restore-progress", id);
+    auto failed = [&] {
+        if (afterImport) emitRow({{"state","restore_skipped"}});
+        else emitRow({{"state","error"},{"code","progress_not_located"}});
+        return false;
+    };
+    if (result.value("state") != "restore_position") {
+        if (!afterImport && result.value("state") == "error") { emitRow(result); return false; }
+        return failed();
+    }
+    const auto uuid = result.value("uuid").toString();
+    if (!QRegularExpression("\\A[0-9a-fA-F-]{36}\\z").match(uuid).hasMatch()) return failed();
+    const auto base = libraryRoot+'/'+uuid;
+    const int page = result.value("page").toInt(-1), count = result.value("pageCount").toInt();
+    if (page < 0 || page >= count || count > 5000) return failed();
+    for (const auto &ext : {"metadata", "content"}) {
+        const auto path=base+'.'+ext; QFile file(path);
+        if (QFileInfo(path).isSymLink() || !file.open(QIODevice::ReadOnly) || file.size()>8*1024*1024) return failed();
+        const auto hash=QString::fromLatin1(QCryptographicHash::hash(file.readAll(),QCryptographicHash::Sha256).toHex());
+        if(hash!=result.value(QString::fromLatin1(ext)+"Hash").toString()) return failed();
+    }
+    emitRow(result);
+#ifdef __linux__
+    pollfd input{STDIN_FILENO,POLLIN,0};char command[4]{};
+    if (::poll(&input,1,15000)<=0 || ::read(STDIN_FILENO,command,3)!=3 || QByteArray(command,3)!="ok\n") return failed();
+#else
+    return failed();
+#endif
+    bool saved=false;
+    for(int i=0;i<30;++i) {
+        if(readJson(base+".metadata").value("lastOpenedPage").toInt(-1)==page) { saved=true;break; }
+        if(canceled) return failed();
+        QThread::msleep(100);
+    }
+    if(!saved) return failed();
+    auto complete=helper("restore-complete",id);
+    complete["localProgress"]=result.value("localProgress");emitRow(complete);return true;
+}
 int request(QNetworkAccessManager &manager, QNetworkRequest request, NativeUploadBody *body = nullptr, bool *rejected = nullptr) {
     return nativeRequest(manager, request, body, rejected, &canceled);
 }
@@ -187,6 +239,7 @@ int main(int argc, char **argv) {
         const auto operation = QString::fromLocal8Bit(argv[1]);
         need(QDir().mkpath(root) && !QFileInfo(root).isSymLink(), "private_root_unavailable");
         need(::chmod(QFile::encodeName(root).constData(), 0700) == 0, "private_root_unavailable");
+        if (operation == "reading-progress") { emitRow(helper(operation)); return 0; }
         ImportRegistry registry(root); // One foreground operation, including login.
         need(NativeAddress::recover(root), "address_restore_failed");
         if (operation == "status" || operation == "login" || operation == "logout") {
@@ -200,17 +253,32 @@ int main(int argc, char **argv) {
                 auto book = books.at(i).toObject();
                 auto state = registry.record(book.value("bookId").toString()).value("state").toString();
                 book["importState"] = state.isEmpty() ? "remote" : state;
+                book["localProgress"] = -1;
+                auto record = registry.record(book.value("bookId").toString());
+                if (state == "imported" && record.value("accountScope") == row.value("accountScope")) {
+                    const auto uuid = record.value("uuid").toString();
+                    try { book["localProgress"] = nativeReadingPercent(readJson(libraryRoot + '/' + uuid + ".metadata"), readJson(libraryRoot + '/' + uuid + ".content", 8*1024*1024)); }
+                    catch (const std::exception &) {}
+                }
                 book["hasDownloadCache"] = QFileInfo(root + "/accounts/" + row.value("accountScope").toString() + "/books/" + book.value("bookId").toString()).isDir();
                 books[i] = book;
             }
             row["books"] = books; emitRow(row); return 0;
         }
-        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache") && argc == 3, "invalid_command");
+        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress") && argc == 3, "invalid_command");
         const auto id = QString::fromLocal8Bit(argv[2]);
         need(Epub::validBookId(id), "invalid_book_id");
         auto identity = helper("status");
         need(identity.value("state") == "authenticated", "login_required");
         registry.reconcile(scan(registry));
+        if (operation == "sync-progress" || operation == "restore-progress") {
+            const auto record = registry.record(id);
+            need(record.value("state") == "imported" && record.value("accountScope") == identity.value("accountScope"), "progress_not_located");
+            const auto path = libraryRoot + '/' + record.value("uuid").toString() + ".epub";
+            need(!QFileInfo(path).isSymLink() && Epub(path).sourceBookId() == id, "progress_not_located");
+            if (operation == "restore-progress") restoreProgress(id, false);
+            else emitRow(helper(operation, id)); return 0;
+        }
         if (operation == "clear-cache") {
             need(registry.record(id).value("state") == "removed", "book_not_removed");
             const auto scope = identity.value("accountScope").toString();
@@ -257,6 +325,7 @@ int main(int argc, char **argv) {
             // and opening: it is private, generated by this exclusive worker.
             auto *multipart = new NativeUploadBody(path, id);
             need(multipart->isOpen(), "submission_unavailable");
+            need(helper("prepare-restore", id).value("state") == "restore_prepared", "progress_cache_unavailable");
             registry.prepareSubmission(id, path);
             emitRow({{"state", "importing"}});
             bool rejected = false;
@@ -279,6 +348,9 @@ int main(int argc, char **argv) {
             emitRow({{"state", registry.record(id).value("state")}});
             need(address.restore(), "address_restore_failed");
             QFile::remove(path);
+            if (registry.record(id).value("state") == "imported") {
+                try { restoreProgress(id, true); } catch (const std::exception &) { emitRow({{"state","restore_skipped"}}); }
+            }
         } catch (const std::exception &error) {
             if (registry.record(id).value("state") == "preparing") registry.failBeforeSubmission(id);
             if (!path.isEmpty()) QFile::remove(path);

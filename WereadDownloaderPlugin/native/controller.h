@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <QJsonObject>
 #include <QPointer>
 #include <QProcess>
 #include <QQuickImageProvider>
@@ -7,6 +8,7 @@
 #include <QVariantList>
 #include <QStringList>
 #include <QMap>
+#include <QSet>
 #include "cover_store.h"
 
 class LoginImage : public QQuickImageProvider {
@@ -53,6 +55,9 @@ public:
     Q_INVOKABLE void cancelQueued(const QString &id);
     Q_INVOKABLE void clearCache(const QString &id);
     Q_INVOKABLE void cancel();
+    Q_INVOKABLE void uploadProgress(const QString &id);
+    Q_INVOKABLE void downloadProgress(const QString &id);
+    Q_INVOKABLE void completeRestore(const QString &id, bool ok);
     Q_INVOKABLE void attachSettings(QObject *settings);
     Q_INVOKABLE void placeBelowAppLoad(QQuickItem *item);
 signals:
@@ -60,9 +65,14 @@ signals:
     void coversChanged();
     void booksChanged();
     void bookUpdated(const QString &id, const QVariantMap &book);
+    void restoreRequested(const QString &uuid, int page, const QString &id);
 private:
     void start(const QString &operation, const QString &id = {});
     void readOutput();
+    void startProgress();
+    void stopProgress();
+    void readProgress();
+    void applyProgress(const QJsonObject &row);
     void finish(int code, QProcess::ExitStatus status);
     void next();
     void bookState(const QString &state, int progress = -1);
@@ -74,7 +84,10 @@ private:
     CoverStore m_covers;
     int m_coverRevision = 0;
     LoginImage *m_image;
-    QProcess m_process;
+    QProcess m_process, m_progressProcess;
+    QByteArray m_progressBuffer;
+    QString m_restoreId;
+    QSet<QString> m_autoRestoreTried;
     QPointer<QObject> m_settings;
     QByteArray m_buffer;
     QString m_operation, m_currentId, m_status, m_qrImage, m_scope, m_accountName;

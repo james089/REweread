@@ -60,6 +60,14 @@ shelf|cached-shelf)
  if [ -f "$script_root/network-failed" ]; then rm "$script_root/network-failed"; printf '%s\n' '{"state":"error","code":"helper_failed"}'; exit 1; fi
  if [ -f "$script_root/expired" ]; then rm "$script_root/expired"; printf '%s\n' '{"state":"error","code":"login_required"}'; exit 1; fi
  printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"合成测试书：正文与插图","author":"测试作者","cover":"https://res.weread.qq.com/synthetic-cover.png","localCover":"","importState":"remote"},{"bookId":"synthetic-2","title":"已导入的合成测试书","author":"测试作者","localCover":"","importState":"imported"}]}' ;;
+reading-progress) if [ -f "$script_root/manual-restore-fixture" ]; then printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":12.5,"cloudProgress":67.8,"restorePending":true,"restoreAutomatic":false}'; exit 0; fi; if [ -f "$script_root/restore-fixture" ]; then printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":0,"cloudProgress":67.8,"restorePending":true,"restoreAutomatic":true}'; exit 0; fi; printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":12.5,"cloudProgress":67.8,"cloudProgressStale":false,"localChapter":"Local chapter","cloudChapter":"Cloud chapter"}'; printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"wrong","cloudProgress":99}' ;;
+sync-progress) printf '%s\n' '{"state":"progress_synced","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cloudProgress":12.5,"cloudProgressStale":false,"localChapter":"Local chapter","cloudChapter":"Cloud chapter"}' ;;
+restore-progress)
+ printf '%s\n' '{"state":"restore_position","bookId":"synthetic-2","uuid":"12345678-1234-1234-1234-123456789abc","page":1}'
+ read ack
+ test "$ack" = ok || exit 1
+ rm -f "$script_root/restore-fixture"
+ printf '%s\n' '{"state":"progress_restored","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":67.5,"cloudProgress":67.8,"restorePending":false}' ;;
 clear-cache) printf '%s\n' '{"state":"cache_cleared"}' ;;
 import)
  printf '%s\n' "$2" >> "$script_root/imports"
@@ -69,6 +77,7 @@ import)
  /bin/sleep 0.1
  printf '%s\n' '{"state":"imported"}' ;;
 esac
+if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
 )SH");
         file.close(); check(file.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
         QProcess probe; probe.start(program, QStringList{"status"});
@@ -184,7 +193,7 @@ ColumnLayout {
         auto *toolbarImportButton = visualChild(item, "importButton");
         check(item->property("multiSelect").toBool() && selection->isVisible() && toolbarImportButton->isVisible() && !importButton->isVisible());
         check(selection->width() >= 88 && selection->height() >= 112);
-        check(importButton && importButton->width() >= 164 && importButton->height() >= 104);
+        check(importButton && importButton->width() >= 144 && importButton->height() >= 88);
         auto *status = visualChild(item, "bookImportStatus");
         check(status && status->opacity() == 0.5);
         auto *greenCheck = visualChild(item, "bookImportedCheck");
@@ -233,13 +242,64 @@ ColumnLayout {
         auto screenshot = window.grabWindow();
         if (!screenshot.isNull()) check(screenshot.save(QString::fromLocal8Bit(argv[2])));
         else std::cout << "headless platform supplied no screenshot; visual QA remains separate\n";
+        phase = "reading progress and sync";
+        QMetaObject::invokeMethod(item, "turnPage", Q_ARG(QVariant, QVariant(1)));
+        until([&] { auto *button=visualChild(item,"uploadProgressButton"); return button && button->isVisible() && button->width()==144; });
+        auto *syncButton=visualChild(item,"uploadProgressButton"); check(syncButton->height()==56);
+        auto *readingLabel=visualChild(item,"bookReadingProgress");
+        auto *cloudLabel=visualChild(item,"cloudReadingProgress");
+        until([&] { return cloudLabel->property("text").toString().contains("67.8%"); });
+        check(readingLabel->property("text").toString().contains("12.5%"));
+        check(readingLabel->property("text").toString().contains("Local chapter"));
+        check(cloudLabel->property("text").toString().contains("Cloud chapter"));
+        check(cloudLabel->mapToScene(QPointF(0,cloudLabel->height())).y()
+            < syncButton->mapToScene(QPointF()).y());
+        check(qAbs(readingLabel->mapToScene(QPointF()).x()-syncButton->mapToScene(QPointF()).x())<2);
+        auto progressScreenshot=window.grabWindow();
+        if(!progressScreenshot.isNull()) check(progressScreenshot.save(QString::fromLocal8Bit(argv[2])+".progress.png"));
+        phase = "sync action survives shelf loading while busy";
+        QFile slowShelf(temporary.path()+"/slow-shelf");check(slowShelf.open(QIODevice::WriteOnly));slowShelf.close();
+        controller->refresh();
+        until([&]{auto *button=visualChild(item,"uploadProgressButton");return controller->busy() && button && button->isVisible() && !button->isEnabled();});
+        until([]{return !controller->busy();});
+        syncButton=visualChild(item,"uploadProgressButton");
+        check(syncButton && syncButton->isVisible() && syncButton->isEnabled());
+        check(QFile::remove(slowShelf.fileName()));
+        check(QMetaObject::invokeMethod(syncButton,"clicked"));
+        until([] { return !controller->busy() && controller->status().contains(QStringLiteral("已同步")); });
+        QMetaObject::invokeMethod(item, "turnPage", Q_ARG(QVariant, QVariant(-1)));
+        phase = "automatic restore handshake";
+        bool restored=false;
+        const auto restoreConnection=QObject::connect(controller,&DownloaderController::restoreRequested,[&](const QString &uuid,int page,const QString &id){
+            check(uuid=="12345678-1234-1234-1234-123456789abc" && page==1 && id=="synthetic-2");
+            restored=true;controller->completeRestore(id,true);
+        });
+        phase = "explicit download progress";
+        QMetaObject::invokeMethod(item, "turnPage", Q_ARG(QVariant, QVariant(1)));
+        auto *downloadButton=visualChild(item,"downloadProgressButton");
+        until([&]{return downloadButton && downloadButton->isVisible() && downloadButton->width()==144;});
+        check(downloadButton->height()==56 && downloadButton->property("text")==QStringLiteral("下载进度"));
+        check(QMetaObject::invokeMethod(downloadButton,"clicked"));
+        until([&]{return restored && !controller->busy();});
+        restored=false;
+        QMetaObject::invokeMethod(item, "turnPage", Q_ARG(QVariant, QVariant(-1)));
+        phase = "manual restore failure never auto retries on refresh";
+        QFile manualRestoreFixture(temporary.path()+"/manual-restore-fixture");check(manualRestoreFixture.open(QIODevice::WriteOnly));manualRestoreFixture.close();
+        controller->refresh();until([]{return !controller->busy();});QTest::qWait(300);
+        check(!restored && !controller->busy());
+        check(QFile::remove(manualRestoreFixture.fileName()));
+        QFile restoreFixture(temporary.path()+"/restore-fixture");check(restoreFixture.open(QIODevice::WriteOnly));restoreFixture.close();
+        controller->refresh();
+        until([&]{return restored && !controller->busy() && controller->status().contains(QStringLiteral("已恢复"));});
+        check(!QFile::exists(restoreFixture.fileName()));
+        QObject::disconnect(restoreConnection);
         phase = "removed book cache action";
         QFile cacheFixture(temporary.path() + "/cache-fixture"); check(cacheFixture.open(QIODevice::WriteOnly)); cacheFixture.close();
         controller->refresh(); until([] { return !controller->busy(); });
         auto *cacheButton = visualChild(item, "deleteCacheButton");
         until([&] { return cacheButton && cacheButton->isVisible() && cacheButton->width() > 0; });
-        check(cacheButton->width() == 164 && cacheButton->height() == 104);
-        check(visualChild(item, "bookImportButton")->width() == 164 && visualChild(item, "bookImportButton")->height() == 104);
+        check(cacheButton->width() == 144 && cacheButton->height() == 88);
+        check(visualChild(item, "bookImportButton")->width() == 144 && visualChild(item, "bookImportButton")->height() == 88);
         check(QMetaObject::invokeMethod(cacheButton, "clicked")); until([] { return !controller->busy(); });
         check(!controller->books()[0].toMap().value("hasDownloadCache").toBool());
         check(controller->books()[0].toMap().value("importState") == "removed");
@@ -271,7 +331,7 @@ ColumnLayout {
         until([] { return !controller->busy() && controller->books().size() == 2; });
         QElapsedTimer cacheWait; cacheWait.start(); until([&] { return cacheWait.elapsed() > 100; });
         QFile calls(temporary.path() + "/calls"); check(calls.open(QIODevice::ReadOnly));
-        check(calls.readAll().endsWith("status\ncached-shelf\n"));
+        auto history=calls.readAll(); history.replace("reading-progress\n", ""); check(history.endsWith("status\ncached-shelf\n"));
         QFile networkFailed(temporary.path() + "/network-failed"); check(networkFailed.open(QIODevice::WriteOnly)); networkFailed.close();
         controller->refresh(); until([] { return !controller->busy(); });
         check(controller->loggedIn() && controller->books().size() == 2);

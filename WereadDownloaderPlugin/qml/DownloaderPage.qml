@@ -197,7 +197,7 @@ Rectangle {
                             Layout.fillWidth: true; elide: Text.ElideRight
                         }
                         RowLayout {
-                            spacing: 10
+                            Layout.fillWidth: true; spacing: 10
                             Label {
                                 objectName: "bookImportStatus"
                                 text: page.stateText(bookRow.book); font.pixelSize: 20; color: "black"
@@ -226,28 +226,80 @@ Rectangle {
                                     }
                                 }
                             }
+
                         }
+
                     }
                     RowLayout {
                         spacing: 12
-                        visible: !page.multiSelect && (bookImportAction.enabled || clearCacheAction.visible)
+                        visible: !page.multiSelect && (bookImportAction.enabled
+                            || bookRow.book.importState === "imported"
+                            || (bookRow.book.importState === "removed" && bookRow.book.hasDownloadCache !== false && !Downloader.busy))
                         RoundedButton {
                             id: bookImportAction
                             objectName: "bookImportButton"
                             visible: enabled
-                            Layout.minimumWidth: 164; Layout.preferredWidth: 164; Layout.maximumWidth: 164
-                            Layout.minimumHeight: 104; Layout.preferredHeight: 104; Layout.maximumHeight: 104
+                            leftPadding: 20; rightPadding: 20
+                            Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
+                            Layout.minimumHeight: 88; Layout.preferredHeight: 88; Layout.maximumHeight: 88
                             font.pixelSize: 24
                             text: bookRow.book.importState === "queued" ? "排队中" : "导入"
                             enabled: (page.canImport(bookRow.book.importState) || bookRow.book.importState === "queued") && Downloader.canQueue
                             onClicked: { if (bookRow.book.importState === "queued") Downloader.cancelQueued(bookRow.book.bookId); else Downloader.importBooks([bookRow.book.bookId]) }
                         }
+                        ColumnLayout {
+                            visible: !page.multiSelect && bookRow.book.importState === "imported"
+                            Layout.preferredWidth: 300; Layout.maximumWidth: 300
+                            spacing: 6
+                            Label {
+                                objectName: "bookReadingProgress"
+                                Layout.fillWidth: true; Layout.minimumWidth: 0
+                                textFormat: Text.PlainText; elide: Text.ElideRight
+                                font.pixelSize: 18; color: "#555555"
+                                text: "本地 " + (typeof bookRow.book.localProgress === "number" && bookRow.book.localProgress >= 0 ? bookRow.book.localProgress.toFixed(1) + "%" : "—")
+                                    + " · " + (bookRow.book.localChapter || "章节待识别")
+                            }
+                            Label {
+                                objectName: "cloudReadingProgress"
+                                Layout.fillWidth: true; Layout.minimumWidth: 0
+                                textFormat: Text.PlainText; elide: Text.ElideRight
+                                font.pixelSize: 18; color: "#555555"
+                                text: "云端 " + (typeof bookRow.book.cloudProgress === "number" && bookRow.book.cloudProgress >= 0 ? bookRow.book.cloudProgress.toFixed(1) + "%" : "—")
+                                    + " · " + (bookRow.book.cloudChapter || "章节待识别")
+                                    + (bookRow.book.cloudProgressStale && bookRow.book.cloudProgress >= 0 ? "（待更新）" : "")
+                            }
+                            RowLayout {
+                                spacing: 12
+                                RoundedButton {
+                                    id: uploadProgressAction
+                                    objectName: "uploadProgressButton"
+                                    visible: !page.multiSelect && bookRow.book.importState === "imported"
+                                    enabled: !Downloader.busy
+                                    leftPadding: 20; rightPadding: 20
+                                    Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
+                                    Layout.minimumHeight: 56; Layout.preferredHeight: 56; Layout.maximumHeight: 56
+                                    font.pixelSize: 24; text: "上传进度"
+                                    onClicked: Downloader.uploadProgress(bookRow.book.bookId)
+                                }
+                                RoundedButton {
+                                    objectName: "downloadProgressButton"
+                                    visible: !page.multiSelect && bookRow.book.importState === "imported"
+                                    enabled: !Downloader.busy
+                                    leftPadding: 20; rightPadding: 20
+                                    Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
+                                    Layout.minimumHeight: 56; Layout.preferredHeight: 56; Layout.maximumHeight: 56
+                                    font.pixelSize: 24; text: "下载进度"
+                                    onClicked: Downloader.downloadProgress(bookRow.book.bookId)
+                                }
+                            }
+                        }
                         RoundedButton {
                             id: clearCacheAction
                             objectName: "deleteCacheButton"
                             visible: !page.multiSelect && enabled
-                            Layout.minimumWidth: 164; Layout.preferredWidth: 164; Layout.maximumWidth: 164
-                            Layout.minimumHeight: 104; Layout.preferredHeight: 104; Layout.maximumHeight: 104
+                            leftPadding: 20; rightPadding: 20
+                            Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
+                            Layout.minimumHeight: 88; Layout.preferredHeight: 88; Layout.maximumHeight: 88
                             font.pixelSize: 24; text: "删除缓存"
                             enabled: bookRow.book.importState === "removed" && bookRow.book.hasDownloadCache !== false && !Downloader.busy
                             onClicked: Downloader.clearCache(bookRow.book.bookId)

@@ -82,6 +82,9 @@ local function context()
 end
 
 local function emitShelf(accepted, scope, cached, stale)
+        local progress = require("reading_progress").new(authSettings, scope, root .. "/accounts/" .. scope)
+        local savedProgress = progress.cache.books
+        progress:close()
         local rows = {}
         for _, book in ipairs(accepted) do
             local url = tostring(book.cover or "")
@@ -90,6 +93,10 @@ local function emitShelf(accepted, scope, cached, stale)
                 or host:match("%.qpic%.cn$") or host:match("%.qq%.com$")
                 or host:match("%.file%.myqcloud%.com$") or host:match("%.image%.myqcloud%.com$"))
             rows[#rows + 1] = {
+                cloudProgress = savedProgress[book.bookId] and savedProgress[book.bookId].displayMethod == 1 and tonumber(savedProgress[book.bookId].displayProgress) or -1,
+                cloudChapter = savedProgress[book.bookId] and savedProgress[book.bookId].cloudChapter or "",
+                restoreAutomatic = savedProgress[book.bookId] and savedProgress[book.bookId].restoreAutomatic or false,
+                cloudProgressStale = true, restorePending = savedProgress[book.bookId] and savedProgress[book.bookId].restorePending or false,
                 bookId = book.bookId, title = tostring(book.title or ""):sub(1, 1536),
                 author = tostring(book.author or ""):sub(1, 768), localCover = book.localCover or "",
                 cover = allowed and #url <= 2048 and url or "",
@@ -125,7 +132,28 @@ local function execute()
     local settings, scope, account_root = context()
     local ShelfCache = require("shelf_cache")
     local shelf = ShelfCache:new(account_root)
-    if operation == "cached-shelf" then
+    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" then
+        local progress = require("reading_progress").new(settings, scope, account_root)
+        local ok, result = pcall(function()
+            if operation == "reading-progress" then
+                progress:refresh((shelf:load_shelf() or {}).books or {}, emit)
+                return {state="reading_progress_done", accountScope=scope}
+            end
+            if operation == "prepare-restore" then return progress:prepareRestore(arg[2]) end
+            if operation == "restore-progress" then return progress:restore(arg[2]) end
+            if operation == "restore-complete" then return progress:restored(arg[2]) end
+            return progress:sync(arg[2])
+        end)
+        progress:close()
+        if not ok then
+            local codes={progress_not_located=true,progress_layout_unsupported=true,progress_network_failed=true,
+                progress_cache_changed=true,progress_offset_unsupported=true,cloud_progress_unavailable=true,
+                cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true}
+            emit({state="error", code=codes[result] and result or "progress_failed"})
+            return
+        end
+        emit(result)
+    elseif operation == "cached-shelf" then
         local stored = shelf:load_shelf()
         local saved = stored and tonumber(stored.savedAt) or 0
         emitShelf(stored and stored.books or {}, scope, true, not stored or os.time() - saved >= 300 or saved > os.time())
