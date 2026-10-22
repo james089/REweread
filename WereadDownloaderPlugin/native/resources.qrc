@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/weread-downloader">
+    <file alias="DownloaderPage.qml">../qml/DownloaderPage.qml</file>
+  <file alias="RoundedButton.qml">../qml/RoundedButton.qml</file>
+</qresource>
+</RCC>

@@ -24,7 +24,7 @@ if ok_ffi then
     end
 end
 
-function M.new()
+function M.new(options)
     if not curl or curl.curl_global_init(3) ~= 0 then return nil end
     local handle = curl.curl_easy_init()
     if handle == nil then return nil end
@@ -128,7 +128,9 @@ function M.new()
             if body ~= nil then pointer(10015, body); long(60, #body) end
             if opts.method == "HEAD" then long(44, 1) end
             pointer(10036, opts.method or (body and "POST" or "GET"))
-            local result = curl.curl_easy_perform(self.handle)
+            local result
+            if options and options.perform then result = options.perform(self.handle)
+            else result = curl.curl_easy_perform(self.handle) end
             self.last_result = result
             self.requests = self.requests + 1
             local connected = ffi.new("long[1]")

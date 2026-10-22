@@ -1,0 +1,52 @@
+; The installer gates exact firmware and applies after the existing AppLoad.
+AFFECT /qml/device/view/navigator/Sidebar.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE FocusScope > ColumnLayout#filterColumn
+        LOCATE AFTER ArkControls.SidebarFoldout#integrationsFoldout
+        INSERT {
+            ArkControls.SidebarItem {
+                id: wereadDownloaderSidebar
+                objectName: "wereadDownloaderSidebar"
+                text: "微信读书下载"
+                iconSource: "qrc:/ark/icons/import"
+                highlighted: Downloader.opened
+                onTriggered: { root.toggle(); Downloader.openPage() }
+                Layout.preferredHeight: Common.Values.navigatorSidebarItemHeight
+                Layout.preferredWidth: parent.width
+                Component.onCompleted: Downloader.placeBelowAppLoad(wereadDownloaderSidebar)
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/main/MainView.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE Background#root > FocusScope#rootItem
+        LOCATE BEFORE ALL
+        INSERT {
+            Item {
+                id: wereadDownloaderHost
+                anchors.fill: parent
+                z: 10000
+                visible: Downloader.opened
+                onVisibleChanged: { if (!visible && Downloader.opened) Downloader.closePage() }
+                Component.onCompleted: Downloader.attachSettings(Settings)
+                Loader {
+                    anchors.fill: parent
+                    active: Downloader.opened
+                    source: "qrc:/weread-downloader/DownloaderPage.qml"
+                }
+                Connections {
+                    target: PowerManager
+                    function onPowerButtonShortPress() { Downloader.closePage() }
+                }
+                Connections {
+                    target: Qt.application
+                    function onStateChanged() {
+                        if (Qt.application.state !== Qt.ApplicationActive) Downloader.closePage()
+                    }
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT

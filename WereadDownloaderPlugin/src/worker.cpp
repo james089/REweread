@@ -1,0 +1,251 @@
+#include "epub.h"
+#include "import_registry.h"
+#include "native_address.h"
+#include "native_http.h"
+#include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
+#include <QStorageInfo>
+#include <QThread>
+#include <QTimer>
+#include <cstdio>
+#include <csignal>
+#include <stdexcept>
+#include <sys/stat.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#include <signal.h>
+#include <poll.h>
+#include <unistd.h>
+#endif
+
+using namespace WereadDownloader;
+namespace {
+volatile std::sig_atomic_t canceled = 0;
+void onSignal(int) { canceled = 1; }
+const QString root = QStringLiteral("/home/root/.local/share/weread-downloader");
+const QString installRoot = QStringLiteral("/home/root/weread-downloader");
+const QString libraryRoot = QStringLiteral("/home/root/.local/share/remarkable/xochitl");
+void need(bool value, const char *code) { if (!value) throw std::runtime_error(code); }
+void emitRow(const QJsonObject &row) {
+    const auto b = QJsonDocument(row).toJson(QJsonDocument::Compact) + '\n';
+    need(std::fwrite(b.constData(), 1, size_t(b.size()), stdout) == size_t(b.size()), "ipc_closed");
+    std::fflush(stdout);
+}
+QJsonObject readJson(const QString &path, qint64 limit = 128 * 1024) {
+    QFileInfo info(path);
+    need(info.isFile() && !info.isSymLink() && info.size() <= limit, "invalid_private_file");
+    QFile f(path); need(f.open(QIODevice::ReadOnly), "file_unavailable");
+    QJsonParseError e;
+    auto doc = QJsonDocument::fromJson(f.readAll(), &e);
+    need(e.error == QJsonParseError::NoError && doc.isObject(), "invalid_json");
+    return doc.object();
+}
+QJsonObject helper(const QString &operation, const QString &id = {}) {
+    QProcess process;
+    // An allowlist prevents XOVI preload and credential/debugging environment
+    // variables from reaching the upstream helper process.
+    QProcessEnvironment env;
+    env.insert("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+    env.insert("HOME", "/home/root");
+    env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
+    env.insert("RM_WEREAD_APP_DIR", "/home/root/weread-downloader/helper");
+    env.insert("KO_DIR", "/home/root/xovi/exthome/appload/koreader");
+    env.insert("RM_WEREAD_LOGIN_TIMEOUT", "180");
+    process.setProcessEnvironment(env);
+    process.setStandardErrorFile(QProcess::nullDevice());
+    process.setProgram("/home/root/xovi/exthome/appload/koreader/luajit");
+    QStringList args{installRoot + "/lua/adapter.lua", operation};
+    if (!id.isEmpty()) args.append(id);
+    process.setArguments(args);
+    process.start(); need(process.waitForStarted(5000), "helper_unavailable");
+    QElapsedTimer elapsed; elapsed.start();
+    QByteArray pending;
+    QJsonObject final;
+    bool protocolError = false;
+    auto consume = [&] {
+        pending += process.readAllStandardOutput();
+        if (pending.size() > 8 * 1024 * 1024) { protocolError = true; process.kill(); return; }
+        int newline;
+        while ((newline = pending.indexOf('\n')) >= 0) {
+            auto line = pending.left(newline); pending.remove(0, newline + 1);
+            auto object = QJsonDocument::fromJson(line).object();
+            auto state = object.value("state").toString();
+            if (state == "qr" || state == "progress") emitRow(object);
+            else if (!state.isEmpty()) final = object;
+        }
+    };
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForReadyRead(250); consume();
+        if (canceled) { process.kill(); process.waitForFinished(1000); throw std::runtime_error("operation_canceled"); }
+        const qint64 maximum = operation == "download" ? 2 * 60 * 60 * 1000 : 4 * 60 * 1000;
+        if (elapsed.elapsed() > maximum) { process.kill(); process.waitForFinished(3000); throw std::runtime_error("helper_timeout"); }
+    }
+    consume();
+    need(!protocolError && pending.trimmed().isEmpty() && process.exitStatus() == QProcess::NormalExit
+        && process.exitCode() == 0 && final.value("state") != "error" && !final.isEmpty(), "helper_failed");
+    if (operation != "status" && operation != "login" && final.value("state") == "login_required")
+        throw std::runtime_error("login_required");
+    return final;
+}
+LibrarySnapshot scan(const ImportRegistry &registry, bool inspectUnknown = true) {
+    const QFileInfo rootInfo(libraryRoot);
+    need(rootInfo.isDir() && !rootInfo.isSymLink() && rootInfo.isReadable(), "library_unavailable");
+    const auto known = registry.knownDocuments();
+    const auto entries = QDir(libraryRoot).entryInfoList({"*.metadata"}, QDir::Files | QDir::NoSymLinks);
+    const QRegularExpression uuid("\\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\z");
+    LibrarySnapshot result;
+    for (const auto &entry : entries) {
+        need(!canceled, "operation_canceled");
+        auto id = entry.completeBaseName();
+        if (!uuid.match(id).hasMatch()) continue;
+        auto metadata = readJson(entry.filePath());
+        if (metadata.value("type") != "DocumentType") continue;
+        QString source = known.value(id);
+        const auto epubPath = libraryRoot + '/' + id + ".epub";
+        if (inspectUnknown && source.isEmpty() && QFileInfo(epubPath).isFile()) {
+            // Only plugin-tagged EPUBs participate. Invalid/unsupported historical
+            // books are ignored; a pending transaction is still never retried.
+            try { source = Epub(epubPath).sourceBookId(); } catch (const std::exception &) {}
+        }
+        const bool deleted = metadata.value("deleted").toBool() || metadata.value("parent") == "trash";
+        result.documents.append({id, source, deleted});
+    }
+    result.complete = true;
+    return result;
+}
+int request(QNetworkAccessManager &manager, QNetworkRequest request, NativeUploadBody *body = nullptr, bool *rejected = nullptr) {
+    return nativeRequest(manager, request, body, rejected, &canceled);
+}
+void importerHandshake() {
+    emitRow({{"state", "needs_importer"}});
+#ifdef __linux__
+    pollfd input{STDIN_FILENO, POLLIN, 0};
+    need(::poll(&input, 1, 15000) > 0 && (input.revents & POLLIN), "importer_not_enabled");
+    char command[4]{};
+    need(::read(STDIN_FILENO, command, 3) == 3 && QByteArray(command, 3) == "go\n", "importer_not_enabled");
+#else
+    throw std::runtime_error("device_required");
+#endif
+}
+}
+int main(int argc, char **argv) {
+    ::umask(0077);
+    std::signal(SIGTERM, onSignal); std::signal(SIGINT, onSignal);
+#ifdef SIGHUP
+    std::signal(SIGHUP, onSignal);
+#endif
+#ifdef __linux__
+    const auto parent = ::getppid();
+    ::prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (::getppid() != parent) return 1;
+#endif
+    QCoreApplication app(argc, argv);
+    try {
+        need(argc == 2 || argc == 3, "invalid_command");
+        const auto operation = QString::fromLocal8Bit(argv[1]);
+        need(QDir().mkpath(root) && !QFileInfo(root).isSymLink(), "private_root_unavailable");
+        need(::chmod(QFile::encodeName(root).constData(), 0700) == 0, "private_root_unavailable");
+        ImportRegistry registry(root); // One foreground operation, including login.
+        need(NativeAddress::recover(root), "address_restore_failed");
+        if (operation == "status" || operation == "login" || operation == "logout") {
+            emitRow(helper(operation)); return 0;
+        }
+        if (operation == "shelf" || operation == "cached-shelf") {
+            auto row = helper(operation);
+            registry.reconcile(scan(registry, operation == "shelf" || registry.needsSourceScan()));
+            auto books = row.value("books").toArray();
+            for (int i = 0; i < books.size(); ++i) {
+                auto book = books.at(i).toObject();
+                auto state = registry.record(book.value("bookId").toString()).value("state").toString();
+                book["importState"] = state.isEmpty() ? "remote" : state;
+                books[i] = book;
+            }
+            row["books"] = books; emitRow(row); return 0;
+        }
+        need(operation == "import" && argc == 3, "invalid_command");
+        const auto id = QString::fromLocal8Bit(argv[2]);
+        need(Epub::validBookId(id), "invalid_book_id");
+        auto identity = helper("status");
+        need(identity.value("state") == "authenticated", "login_required");
+        registry.reconcile(scan(registry));
+        registry.reserve(id, identity.value("accountScope").toString());
+        QString path;
+        try {
+            need(QStorageInfo(root).bytesAvailable() >= 256 * 1024 * 1024, "insufficient_space");
+            emitRow({{"state", "downloading"}});
+            const auto downloaded = helper("download", id);
+            const auto scope = downloaded.value("accountScope").toString();
+            need(scope == identity.value("accountScope").toString(), "account_changed");
+            const auto cache = QFileInfo(root + "/accounts/" + scope + "/books").canonicalFilePath();
+            const auto bookRoot = QFileInfo(cache + '/' + id).canonicalFilePath();
+            const auto source = QFileInfo(downloaded.value("path").toString()).canonicalFilePath();
+            need(!cache.isEmpty() && !bookRoot.isEmpty() && bookRoot.startsWith(cache + '/')
+                && source.startsWith(bookRoot + '/') && !source.isEmpty(), "invalid_download_path");
+            emitRow({{"state", "validating"}});
+            path = root + "/submission-" + id + ".epub";
+            Epub(source).stamp(id, path);
+            registry.reconcile(scan(registry)); // Catch concurrent external import.
+            need(registry.record(id).value("state") == "preparing", "already_imported");
+            NativeAddress address(root);
+            address.prepare();
+            importerHandshake();
+            QNetworkAccessManager manager;
+            bool ready = false;
+            for (int attempt = 0; attempt < 3 && !canceled; ++attempt) {
+                if (request(manager, QNetworkRequest(QUrl("http://10.11.99.1/"))) == 200) { ready = true; break; }
+                QThread::msleep(500);
+            }
+            need(ready, "native_importer_unavailable");
+            // No asynchronous event can alter the source file between validation
+            // and opening: it is private, generated by this exclusive worker.
+            auto *multipart = new NativeUploadBody(path, id);
+            need(multipart->isOpen(), "submission_unavailable");
+            registry.prepareSubmission(id, path);
+            emitRow({{"state", "importing"}});
+            bool rejected = false;
+            const int status = request(manager, QNetworkRequest(QUrl("http://10.11.99.1/upload")), multipart, &rejected);
+            if (rejected) {
+                registry.rejectSubmission(id);
+                need(address.restore(), "address_restore_failed");
+                emitRow({{"state", "error"}, {"code", "native_rejected"}, {"importState", "failed"}});
+                QFile::remove(path); return 1;
+            }
+            if (status != 200 && status != 201) {
+                need(address.restore(), "address_restore_failed");
+                emitRow({{"state", "pending"}}); return 0;
+            }
+            for (int i = 0; i < 30; ++i) {
+                registry.reconcile(scan(registry));
+                if (registry.record(id).value("state") == "imported") break;
+                QThread::msleep(1000);
+            }
+            emitRow({{"state", registry.record(id).value("state")}});
+            need(address.restore(), "address_restore_failed");
+            QFile::remove(path);
+        } catch (const std::exception &) {
+            if (registry.record(id).value("state") == "preparing") registry.failBeforeSubmission(id);
+            if (!path.isEmpty()) QFile::remove(path);
+            throw;
+        }
+        return 0;
+    } catch (const std::exception &error) {
+        // Only locally defined codes may reach the UI; helper/native raw output
+        // never becomes an exception string on this boundary.
+        const auto text = QString::fromUtf8(error.what());
+        const bool code = QRegularExpression("\\A[a-z_]{1,64}\\z").match(text).hasMatch();
+        emitRow({{"state", "error"}, {"code", code ? text : QStringLiteral("operation_failed")}});
+        return 1;
+    }
+}
