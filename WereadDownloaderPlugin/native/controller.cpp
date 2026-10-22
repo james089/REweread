@@ -92,6 +92,7 @@ QString DownloaderController::coverSource(const QString &id, const QString &url)
     return m_opened && m_loggedIn ? m_covers.source(id, url) : QString();
 }
 void DownloaderController::closePage() {
+    m_shelfAfterAction=false;
     stopProgress();
     m_covers.stop();
     m_opened = false; cancel();
@@ -226,6 +227,7 @@ void DownloaderController::next() {
 }
 void DownloaderController::start(const QString &operation, const QString &id) {
     if (busy()) return;
+    if(operation=="shelf" || operation=="logout")m_shelfAfterAction=false;
     stopProgress();
     ++m_generation;
     m_operation = operation; m_currentId = id; m_error = false; m_final = false; m_loginRequired = false; m_refreshNeeded = false; m_buffer.clear();
@@ -295,6 +297,15 @@ void DownloaderController::readOutput() {
         } else if (state == "progress_synced" || state == "progress_restored") {
             applyProgress(row); m_final = true;
             m_status = state == "progress_synced" ? QStringLiteral("阅读进度已同步到微信读书") : QStringLiteral("已恢复云端阅读位置");
+            if(state=="progress_synced") {
+                m_shelfAfterAction=true;
+                const auto uuid=row.value("uuid").toString();
+                if(QRegularExpression("\\A[0-9a-fA-F-]{36}\\z").match(uuid).hasMatch()) emit recentReadRequested(uuid);
+                if(row.value("recentMarked").isBool() && !row.value("recentMarked").toBool())
+                    m_status+=QStringLiteral("；云端最近阅读标记未完成");
+            }
+        } else if(state=="recent_mark_failed") {
+            m_status+=QStringLiteral("；云端最近阅读标记未完成");
         } else if (state == "progress") {
             int total = row.value("total").toInt(), done = row.value("done").toInt();
             int percent = total > 0 ? qBound(0, int(qint64(done) * 100 / total), 99) : 0;
@@ -318,6 +329,9 @@ void DownloaderController::readOutput() {
             else { m_error = true; m_status = QStringLiteral("系统导入服务不可用或有其他传输正在运行"); m_process.terminate(); }
         } else if (state == "imported" || state == "pending" || state == "conflict") {
             bookState(state); m_final = true;
+            const auto uuid=row.value("uuid").toString();
+            if(state=="imported") m_shelfAfterAction=true;
+            if(state=="imported" && QRegularExpression("\\A[0-9a-fA-F-]{36}\\z").match(uuid).hasMatch()) emit recentReadRequested(uuid);
             m_status = state == "imported" ? QStringLiteral("已导入系统书库根目录")
                 : QStringLiteral("系统结果待核实；请刷新，不会自动重复导入");
         } else if (state == "error") {
@@ -336,6 +350,7 @@ void DownloaderController::readOutput() {
                    : row.value("code") == "progress_sync_unconfirmed" ? QStringLiteral("同步结果待核对，请刷新查看云端进度")
                    : row.value("code") == "cloud_progress_unavailable" ? QStringLiteral("云端进度尚未读取，请刷新后重试")
                    : row.value("code") == "progress_network_failed" ? QStringLiteral("进度读取失败，请检查网络后重试")
+                   : m_operation == "restore-progress" ? QStringLiteral("云端位置无法唯一匹配本地正文，请刷新后重试")
                    : QStringLiteral("暂不能准确定位阅读位置，请确认已读到正文并刷新后重试"))
                 : row.value("code") == "native_rejected"
                 ? QStringLiteral("系统拒绝了上传，EPUB 缓存已保留，可重新导入")
@@ -368,7 +383,11 @@ void DownloaderController::finish(int code, QProcess::ExitStatus exitStatus) {
             else if (operation == "status") start("cached-shelf"); else refresh();
         } else if (!good && m_loginRequired) login();
         else if (good && operation == "cached-shelf" && m_refreshNeeded) refresh();
-        else if (good) { next(); if (!busy()) startProgress(); }
+        else if (good) {
+            next();
+            if(!busy() && m_shelfAfterAction && m_loggedIn) {m_shelfAfterAction=false;start("shelf");}
+            else if (!busy()) startProgress();
+        }
         else if (operation == "restore-progress" && m_loggedIn) startProgress();
     });
 }

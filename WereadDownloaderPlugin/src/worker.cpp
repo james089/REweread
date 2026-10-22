@@ -345,11 +345,14 @@ int main(int argc, char **argv) {
                 if (registry.record(id).value("state") == "imported") break;
                 QThread::msleep(1000);
             }
-            emitRow({{"state", registry.record(id).value("state")}});
+            emitRow({{"state", registry.record(id).value("state")},{"uuid",registry.record(id).value("uuid")}});
             need(address.restore(), "address_restore_failed");
             QFile::remove(path);
             if (registry.record(id).value("state") == "imported") {
                 try { restoreProgress(id, true); } catch (const std::exception &) { emitRow({{"state","restore_skipped"}}); }
+                bool marked=false;
+                try { marked=helper("mark-recent",id).value("state")=="recent_marked"; } catch(const std::exception &) {}
+                emitRow({{"state",marked ? "recent_marked" : "recent_mark_failed"}});
             }
         } catch (const std::exception &error) {
             if (registry.record(id).value("state") == "preparing") registry.failBeforeSubmission(id);

@@ -483,3 +483,86 @@ Download optimization and single/multi-select deployment (2026-10-22):
   chapter/percentage placement above the shorter controls without row growth.
 - Install 20261022230840 confirmed fresh host/sidebar readiness and the exact
   success marker. Synthetic device fixtures removed; install wake lock released.
+
+### Recent-reading markers after import/upload
+
+- Confirmed native import and confirmed progress upload request native
+  Library.entryForId(uuid).markOpened() through the existing MainView host.
+  This updates native recent-reading metadata through the stock API without
+  changing lastOpenedPage. Pending/conflicted/failed imports do not request it;
+  ordinary refresh and explicit cloud-position download do not request it.
+- After import (including its initial position-restore attempt), and after a
+  successful explicit upload, a cloud enter-reading request preserves the fresh
+  saved chapter/offset/percentage/summary and omits reading-time fields. It uses
+  the existing provider payload builder and business-ack check; readback verifies
+  position, raw percentage and accumulated reading time did not change. Updated
+  raw record is saved as the new conflict baseline. Existing restore flags and
+  derived display cache are preserved.
+- A user-authorized device check verified an advanced shelf readUpdateTime,
+  unchanged chapter/offset, percentage and reading time. No raw account/book
+  values were recorded. Synthetic Lua tests cover enter payload without timing,
+  preserved position and recent-marker failure after successful primary upload.
+  Controller tests check native signal dispatch for import and upload success.
+- Recent-marker errors remain secondary warnings and do not fail a successful
+  import/upload or erase a prior restore warning. Canceled automatic-exit-upload
+  feature remains absent; no native reader lifecycle hook/settings toggle added.
+- Full Linux regression, host Qt interaction, device synthetic Lua tests,
+  official SDK build and exact-firmware peer replay passed. Install
+  20261022233012 confirmed fresh host/sidebar readiness and exact success marker.
+  Temporary fixtures removed; install wake lock released. Native recent signal
+  dispatch is covered synthetically; real import/upload end-to-end acceptance
+  of the new native marker remains user-facing verification.
+
+### Chapter display cache and action-triggered shelf refresh
+
+- Display-only catalog cache is account/manifest-fingerprint validated and
+  persisted with private progress data. Unchanged local chapter results use a
+  key containing native UUID/page, layout content hash, download manifest hash
+  and streamed SHA-256 of the native PDF. Stable metadata/content snapshots are
+  still checked. Changed native page/layout/PDF/manifest invalidates the result.
+  No cached chapter result is used by precise upload/restore position mapping.
+- Local cache hits for all imported books emit before any cloud request. Warm
+  refresh skips PDFium and chapter scans. Missing-cloud-ID display matching
+  normalizes cached XHTML directly instead of building per-character HTML
+  source maps for every chapter. Original-source mapping remains for offsets.
+- Read-only aggregate device timing: cold cache setup about 21 seconds for four
+  books; warm complete cloud validation about 6 seconds, first local cache result
+  below 0.01 seconds, zero PDF document loads and zero catalog HTTP requests.
+  These are one-session measurements, not network latency guarantees.
+- Successful import/upload marks the shelf dirty; after the import queue drains,
+  exactly one shelf request updates plugin ordering from cloud readUpdateTime.
+  Explicit shelf loads/closing the plugin clear the dirty flag. Tests model
+  persisted import results and wait for the follow-up shelf rather than a
+  transient idle gap. Secondary recent-marker errors still preserve success.
+- Full Linux regression, official SDK build, host Qt5 and device Qt6 interaction
+  tests passed. Synthetic device Lua tests cover multi-chunk file hashing,
+  persistent local-title cache reuse without PDFium, PDF-change invalidation,
+  existing sync/restore guards and display behavior. UI regression checks one
+  follow-up shelf per import batch/upload rather than per imported book.
+- Install 20261022234052 confirmed fresh host/sidebar readiness and exact
+  success marker. Temporary synthetic fixtures removed; install wake lock
+  released. First actual refresh establishes persistent display caches; network
+  validation remains asynchronous on later cached entries.
+
+### Cloud-position restore with incompatible source offset
+
+- A newly imported book at its cover failed cloud-position restore because the
+  saved cloud chapter offset did not agree with that chapter's current HTML
+  serialization. Current local page text is not an input to restore; only upload
+  needs the current native page to contain identifiable text.
+- Restore now permits an exact unique saved summary in the confirmed cloud
+  chapter when strict raw-offset mapping fails. It still requires at least 16
+  following source characters and a unique 32-character (or unique 16-character
+  fallback) match across the complete native PDF, plus stable native snapshots.
+  Upload offset construction and cloud conflict safeguards remain unchanged.
+- Read-only comparison on the latest imported book reproduced the installed
+  progress_offset_unsupported failure and found a valid target with the fix.
+  No native page was changed by the comparison. Synthetic tests cover the
+  incompatible offset fallback, unrelated summary refusal and no native writes.
+- Download errors no longer tell the user to first read a local body-text page;
+  they explain that the cloud position could not uniquely match local text.
+- Full Linux regression, official SDK build, host UI tests and device synthetic
+  restore tests passed (including current native page at a textless cover).
+  Install 20261022234854 confirmed fresh host/sidebar readiness and exact success
+  marker. Temporary synthetic fixtures removed; install wake lock released.
+  Actual native position remains unchanged pending the user's explicit retry.

@@ -66,6 +66,7 @@ signals:
     void booksChanged();
     void bookUpdated(const QString &id, const QVariantMap &book);
     void restoreRequested(const QString &uuid, int page, const QString &id);
+    void recentReadRequested(const QString &uuid);
 private:
     void start(const QString &operation, const QString &id = {});
     void readOutput();
@@ -96,6 +97,7 @@ private:
     QVariantList m_books;
     bool m_opened = false, m_loggedIn = false, m_error = false;
     bool m_refreshNeeded = false;
+    bool m_shelfAfterAction = false;
     bool m_final = false, m_loginRequired = false, m_ownsImporter = false;
     quint64 m_qrRevision = 0;
     quint64 m_generation = 0;

@@ -49,8 +49,14 @@ login)
  touch "$script_root/authenticated"
  printf '%s\n' '{"state":"authenticated","accountName":"synthetic account"}' ;;
 shelf|cached-shelf)
+ state1=remote; state2=remote; state3=remote
+ if [ -f "$script_root/imports" ]; then
+  grep -qx synthetic-1 "$script_root/imports" && state1=imported
+  grep -qx synthetic-2 "$script_root/imports" && state2=imported
+  grep -qx synthetic-3 "$script_root/imports" && state3=imported
+ fi
  if [ -f "$script_root/queue-fixture" ]; then
-  printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"queue one","importState":"remote"},{"bookId":"synthetic-2","title":"queue two","importState":"remote"},{"bookId":"synthetic-3","title":"queue three","importState":"remote"}]}'
+  printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"queue one","importState":"'"$state1"'"},{"bookId":"synthetic-2","title":"queue two","importState":"'"$state2"'"},{"bookId":"synthetic-3","title":"queue three","importState":"'"$state3"'"}]}'
   exit 0
  fi
  if [ -f "$script_root/cache-fixture" ]; then
@@ -59,9 +65,9 @@ shelf|cached-shelf)
  fi
  if [ -f "$script_root/network-failed" ]; then rm "$script_root/network-failed"; printf '%s\n' '{"state":"error","code":"helper_failed"}'; exit 1; fi
  if [ -f "$script_root/expired" ]; then rm "$script_root/expired"; printf '%s\n' '{"state":"error","code":"login_required"}'; exit 1; fi
- printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"合成测试书：正文与插图","author":"测试作者","cover":"https://res.weread.qq.com/synthetic-cover.png","localCover":"","importState":"remote"},{"bookId":"synthetic-2","title":"已导入的合成测试书","author":"测试作者","localCover":"","importState":"imported"}]}' ;;
+ printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"合成测试书：正文与插图","author":"测试作者","cover":"https://res.weread.qq.com/synthetic-cover.png","localCover":"","importState":"'"$state1"'"},{"bookId":"synthetic-2","title":"已导入的合成测试书","author":"测试作者","localCover":"","importState":"imported"}]}' ;;
 reading-progress) if [ -f "$script_root/manual-restore-fixture" ]; then printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":12.5,"cloudProgress":67.8,"restorePending":true,"restoreAutomatic":false}'; exit 0; fi; if [ -f "$script_root/restore-fixture" ]; then printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":0,"cloudProgress":67.8,"restorePending":true,"restoreAutomatic":true}'; exit 0; fi; printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":12.5,"cloudProgress":67.8,"cloudProgressStale":false,"localChapter":"Local chapter","cloudChapter":"Cloud chapter"}'; printf '%s\n' '{"state":"reading_progress","bookId":"synthetic-2","accountScope":"wrong","cloudProgress":99}' ;;
-sync-progress) printf '%s\n' '{"state":"progress_synced","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cloudProgress":12.5,"cloudProgressStale":false,"localChapter":"Local chapter","cloudChapter":"Cloud chapter"}' ;;
+sync-progress) printf '%s\n' '{"state":"progress_synced","uuid":"12345678-1234-1234-1234-123456789abc","recentMarked":true,"bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","cloudProgress":12.5,"cloudProgressStale":false,"localChapter":"Local chapter","cloudChapter":"Cloud chapter"}' ;;
 restore-progress)
  printf '%s\n' '{"state":"restore_position","bookId":"synthetic-2","uuid":"12345678-1234-1234-1234-123456789abc","page":1}'
  read ack
@@ -75,7 +81,7 @@ import)
  /bin/sleep 0.1
  printf '%s\n' '{"state":"progress","done":8,"total":10}'
  /bin/sleep 0.1
- printf '%s\n' '{"state":"imported"}' ;;
+ printf '%s\n' '{"state":"imported","uuid":"12345678-1234-1234-1234-123456789abc"}' ;;
 esac
 if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
 )SH");
@@ -94,6 +100,10 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         const auto cachedCover = coverDirectory + "/synthetic-1-" + QString::fromLatin1(QCryptographicHash::hash(coverUrl.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".png";
         QImage cover(4, 6, QImage::Format_RGB32); cover.fill(Qt::black); check(cover.save(cachedCover));
         controller = new DownloaderController(image, &engine, program, coverRoot);
+        int recentRequests=0;
+        QObject::connect(controller,&DownloaderController::recentReadRequested,[&](const QString &uuid){
+            check(uuid=="12345678-1234-1234-1234-123456789abc");++recentRequests;
+        });
         bool firstShelfCover = false, sawShelf = false;
         QObject::connect(controller, &DownloaderController::booksChanged, [&] {
             if (!sawShelf && controller->books().size() == 2) {
@@ -110,17 +120,24 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         until([] { return controller->loggedIn() && controller->books().size() == 2 && !controller->busy(); });
         check(sawQr && controller->qrImage().isEmpty());
         check(firstShelfCover && controller->accountName() == "synthetic account");
+        auto callCount=[&](const QString &operation){QFile calls(temporary.path()+"/calls");
+            if(!calls.open(QIODevice::ReadOnly))return 0;
+            return int(QString::fromUtf8(calls.readAll()).split('\n').count(operation));
+        };
+        auto shelvesBeforeImport=callCount("shelf");
         phase = "import queue";
         controller->importBooks({"synthetic-1", "synthetic-1", "synthetic-2"});
         controller->importBooks({"synthetic-1"});
-        until([] { return !controller->busy(); });
+        until([&] { return !controller->busy() && callCount("shelf")==shelvesBeforeImport+1; });
         QFile imports(temporary.path() + "/imports"); check(imports.open(QIODevice::ReadOnly));
         check(imports.readAll() == "synthetic-1\n");
         check(controller->books()[0].toMap().value("importState") == "imported");
+        check(recentRequests==1);
         phase = "live queue add and cancel";
         imports.close(); check(QFile::remove(temporary.path() + "/imports"));
         QFile queueFixture(temporary.path() + "/queue-fixture"); check(queueFixture.open(QIODevice::WriteOnly)); queueFixture.close();
         controller->refresh(); until([] { return !controller->busy() && controller->books().size() == 3; });
+        shelvesBeforeImport=callCount("shelf");
         controller->importBooks({"synthetic-1"}); check(controller->busy() && controller->canQueue());
         controller->importBooks({"synthetic-2"}); controller->importBooks({"synthetic-3", "synthetic-3"});
         check(controller->books()[1].toMap().value("importState") == "queued");
@@ -128,14 +145,15 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         controller->cancelQueued("synthetic-2"); check(controller->books()[1].toMap().value("importState") == "remote");
         controller->cancelQueued("synthetic-1"); // Running work cannot be canceled as a queued item.
         controller->importBooks({"synthetic-2"});
-        until([] {
-            if (controller->busy()) return false;
+        until([&] {
+            if (controller->busy() || callCount("shelf")!=shelvesBeforeImport+1) return false;
             for (const auto &row : controller->books()) if (row.toMap().value("importState") != "imported") return false;
             return true;
         });
         QFile queuedImports(temporary.path() + "/imports"); check(queuedImports.open(QIODevice::ReadOnly));
         check(queuedImports.readAll() == "synthetic-1\nsynthetic-3\nsynthetic-2\n");
         check(QFile::remove(queueFixture.fileName()));
+        check(QFile::remove(temporary.path()+"/imports"));
         phase = "cancel restart";
         QFile slow(temporary.path() + "/slow"); check(slow.open(QIODevice::WriteOnly)); slow.close();
         controller->login(); until([] { return controller->busy(); });
@@ -265,8 +283,11 @@ ColumnLayout {
         syncButton=visualChild(item,"uploadProgressButton");
         check(syncButton && syncButton->isVisible() && syncButton->isEnabled());
         check(QFile::remove(slowShelf.fileName()));
+        const auto recentBeforeUpload=recentRequests;
+        const auto shelvesBeforeUpload=callCount("shelf");
         check(QMetaObject::invokeMethod(syncButton,"clicked"));
-        until([] { return !controller->busy() && controller->status().contains(QStringLiteral("已同步")); });
+        until([&] { return !controller->busy() && callCount("shelf")==shelvesBeforeUpload+1; });
+        check(recentRequests==recentBeforeUpload+1);
         QMetaObject::invokeMethod(item, "turnPage", Q_ARG(QVariant, QVariant(-1)));
         phase = "automatic restore handshake";
         bool restored=false;

@@ -38,6 +38,10 @@ AFFECT /qml/device/view/main/MainView.qml
                 }
                 Connections {
                     target: Downloader
+                    function onRecentReadRequested(uuid) {
+                        let entry = Library.entryForId(uuid);
+                        if (entry && typeof entry.markOpened === "function") entry.markOpened();
+                    }
                     function onRestoreRequested(uuid, page, bookId) {
                         let entry = Library.entryForId(uuid);
                         if (!entry || page < 0 || page >= entry.pageCount) {

@@ -12,13 +12,18 @@ local text='';for i=1,120 do text=text..require('progress_text').utf8(0x4e00+i)e
 local html='<html><body><p>'..text..'</p></body></html>';local position=assert(Source.locate(text,html))
 local chapter={chapterUid=42,chapterIdx=0,title='synthetic',wordCount=120}
 local base=work..'/library/'..uuid;local account=work..'/account'
+os.remove(account..'/reading-progress-v1.json') -- Reset this synthetic test's persisted display cache.
 local function write(path,data)local f=assert(io.open(path,'wb'));assert(f:write(data));assert(f:close())end
 local function json(path,data)write(path,J.encode(data))end
 local function read(path)local f=assert(io.open(path,'rb'));local s=f:read('*a');f:close();return s end
+write(work..'/hash-stream-fixture',string.rep('a',100000))
+assert(Hash.file(work..'/hash-stream-fixture')=='6d1cf22d7cc09b085dfc25ee1a1f3ae0265804c607bc2074ad253bcc82fd81ee')
+os.remove(work..'/hash-stream-fixture')
 json(work..'/imports.json',{version=1,books={[id]={state='imported',uuid=uuid,accountScope=scope}}})
 json(base..'.metadata',{lastOpenedPage=1,parent='',type='DocumentType'})
 json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a','b'},redirectionPageMap={0,1}})
 write(base..'.pdf','synthetic')
+assert(Hash.file(base..'.pdf')==Hash.hex('synthetic'))
 write(account..'/books/'..id..'/chapters/42.xhtml',html)
 json(account..'/books/'..id..'/download-manifest.json',{version=1,accountScope='sha256-'..scope,catalogFingerprint=V.catalog({chapter}),chapters={['42']={bytes=#html,checksum=V.checksum(html),chapterFingerprint=V.chapter(chapter,1)}}})
 local saved={chapterUid=42,chapterIdx=0,chapterOffset=position.codepoints,progress=20,summary=text:sub(1,18),updateTime=10}
@@ -40,11 +45,15 @@ assert(Percent.calculate({{chapterUid=17,wordCount=100}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901,wordCount=0}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901,wordCount=1},{chapterUid=901,wordCount=1}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901}},rec,html)==nil)
-local writes=0;local rejected=false;local changed=false;local lastPayload
+local writes=0;local enters=0;local rejectEnter=false;local rejected=false;local changed=false;local lastPayload
 package.loaded.sha256={hex=function()return scope end}
 package.loaded.config_bridge=nil
 local client={request=function()return 'window.__INITIAL_STATE__='..J.encode({reader={progress={book=saved}}}),200 end,
  report_read=function(_,payload)
+  if payload.enter then enters=enters+1;assert(payload.rt==nil and payload.elapsed_seconds==nil)
+   if rejectEnter then return {errCode=1}end
+   saved.updateTime=saved.updateTime+1;return {succ=1}
+  end
   writes=writes+1;lastPayload=payload
   if rejected then return {errCode=1} end
   saved={chapterUid=payload.chapter_uid,chapterIdx=payload.chapter_idx,chapterOffset=payload.chapter_offset,summary=payload.summary,progress=payload.progress,updateTime=20}
@@ -52,11 +61,12 @@ local client={request=function()return 'window.__INITIAL_STATE__='..J.encode({re
  end}
 package.loaded['lib.client']={new=function()return client end}
 package.loaded.persistent_http={attach=function()end}
-package.loaded['lib.weread']={reader_url=function()return 'https://weread.qq.com/web/reader/synthetic'end,make_read_payload=function(v)return v end}
+package.loaded['lib.weread']={reader_url=function()return 'https://weread.qq.com/web/reader/synthetic'end,make_read_payload=function(v)return v end,
+ make_enter_read_payload=function(v)v.enter=true;return v end}
 package.loaded['lib.content']={fetch_catalog=function()return {chapter}end,cache_annotation_source=function()error('no-annotation-writes')end,
  fetch_chapter_xhtml=function()return html end,extract_reader_state=function()return {psvts=1,pclts=1,token='synthetic'}end}
-local currentPage=0
-local P={FPDF_InitLibrary=function()end,FPDF_DestroyLibrary=function()end,FPDF_LoadDocument=function()return {}end,FPDF_CloseDocument=function()end,
+local currentPage=0;local pdfLoads=0
+local P={FPDF_InitLibrary=function()end,FPDF_DestroyLibrary=function()end,FPDF_LoadDocument=function()pdfLoads=pdfLoads+1;return {}end,FPDF_CloseDocument=function()end,
  FPDF_GetPageCount=function()return 2 end,FPDF_LoadPage=function(_,p)currentPage=p;return {}end,FPDF_ClosePage=function()end,
  FPDFText_LoadPage=function()return {}end,FPDFText_ClosePage=function()end,FPDFText_CountChars=function()return currentPage==1 and 120 or 0 end,
  FPDFText_GetUnicode=function(_,i)return 0x4e00+i+1 end}
@@ -65,8 +75,19 @@ local M=require('reading_progress').new(settings,scope,account,{root=work,librar
 local rows={};M:refresh({{bookId=id},{bookId='not-imported'}},function(row)rows[#rows+1]=row end)
 assert(#rows==1 and rows[1].cloudProgress==0 and writes==0) -- raw 20 is ignored; content position is chapter start
 assert(M.cache.books[id].record.progress==20)
+local beforeRecent=J.encode({saved.chapterUid,saved.chapterOffset,saved.progress,saved.readingTime})
+assert(M:markRecent(id).state=='recent_marked' and enters==1 and writes==0)
+assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.progress,saved.readingTime})==beforeRecent)
 assert(rows[1].cloudChapter=='synthetic' and rows[1].localChapter=='synthetic')
 assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic')
+local beforeLoads=pdfLoads
+assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic' and pdfLoads==beforeLoads)
+local reopened=require('reading_progress').new(settings,scope,account,{root=work,library=work..'/library',pdf=P})
+assert(reopened:localChapter(id,{uuid=uuid},{chapter})=='synthetic' and pdfLoads==beforeLoads)
+reopened:close()
+write(base..'.pdf','different')
+assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic' and pdfLoads==beforeLoads+1)
+write(base..'.pdf','synthetic')
 json(base..'.metadata',{lastOpenedPage=0,parent='',type='DocumentType'})
 assert(M:localChapter(id,{uuid=uuid},{chapter})=='当前页无正文')
 json(base..'.metadata',{lastOpenedPage=1,parent='',type='DocumentType'})
@@ -81,6 +102,7 @@ assert(J.decode(read(account..'/reading-progress-v1.json')).books[id].restoreAut
 local result=M:sync(id) -- explicit upload keeps its direction despite pending restore
 assert(not J.decode(read(account..'/reading-progress-v1.json')).books[id].restorePending)
 assert(result.state=='progress_synced' and writes==1 and lastPayload.elapsed_seconds==0)
+assert(result.recentMarked and result.uuid==uuid and enters==2)
 assert(lastPayload.chapter_uid==42 and lastPayload.chapter_offset==position.codepoints)
 saved.updateTime=30
 local ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='cloud_progress_changed' and writes==1)
@@ -101,10 +123,22 @@ local before=read(base..'.metadata')
 result=M:restore(id)
 assert(result.state=='restore_position' and result.page==1 and writes==2)
 assert(read(base..'.metadata')==before) -- module never edits native files itself
+saved.chapterOffset=999999 -- Incompatible source serialization; exact unique saved text still proves the page.
+json(base..'.metadata',{lastOpenedPage=0,parent='',type='DocumentType'})
+local coverMetadata=read(base..'.metadata')
+result=M:restore(id)
+assert(result.state=='restore_position' and result.page==1 and writes==2 and read(base..'.metadata')==coverMetadata)
+local oldSummary=saved.summary;saved.summary='no matching saved text'
+ok,err=pcall(function()M:restore(id)end);assert(not ok and err=='progress_offset_unsupported' and writes==2)
+saved.summary=oldSummary;saved.chapterOffset=0
+write(base..'.metadata',before)
 local cache=J.decode(read(account..'/reading-progress-v1.json'));assert(cache.books[id].restorePending and not cache.books[id].restoreAutomatic)
 result=M:restored(id);assert(result.state=='progress_restored')
 cache=J.decode(read(account..'/reading-progress-v1.json'));assert(not cache.books[id].restorePending)
 -- Edited page layouts must fail before submitting cloud progress.
 json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a','b'},redirectionPageMap={1,0}})
 ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='progress_layout_unsupported' and writes==2)
+json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a','b'},redirectionPageMap={0,1}})
+M:refresh({{bookId=id}},function()end);rejectEnter=true
+result=M:sync(id);assert(result.state=='progress_synced' and not result.recentMarked and writes==3)
 M:close();print('synthetic progress: imported-only reads, exact sync/zero time, conflict, rejection, restore and layout refusal passed')

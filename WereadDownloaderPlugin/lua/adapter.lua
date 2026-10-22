@@ -132,7 +132,7 @@ local function execute()
     local settings, scope, account_root = context()
     local ShelfCache = require("shelf_cache")
     local shelf = ShelfCache:new(account_root)
-    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" then
+    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" then
         local progress = require("reading_progress").new(settings, scope, account_root)
         local ok, result = pcall(function()
             if operation == "reading-progress" then
@@ -140,6 +140,7 @@ local function execute()
                 return {state="reading_progress_done", accountScope=scope}
             end
             if operation == "prepare-restore" then return progress:prepareRestore(arg[2]) end
+            if operation == "mark-recent" then return progress:markRecent(arg[2]) end
             if operation == "restore-progress" then return progress:restore(arg[2]) end
             if operation == "restore-complete" then return progress:restored(arg[2]) end
             return progress:sync(arg[2])

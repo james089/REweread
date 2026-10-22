@@ -14,7 +14,7 @@ main = (root / 'build/replay/qml/device/view/main/MainView.qml').read_text()
 for token in ['wereadDownloaderSidebar', 'openAppLoad', 'Downloader.placeBelowAppLoad']:
     if token not in sidebar:
         raise SystemExit('Sidebar replay is missing a required peer or plugin anchor')
-for token in ['wereadDownloaderHost', 'Downloader.attachSettings', 'DownloaderPage.qml', 'Downloader.completeRestore', 'LibraryController.setLastOpenedPage']:
+for token in ['wereadDownloaderHost', 'Downloader.attachSettings', 'DownloaderPage.qml', 'Downloader.completeRestore', 'LibraryController.setLastOpenedPage', 'onRecentReadRequested', 'entry.markOpened()']:
     if token not in main:
         raise SystemExit('Main view replay is incomplete')
 # Both markers refer to the current patch, not a stale prior build.
