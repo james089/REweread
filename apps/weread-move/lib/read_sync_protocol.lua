@@ -77,24 +77,23 @@ function ReadSyncProtocol.elapsed_seconds(value)
     return math.max(0, math.floor(tonumber(value) or 0))
 end
 
--- HTTP success alone is not an acknowledgement of a read write. Only the
--- response form already used by this helper is accepted. A new or unknown
--- response deliberately remains unacknowledged, so the local ledger cannot
--- silently discard duration.
+-- HTTP success alone is not a write acknowledgement. The Web read endpoint
+-- has been observed returning {succ=1} without errCode; retain the older
+-- errCode=0 form as well. Explicit rejection always overrides success flags.
 function ReadSyncProtocol.response_succeeded(response)
     if type(response) ~= "table" then
         return false
     end
-    -- A server may provide a boolean result together with errCode. Explicit
-    -- rejection always wins; errCode=0 alone is the legacy acknowledged form.
-    if response.succ == false or response.succ == 0
-        or response.success == false or response.success == 0 then
+    if response.success == false or response.success == 0 then
         return false
     end
-    if response.errCode ~= nil then
-        return tonumber(response.errCode) == 0
+    if response.errCode ~= nil and tonumber(response.errCode) ~= 0 then
+        return false
     end
-    return false
+    if response.succ ~= nil then
+        return response.succ == true or response.succ == 1
+    end
+    return response.errCode ~= nil and tonumber(response.errCode) == 0
 end
 
 return ReadSyncProtocol

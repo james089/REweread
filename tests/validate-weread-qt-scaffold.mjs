@@ -519,7 +519,7 @@ assert(qml.includes('id: emptyShelfState'), 'shelf must show a real empty state 
 assert(qml.includes('"同步书架"') && qml.includes('onClicked: shelfStore.refreshShelf()'), 'empty shelf state must offer real shelf sync');
 assert(qml.includes('visible: root.shelfTab === "书架" && shelfStore.books.length === 0'), 'empty shelf state must only show when no real books are loaded');
 assert(qml.includes('property string shelfTab: "书架"'), 'shelf must expose the Reader First bottom navigation state');
-assert(qml.includes('model: ["书架", "发现", "我的", "魔法笔记本"]'), 'shelf must show a compact Chinese bottom navigation with Magic Notebook');
+assert(qml.includes('model: ["书架", "发现", "我的"]'), 'shelf must show the three requested navigation tabs');
 assert(qml.includes('property int shelfPageIndex'), 'shelf must track horizontal page index');
 assert(qml.includes('target: shelfStore') && qml.includes('function onBooksChanged()') && qml.includes('root.shelfPageIndex = root.clamp(root.shelfPageIndex, 0, root.shelfPageCount - 1)'), 'shelf must clamp the current page when synced books change');
 assert(!qml.includes('GridView {'), 'shelf must avoid GridView overlap on 3x3 cover layouts');
@@ -536,11 +536,11 @@ assert(qml.includes('property real coverAspectRatio: 0.68'), 'covers must keep p
 assert(qml.includes('property int bookIndex: root.shelfPageIndex * 9 + index'), 'shelf must address real ShelfStore books by current page');
 assert(qml.includes('property var book: shelfStore.books[bookIndex]'), 'shelf delegates must render real ShelfStore books');
 assert(qml.includes('function currentShelfPageBooks'), 'shelf must expose the current 3x3 page books for batch actions');
-assert(qml.includes('downloadStore.downloadBooks(root.currentShelfPageBooks())'), 'shelf must offer a real batch download action for the current page');
-assert(qml.includes('text: "下载本页"'), 'shelf batch download action must be labeled in Chinese');
-assert(qml.includes('shelfStore.recentBook.bookId'), 'shelf must read the recent local book from ShelfStore');
-assert(qml.includes('text: "继续阅读"'), 'shelf must expose a Chinese continue-reading shortcut');
-assert(qml.includes('root.openOrDownloadBook(shelfStore.recentBook)'), 'shelf continue-reading shortcut must open the recent local book through the real reader path');
+assert(!qml.includes('downloadStore.downloadBooks(root.currentShelfPageBooks())'), 'shelf must not offer page batch downloads');
+assert(!qml.includes('text: "下载本页"'), 'page batch download button must be removed');
+assert(qml.includes('id: shelfSyncButton'), 'shelf must expose the sync icon button');
+assert(!qml.slice(qml.indexOf('id: shelfPage'), qml.indexOf('id: shelfGrid')).includes('text: "继续阅读"'), 'shelf header must not offer a continue-reading shortcut');
+assert(!qml.includes('root.openOrDownloadBook(shelfStore.recentBook)'), 'removed shelf shortcut must not retain a recent-book click target');
 assert(qml.includes('shelfStore.refreshBookDetails(book.bookId)'), 'opening detail must trigger real metadata/review refresh');
 assert(qml.includes('shelfStore.refreshShelf()'), 'shelf must provide a real online refresh action');
 assert(qml.includes('shelfStore.shelfProgress'), 'shelf must show online refresh progress');
@@ -595,11 +595,11 @@ assert(qml.includes('function readerPageForCatalogChapter'), 'reader must map de
 assert(qml.includes('function enterReaderForCatalogChapter'), 'detail catalog must open the reader at a selected chapter');
 assert(qml.includes('function downloadCatalogChapter'), 'detail catalog must queue a selected chapter target before downloading');
 assert(qml.includes('root.openOrDownloadBook(detailPage.book)'), 'continue-reading must auto-download when a full EPUB cache is missing');
-assert(qml.includes('downloadStore.downloadOpeningChapter(book.bookId, book.title)'), 'continue-reading must fast-download one chapter before opening instead of downloading the whole book');
-assert(qml.includes('downloadStore.downloadBook(book.bookId, book.title)'), 'open-or-download action must use the real download bridge');
-assert(qml.includes('book.downloadState === "full" || book.localEpubPath !== ""'), 'open-or-download action must detect local full EPUBs before starting download');
+assert(!qml.includes('downloadStore.downloadOpeningChapter(book.bookId, book.title)') && qml.includes('downloadStore.hasCompleteDownload(book.bookId)'), 'normal reading requires verified full downloads');
+assert(qml.includes('downloadStore.downloadBook(book.bookId, book.title || book.bookId)'), 'open-or-download action must request the entire book');
+assert(qml.includes('downloadStore.hasCompleteDownload(book.bookId)'), 'reading must verify full metadata and file, not a partial local path');
 assert(qml.includes('root.enterReaderForBook(book.bookId, book.title)'), 'open-or-download action must open already downloaded books through the centralized reader entry');
-assert(qml.includes('root.enterReaderForBook(record.bookId, title)'), 'download history entries must open cached books through the centralized reader entry');
+assert(qml.includes('root.openOrDownloadBook({bookId: record.bookId'), 'download history must use the full-download reading gate');
 assert(qml.includes('property string currentBookId'), 'reader must remember the current book id for progress saves');
 assert(!qml.includes('readerStore.savedPage(bookId)'), 'reader must not restore an unstable local page index after switching to windowed pagination');
 assert(qml.includes('readerStore.savedTextOffset(bookId)'), 'reader must restore by saved text offset when available');
@@ -658,7 +658,7 @@ assert(!readerEntryFunction.includes('root.startReaderPaginationBuild()'), 'norm
 assert(qml.includes('property int readerReflowAnchorOffset'), 'reader must remember the current text offset while typography settings reflow');
 assert(qml.includes('function beginReaderReflow'), 'reader setting changes must capture the current text offset before rebuilding pages');
 assert(qml.includes('root.readerReflowAnchorOffset = root.currentReaderTextStart'), 'reader reflow anchor must use text offset rather than page index');
-assert(qml.includes('root.buildReaderPaginationWindowFromOffset(anchor, 12)'), 'typography reflow must rebuild only around the same text offset');
+assert(qml.includes('root.buildReaderPaginationWindowFromOffset(anchor, 2)'), 'typography reflow must rebuild only around the same text offset');
 assert(qml.includes('function readerDefaultStartOffset'), 'reader must choose a substantive opening chapter instead of defaulting new books to copyright pages');
 assert(qml.includes('root.readerDefaultStartOffset()'), 'reader entry must use the default substantive start when there is no saved local offset');
 assert(qml.includes('function requestReaderContinuationDownload'), 'reader must request more content when an opening-chapter EPUB reaches the end');
@@ -716,7 +716,7 @@ assert(qml.includes('Settings {') && qml.includes('category: "reader"'), 'reader
 assert(qml.includes('property alias fontSize: root.readerFontSize'), 'reader font size must persist');
 assert(qml.includes('property alias lineHeight: root.readerLineHeight'), 'reader line height must persist');
 assert(qml.includes('property alias paragraphSpacing: root.readerParagraphSpacing'), 'reader paragraph spacing must persist');
-assert(qml.includes('property alias firstLineIndentChars: root.readerFirstLineIndentChars'), 'reader first-line indent must persist as Chinese character count');
+assert(qml.includes('readonly property int readerFirstLineIndentChars: 2'), 'reader first-line indent must remain fixed at two characters');
 assert(qml.includes('property alias margin: root.readerMargin'), 'reader margin must persist');
 assert(qml.includes('property alias fontChoice: root.readerFontChoice'), 'reader font choice must persist');
 assert(qml.includes('property alias fontWeight: root.readerFontWeight'), 'reader synthetic boldness must persist');
@@ -779,13 +779,13 @@ assert(qml.includes('chapterBreak <= rawEnd'), 'reader page-end calculation must
 assert(qml.includes('property int readerFirstLineIndentChars: 2'), 'Chinese body text must default to two-character first-line indent');
 assert(qml.includes('property int readerHangingIndent: Math.round(readerFontSize * readerFirstLineIndentChars)'), 'first-line indent must track font size as character count');
 assert(qml.includes('onReaderFirstLineIndentCharsChanged: root.markReaderPaginationDirty()'), 'changing first-line indent characters must repaginate text');
-assert(qml.includes('root.readerFirstLineIndentChars = modelData.value'), 'reader settings must store first-line indent as character count');
+assert(!qml.includes('root.readerFirstLineIndentChars = modelData.value') && qml.includes('readonly property int readerFirstLineIndentChars: 2'), 'reader indentation is fixed at two characters without a selector');
 assert(!qml.includes('root.readerHangingIndent = modelData.value'), 'reader settings must not store first-line indent as stale pixels');
 assert(qml.includes('text-indent:" + firstParagraphIndent'), 'Chinese body text must use positive first-line indent, not hanging outdent');
 assert(!qml.includes('text-indent:-'), 'Chinese body text must not push the first character out to the margin');
 assert(!qml.includes('padding-left:" + firstParagraphIndent'), 'Chinese body text must not fake hanging indent with left padding');
 assert(qml.includes('forceReaderRefresh'), 'reader must expose a manual page redraw action');
-assert(qml.includes('text: "重绘本页"'), 'reader must label the real refresh action as a page redraw');
+assert(qml.includes('text: "书籍详情"') && !qml.includes('text: "重绘本页"'), 'reader settings must open book details instead of redrawing');
 assert(!qml.includes('model: ["自动", "快速文字", "精细图文"]'), 'reader must not expose fake e-paper refresh mode choices');
 assert(!qml.includes('root.refreshMode = modelData'), 'reader must not store fake e-paper refresh mode choices');
 assert(qml.includes('readerBodyHeight'), 'reader must calculate body height on whole lines');
@@ -862,9 +862,10 @@ assert(qml.includes('root.closeReaderCatalog()'), 'reader catalog close gestures
 assert(qml.includes('function closeReaderCatalog'), 'reader catalog must centralize close state reset');
 assert(qml.includes('function exitReaderToShelf'), 'reader must provide a catalog action that returns to the bookshelf');
 assert(qml.includes('text: "回到书架"'), 'reader catalog must include a Chinese return-to-shelf action');
-assert(qml.includes('downloadStore.running ? "下载中" : "下载整本"'), 'reader catalog must include a Chinese download-full-book action');
+
 assert(qml.includes('downloadStore.downloadBook(root.currentBookId'), 'reader catalog download-full action must call the real full-book download bridge');
 const catalogPanelSnippet = qml.slice(qml.indexOf('id: readerCatalogPanel'), qml.indexOf('id: softKeyboardPanel'));
+assert(!catalogPanelSnippet.includes('下载整本') && !catalogPanelSnippet.includes('downloadStore.downloadBook'), 'reader catalog must not offer full-book downloading');
 assert(catalogPanelSnippet.includes('text: "章节"'), 'reader catalog must put the chapter list directly in the drawer');
 assert(catalogPanelSnippet.includes('ListView'), 'reader catalog must use a virtualized ListView so long books do not freeze the UI');
 assert(catalogPanelSnippet.includes('model: readerStore.chapters'), 'reader catalog must render real ReaderStore chapters');
@@ -898,8 +899,8 @@ assert(qml.includes('function richReaderText(value, globalStart)'), 'reader rich
 assert(qml.includes('background-color:'), 'reader text-attached highlights must render as inline background spans');
 assert(qml.includes('id: readerInkGestureArea'), 'reader must expose handwrite annotation through a hidden gesture area');
 assert(qml.includes('id: readerInkLayer'), 'reader must include a handwrite annotation capture layer');
-assert(qml.includes('InkCanvas {') && qml.includes('strokes: root.readerVisibleInkStrokes()'), 'reader must render persisted and not-yet-flushed page handwriting through the native ink canvas');
-assert(qml.includes('model: readerStore.pageInkBlocks') && qml.includes('recognizeReaderInkBlock'), 'reader must offer OCR on one selected ink block instead of the whole page');
+assert(qml.includes('InkCanvas {') && qml.includes('strokes: root.readerInkEnabled ? root.readerVisibleInkStrokes() : []'), 'reader must render persisted and not-yet-flushed page handwriting through the native ink canvas');
+assert(qml.includes('model: root.readerInkEnabled ? readerStore.pageInkBlocks : []') && qml.includes('recognizeReaderInkBlock'), 'reader must offer OCR on one selected ink block instead of the whole page');
 assert(qml.includes('readerInkCanvas.beginStroke') && qml.includes('readerInkCanvas.appendPoint'), 'reader must draw live marker strokes incrementally');
 assert(qml.includes('readerStylusToolBar'), 'reader must expose marker color selection through the pen-only side toolbar');
 assert(qml.includes('selectReaderStylusTool'), 'reader stylus toolbar must update the active marker color');
@@ -922,10 +923,10 @@ assert(qml.includes('!root.isReaderChapterEnd(root.currentReaderTextEnd)'), 'rea
 assert(qml.includes('function isReaderNearChapterEnd'), 'reader layout self-test must allow short tail whitespace immediately before chapter boundaries');
 assert(qml.includes('readerFooterTop'), 'reader page must expose a stable footer band');
 assert(!qml.includes('readerStore.status +'), 'reader page must not render a footer status line');
-assert(qml.includes('第 " + (root.pageIndex + 1)'), 'reader footer must show the current page and page count');
-assert(qml.includes('进度 " + Math.round(root.currentReaderProgressPercent()) + "%"'), 'reader footer must show progress as a percentage');
+assert(qml.includes('text: root.readerGlobalPageLabel()'), 'reader footer must show full-book page counts');
+assert(qml.includes('id: readerFooterChapter'), 'reader footer must show the chapter navigation');
 const readerPageSnippet = qml.slice(qml.indexOf('id: readerPage'), qml.indexOf('id: readerSettingsPanel'));
-const readerBodyTextSnippet = qml.slice(qml.indexOf('id: readerBodyText'), qml.indexOf('id: readerFootnotePanel'));
+const readerBodyTextSnippet = qml.slice(qml.indexOf('id: readerBodyText'), qml.indexOf('id: readerFooterChapter'));
 assert(!readerBodyTextSnippet.includes('elide: Text.ElideRight'), 'reader body must not silently elide overflowing book text');
 assert(readerBodyTextSnippet.includes('clip: true'), 'reader body paint must be clipped above the footer even if rich-text metrics are imperfect');
 assert(qml.includes('function readerChapterEndDecorationHeight') && qml.includes('paragraphDecorationHeight'), 'pagination must reserve chapter-end divider and comment-link height before the footer');
@@ -978,7 +979,7 @@ assert(qml.includes('function runReaderMarkerSelfTest'), 'QML must expose a devi
 assert(qml.includes('selfTestMode === "reader-marker"'), 'QML must run the marker stroke self-test only when explicitly requested');
 assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must refuse to alter real annotation storage');
 assert(qml.includes('reader-marker-selftest=fail persistent-store-disabled'), 'reader marker self-test must fail closed until it has isolated annotation storage');
-assert(qml.includes('if (root.selfTestMode === "") {\n                readerStore.saveProgress'), 'reader page self-tests must not save real progress or trigger continuation downloads');
+assert(qml.includes('else readerStore.queueProgress(root.currentBookId') && main.includes('QStringLiteral("reader-turn-perf")'), 'only normal reading and the isolated perf fixture may queue progress');
 assert(qml.includes('function runReaderLayoutSelfTest'), 'QML must expose a device-runnable reader layout self-test');
 assert(qml.includes('function captureReaderSettings'), 'reader self-tests must capture current persisted typography settings');
 assert(qml.includes('function restoreReaderSettings'), 'reader self-tests must restore typography settings before exit');
@@ -1033,7 +1034,7 @@ assert(qml.includes('function onProgressPulled'), 'QML must react to pulled clou
 assert(qml.includes('root.currentReaderProgressPercent()'), 'reader progress sync must use the current local page ratio');
 assert(qml.includes('function setReaderProgressPercent'), 'reader must support jumping to a page by progress percent');
 assert(qml.includes('id: progressJumpSlider'), 'reader settings must include a progress jump slider');
-assert(qml.includes('text: "跳转进度"'), 'reader progress jump control must be labeled in Chinese');
+assert(qml.includes('text: "跳转页面"'), 'reader progress jump control must be labeled in Chinese');
 assert(qml.includes('root.setReaderProgressPercent'), 'reader progress slider must apply real page jumps');
 assert(qml.includes('function syncCurrentReaderProgress'), 'reader must expose a reusable current-book cloud progress sync helper');
 assert(qml.includes('readingTimeStore.beginSubmission(root.currentBookId, elapsedSeconds)') && qml.includes('progressSyncStore.syncProgress(root.currentBookId, root.currentReaderProgressPercent(), root.currentReaderSummaryText(), token === "" ? 0 : elapsedSeconds)'), 'reader cloud progress sync must reserve persisted elapsed seconds before reporting the current local position');
@@ -1048,7 +1049,7 @@ assert(qml.includes('frontlightStore.turnOff()'), 'frontlight off must call the 
 assert(qml.includes('modelData === 0 ? "关"'), 'reader settings must label the safe minimum frontlight choice as off');
 assert(qml.includes('frontlightStore.setBrightness'), 'reader settings must support changing frontlight while reading');
 assert(!qml.includes('frontlightSlider'), 'reader settings must avoid continuous frontlight drag writes');
-assert(qml.includes('width: 88') && qml.includes('model: root.frontlightLevels'), 'frontlight levels must render as large pen-friendly capsule choices');
+assert(qml.includes('width: root.readerSettingsOptionWidth(root.frontlightLevels.length, 10)') && qml.includes('model: root.frontlightLevels'), 'frontlight levels must render as large pen-friendly capsule choices');
 assert(qml.includes('id: shelfExitSystemButton') && qml.includes('appControl.quitToSystem'), 'shelf must provide the explicit return-to-system action');
 assert(qml.includes('text: "退出到书架"') && qml.includes('root.exitReaderToShelf()'), 'reader settings must provide an explicit return-to-shelf action');
 assert(qml.includes('id: readerQuickFrontlight') && qml.includes('model: root.readerQuickFrontlightLevels'), 'reader header must provide one segmented frontlight capsule');
@@ -1069,7 +1070,7 @@ assert(qml.includes('networkStore.connectToSsid'), 'Profile tab must connect sca
 assert(qml.includes('networkStore.disconnectWifi()'), 'Profile tab must expose a Wi-Fi disconnect action');
 assert(qml.includes('networkStore.forgetNetwork'), 'Profile tab must expose a saved-network forget action');
 assert(qml.includes('id: wifiPasswordInput'), 'Profile tab must provide password input for scanned Wi-Fi networks');
-assert(qml.includes('root.shelfTab = modelData') && qml.includes('root.openMagicBook()'), 'bottom tabs must still navigate between real pages and Magic Book');
+assert(qml.includes('root.shelfTab = modelData'), 'bottom tabs must navigate between the remaining pages');
 assert(!qml.includes('visible: modelData.coverSource === ""'), 'real covers must not be overlaid with fallback title text');
 assert(shelfStoreCpp.includes('QStringLiteral("全部下载")'), 'download-all action text must come from real download state');
 assert(qml.includes('detailPage.book.downloadState === "full"'), 'detail page must branch on the real full-download state');

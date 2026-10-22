@@ -22,6 +22,7 @@ Window {
     onClosing: function(close) {
         root.sampleReadingClock()
         root.snapshotReadingClock()
+        readerStore.flushPendingProgress()
         root.flushPendingFreeInkStrokes()
     }
 
@@ -51,6 +52,7 @@ Window {
             readerStore.saveProgress(root.currentBookId, root.pageIndex, root.readerCachedPageCount, root.currentReaderTextStart)
             root.saveReaderWindow()
         }
+        if (root.screenName !== "reader") root.closeReaderJump()
         root.readerLastScreen = root.screenName
         if (root.screenName !== "reader") paginationAheadTimer.stop()
         root.pendingOpenBookId = ""
@@ -110,20 +112,189 @@ Window {
     property real readerLineHeight: 1.26
     property int readerParagraphSpacing: 12
     property int readerFontWeight: Font.DemiBold
-    property int readerFirstLineIndentChars: 2
+    readonly property int readerFirstLineIndentChars: 2
     property int readerHangingIndent: Math.round(readerFontSize * readerFirstLineIndentChars)
     property int readerMargin: 64
     property int readerMinOrphanLines: 1
     property int readerMinWidowLines: 1
     property int readerCaptionParagraphLimit: 3
     property int forceReaderRefresh: 0
+    property double readerInteractionUntilMs: 0
+    property string readerRenderedPageHtml: ""
     readonly property bool readerSocialEnabled: notesStore.socialEnabled
     property int readerSocialGeometryToken: 0
     property var readerSocialDashRects: []
     property var readerSocialHitRects: []
     property string readerSocialGeometryDataKey: ""
     property bool showReaderSettings: false
-    property int readerSettingsPanelHeight: Math.min(840, root.height - 76)
+    readonly property int readerSettingsLabelFontSize: 20
+    property int readerSettingsPanelHeight: Math.min(1280, root.height - 76)
+    property real readerSettingsScale: readerSettingsPanelHeight / 1000
+    property int readerProgressTextLength: String(readerStore.bodyText || "").length
+    // Full-book index is independent of the fast local reading window.
+    onCurrentBookIdChanged: root.closeReaderJump()
+    property bool showReaderJump: false
+    property var readerFullIndex: ({key: "", starts: [], images: [], cursor: 0})
+    property int readerFullPageCount: 0
+    onReaderFullPageCountChanged: {
+        if (root.showReaderJump && root.readerFullPageCount > 0) readerJumpPreviewTimer.restart()
+    }
+    property int readerIndexRevision: 0
+    property int readerIndexPercent: 0
+    property bool readerIndexFailed: false
+    property real readerJumpPercent: 0
+    property var readerJumpTarget: ({start: 0, end: 0, image: {}, page: -1})
+    property string readerJumpHtml: ""
+    property string readerJumpChapter: ""
+
+    function readerIndexKey() {
+        return root.currentBookId + "|" + root.readerPaginationBuildSignature()
+    }
+
+    function readerIndexPageForOffset(offset) {
+        var starts = root.readerFullIndex.starts
+        var low = 0, high = starts.length - 1, found = 0
+        while (low <= high) {
+            var mid = Math.floor((low + high) / 2)
+            if (starts[mid] <= offset) { found = mid; low = mid + 1 }
+            else high = mid - 1
+        }
+        return found
+    }
+
+    function readerGlobalPageLabel() {
+        // Explicit revision for the incrementally built JS index.
+        var revision = root.readerIndexRevision
+        if (root.readerFullIndex.key !== root.readerIndexKey() || root.readerFullPageCount === 0)
+            return root.readerIndexFailed ? "页码计算失败" : "页码计算中"
+        return (root.readerIndexPageForOffset(root.currentReaderTextStart) + 1) + "/" + root.readerFullPageCount
+    }
+
+    function readerPageEntryAt(offset) {
+        var text = String(readerStore.bodyText || "")
+        var start = root.clamp(Math.floor(Number(offset) || 0), 0, Math.max(0, text.length - 1))
+        var textEnd = root.readerNextPageOffset(start, root.readerTextTopMargin)
+        var image = root.readerImageForPageRange(start, textEnd)
+        if (root.readerImageEntrySource(image) === "") return {start: start, end: textEnd, image: {}}
+        var anchor = root.readerImageEntryTextStart(image)
+        if (anchor > start) return {start: start, end: anchor, image: {}}
+        var imageEnd = root.readerNextPageOffset(start, root.readerImageTextTopFor(image), image)
+        return anchor >= imageEnd ? {start: start, end: textEnd, image: {}}
+            : {start: start, end: imageEnd, image: image}
+    }
+
+    function buildReaderFullIndexStep() {
+        if (root.screenName !== "reader" || root.currentBookId === "" || root.readerPaginationDirty
+                || root.showReaderSettings || root.showReaderCatalog || progressJumpInput.pressed
+                || Date.now() < root.readerInteractionUntilMs) return
+        var key = root.readerIndexKey()
+        if (root.readerFullIndex.key !== key) {
+            root.readerFullPageCount = 0
+            root.readerIndexPercent = 0
+            root.readerIndexFailed = false
+            var cached = readerStore.loadPageIndex(root.currentBookId, root.readerPaginationBuildSignature())
+            root.readerFullIndex = {key: key, starts: cached.starts || [], images: cached.images || [], cursor: 0}
+            if (cached.complete && root.readerFullIndex.starts.length > 0) {
+                root.readerFullPageCount = root.readerFullIndex.starts.length
+                root.readerIndexPercent = 100
+                root.readerIndexRevision++
+                return
+            }
+        }
+        if (root.readerFullPageCount > 0 || root.readerIndexFailed) return
+        var index = root.readerFullIndex
+        var textLength = String(readerStore.bodyText || "").length
+        if (textLength === 0) return
+        var entry = root.readerPageEntryAt(index.cursor)
+        if (entry.end <= index.cursor || index.starts.length >= 20000) {
+            root.readerIndexFailed = true
+            return
+        }
+        index.starts.push(entry.start)
+        index.images.push(entry.image)
+        index.cursor = entry.end
+        root.readerIndexPercent = Math.floor(index.cursor / textLength * 100)
+        if (index.cursor >= textLength) {
+            root.readerAppendTailImagePage(index.starts, index.images, textLength)
+            root.readerFullPageCount = index.starts.length
+            root.readerIndexRevision++
+            readerStore.savePageIndex(root.currentBookId, root.readerPaginationBuildSignature(),
+                {starts: index.starts, images: index.images, page: 0, complete: true})
+        }
+    }
+
+    Timer {
+        id: readerFullIndexTimer
+        interval: 80
+        repeat: true
+        running: root.screenName === "reader" && !root.sleepOverlayVisible
+            && (root.selfTestMode === "" || root.selfTestMode === "exit-ui")
+            && ((root.readerFullPageCount === 0 && !root.readerIndexFailed) || root.readerFullIndex.key !== root.readerIndexKey())
+        onTriggered: root.buildReaderFullIndexStep()
+    }
+
+    function openReaderJump() {
+        root.closeReaderSettings()
+        root.closeReaderCatalog()
+        root.pauseReaderBackgroundWork()
+        root.readerJumpPercent = root.readerFullIndex.key === root.readerIndexKey() && root.readerFullPageCount > 0
+            ? root.readerIndexPageForOffset(root.currentReaderTextStart) / Math.max(1, root.readerFullPageCount - 1) * 100
+            : root.currentReaderProgressValue
+        root.showReaderJump = true
+        root.updateReaderJumpPreview()
+    }
+
+    function closeReaderJump() {
+        var wasOpen = root.showReaderJump
+        root.showReaderJump = false
+        readerJumpPreviewTimer.stop()
+        if (wasOpen) root.readerSuppressPageTurnUntilMs = Date.now() + 600
+    }
+
+    function previewReaderJumpAt(percent) {
+        root.readerJumpPercent = root.clamp(percent, 0, 100)
+        root.pauseReaderBackgroundWork()
+        // A single-shot debounce would starve while dragging continuously.
+        if (!readerJumpPreviewTimer.running) readerJumpPreviewTimer.start()
+    }
+
+    function updateReaderJumpPreview() {
+        if (!root.showReaderJump || root.screenName !== "reader") return
+        var text = String(readerStore.bodyText || "")
+        var exact = root.readerFullIndex.key === root.readerIndexKey() && root.readerFullPageCount > 0
+        var page = exact ? Math.round(root.readerJumpPercent / 100 * (root.readerFullPageCount - 1)) : -1
+        var entry
+        if (exact) {
+            var start = root.readerFullIndex.starts[page]
+            var image = root.readerFullIndex.images[page] || ({})
+            entry = {start: start, end: page + 1 < root.readerFullPageCount
+                ? root.readerFullIndex.starts[page + 1] : text.length, image: image, page: page}
+        } else {
+            entry = root.readerPageEntryAt(Math.round(root.readerJumpPercent / 100 * Math.max(0, text.length - 1)))
+            entry.page = -1
+        }
+        root.readerJumpTarget = entry
+        root.readerJumpHtml = root.formatReaderText(text.slice(entry.start, entry.end).trim(), entry.start, entry.end, root.readerImageEntrySource(entry.image))
+        root.readerJumpChapter = String(root.readerChapterForOffset(entry.start).title || readerStore.title || "正文")
+    }
+
+    function commitReaderJump() {
+        // Flush the latest drag position before committing exactly that preview.
+        root.updateReaderJumpPreview()
+        var target = root.readerJumpTarget.start
+        root.closeReaderJump()
+        readerProgressJumpTimer.bookId = root.currentBookId
+        readerProgressJumpTimer.targetOffset = target
+        readerProgressJumpTimer.restart()
+    }
+
+    Timer {
+        id: readerJumpPreviewTimer
+        interval: 120
+        repeat: false
+        onTriggered: root.updateReaderJumpPreview()
+    }
+
     property bool showReaderCatalog: false
     property bool showReaderFootnote: false
     property bool showDetailCatalog: false
@@ -139,6 +310,9 @@ Window {
     property var keyboardHandwritingCandidates: []
     property string keyboardHandwritingStatus: ""
     property bool keyboardHandwritingDrawing: false
+    readonly property bool readerPerfBaseline: root.selfTestMode === "reader-turn-perf"
+        && typeof runtimeReaderPerfBaseline !== "undefined" && runtimeReaderPerfBaseline
+    readonly property bool readerInkEnabled: root.selfTestMode === "reader-ink" || root.readerPerfBaseline
     property bool annotationMode: false
     property string readerMarkerTool: "marker"
     property string readerMarkerColorName: "金"
@@ -394,7 +568,6 @@ Window {
         property alias lineHeight: root.readerLineHeight
         property alias paragraphSpacing: root.readerParagraphSpacing
         property alias fontWeight: root.readerFontWeight
-        property alias firstLineIndentChars: root.readerFirstLineIndentChars
         property alias margin: root.readerMargin
         property alias fontChoice: root.readerFontChoice
         property alias markerColorName: root.readerMarkerColorName
@@ -423,7 +596,7 @@ Window {
         // reader-ink is a synthetic page/lifecycle test.  It must not spawn
         // account helpers or inspect a real session merely because the full
         // UI component was constructed.
-        if (root.selfTestMode !== "reader-ink" && root.selfTestMode !== "exit-ui") {
+        if (root.selfTestMode !== "reader-ink" && root.selfTestMode !== "exit-ui" && root.selfTestMode !== "reader-turn-perf") {
             readingTimeStore.reloadAccount()
             root.restoreReadingClockFromLedger()
             notesStore.reloadAccountScope()
@@ -578,8 +751,9 @@ Window {
         return Math.max(0, Math.floor(Number(chapters[0].textStart) || 0))
     }
 
-    function isReaderImageCaptionParagraph(value, paragraphIndex) {
-        if (root.currentReaderImageSource === "" || paragraphIndex >= root.readerCaptionParagraphLimit) {
+    function isReaderImageCaptionParagraph(value, paragraphIndex, pageImageSource) {
+        var source = pageImageSource === undefined ? root.currentReaderImageSource : String(pageImageSource || "")
+        if (source === "" || paragraphIndex >= root.readerCaptionParagraphLimit) {
             return false
         }
         var para = String(value || "").replace(/\s+/g, " ").trim()
@@ -1233,7 +1407,7 @@ Window {
                          root.richReaderText(para, paraGlobalStart) + "</p>")
                 continue
             }
-            if (root.isReaderImageCaptionParagraph(para, out.length)) {
+            if (root.isReaderImageCaptionParagraph(para, out.length, imageSource)) {
                 out.push("<p class='reader-caption' style='margin-top:0; margin-bottom:" + root.readerLinePixels() +
                          "px; text-indent:0; text-align:center; font-size:" +
                          Math.round(root.readerFontSize * 0.82) +
@@ -1272,6 +1446,7 @@ Window {
     }
 
     function openReaderSettings() {
+        root.closeReaderJump()
         settingsDragOffset = 0
         showReaderSettings = true
     }
@@ -1757,7 +1932,7 @@ Window {
             var anchor = root.readerReflowAnchorOffset >= 0
                 ? root.readerReflowAnchorOffset
                 : root.currentReaderTextStart
-            root.buildReaderPaginationWindowFromOffset(anchor, 12)
+            root.buildReaderPaginationWindowFromOffset(anchor, 2)
             root.readerReflowRestorePending = false
             root.setReaderPage(0)
         }
@@ -2231,7 +2406,7 @@ Window {
             return 0
         }
         readerPageMeasure.width = root.readerTextWidth()
-        readerPageMeasure.text = root.formatReaderText(root.readerFormattedRangeText(start, end, image), start, end)
+        readerPageMeasure.text = root.formatReaderText(root.readerFormattedRangeText(start, end, image), start, end, root.readerImageEntrySource(image))
         return Math.ceil(readerPageMeasure.paintedHeight)
     }
 
@@ -2406,6 +2581,11 @@ Window {
         return true
     }
 
+    function pauseReaderBackgroundWork() {
+        root.readerInteractionUntilMs = Date.now() + 750
+        paginationAheadTimer.stop()
+    }
+
     function ensureReaderPaginationWindowAhead() {
         if (root.screenName !== "reader" || root.currentBookId === ""
                 || root.readerPaginationDirty || root.selfTestMode !== "") {
@@ -2415,6 +2595,7 @@ Window {
         if (root.readerCachedPageCount - root.pageIndex < 6) {
             paginationAheadTimer.bookId = root.currentBookId
             paginationAheadTimer.signature = root.readerPaginationSignature
+            paginationAheadTimer.interval = Math.max(400, root.readerInteractionUntilMs - Date.now() + 25)
             paginationAheadTimer.restart()
         }
     }
@@ -2425,6 +2606,11 @@ Window {
                 || root.readerPaginationDirty || root.selfTestMode !== "") return
         if (root.showReaderSettings || root.showReaderCatalog
                 || root.annotationMode || (root.pendingFreeInkStrokes || []).length > 0) return
+        if (Date.now() < root.readerInteractionUntilMs) {
+            paginationAheadTimer.interval = Math.max(400, root.readerInteractionUntilMs - Date.now() + 25)
+            paginationAheadTimer.restart()
+            return
+        }
         // One page per event-loop slice; never compute a batch inside a turn.
         if (root.readerCachedPageCount - root.pageIndex < 6
                 && root.extendReaderPaginationWindow(1)) {
@@ -2458,8 +2644,18 @@ Window {
 
     function goToReaderTextOffset(offset) {
         var text = String(readerStore.bodyText || "")
+        if (root.readerFullPageCount > 0 && root.readerFullIndex.key === root.readerIndexKey()) {
+            var indexedPage = root.readerIndexPageForOffset(offset)
+            root.readerPageStarts = root.readerFullIndex.starts.slice(indexedPage, indexedPage + 2)
+            root.readerPageImages = root.readerFullIndex.images.slice(indexedPage, indexedPage + 2)
+            root.readerCachedPageCount = root.readerPageStarts.length
+            root.readerPaginationSignature = root.readerPaginationBuildSignature()
+            root.readerPaginationDirty = false
+            root.setReaderPage(0)
+            return
+        }
         var target = root.clamp(Math.floor(Number(offset) || 0), 0, Math.max(0, text.length - 1))
-        root.buildReaderPaginationWindowFromOffset(target, 12)
+        root.buildReaderPaginationWindowFromOffset(target, 2)
         root.setReaderPage(0)
         root.forceReaderRefresh += 1
     }
@@ -2518,7 +2714,9 @@ Window {
         root.currentReaderTextStart = start
         root.currentReaderTextEnd = Math.min(text.length, end)
         root.currentReaderPageText = text.slice(start, root.currentReaderTextEnd).trim()
-        root.readerCurrentLineBoxes = root.readerLineBoxesForText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextTopY)
+        root.readerRenderedPageHtml = root.formatReaderText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextEnd)
+        root.readerCurrentLineBoxes = root.readerInkEnabled || (readerStore.footnotes || []).length > 0
+            ? root.readerLineBoxesForText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextTopY) : []
         root.currentReaderProgressValue = text.length === 0
             ? 0
             : Math.round(root.clamp(root.currentReaderTextStart / Math.max(1, text.length), 0, 1) * 10000) / 100
@@ -2807,6 +3005,7 @@ Window {
     }
 
     function beginStylusStroke(x, y, pressure) {
+        if (!root.readerInkEnabled) return
         root.readerStylusStrokeInToolbar = false
         if (root.screenName !== "reader" || root.showReaderSettings || root.showReaderCatalog) {
             return
@@ -2853,6 +3052,7 @@ Window {
     }
 
     function appendStylusStroke(x, y, pressure) {
+        if (!root.readerInkEnabled) return
         var points = root.readerMarkerTool === "free" ? root.currentFreeNotePoints : root.currentStrokePoints
         if (root.readerStylusStrokeInToolbar || !root.annotationMode || points.length < 1) {
             return
@@ -2869,6 +3069,7 @@ Window {
     }
 
     function endStylusStroke(x, y, pressure) {
+        if (!root.readerInkEnabled) return
         if (root.readerStylusStrokeInToolbar) {
             root.readerStylusStrokeInToolbar = false
             return
@@ -2952,10 +3153,11 @@ Window {
     function readerInkStoreAllowed() {
         // reader-ink is the one intentionally writable temporary-store UI
         // test.  Other QML self-tests keep their historical no-write policy.
-        return root.selfTestMode === "" || root.selfTestMode === "reader-ink"
+        return root.readerInkEnabled && (root.selfTestMode === "" || root.selfTestMode === "reader-ink" || root.readerPerfBaseline)
     }
 
     function prepareReaderInkPageChange() {
+        if (!root.readerInkEnabled) return
         if (root.readerInkViewBookId === root.currentBookId
                 && root.readerInkViewPageIndex === root.pageIndex) {
             return
@@ -3505,7 +3707,6 @@ Window {
         root.readerFontSize = 38
         root.readerFontWeight = Font.DemiBold
         root.readerParagraphSpacing = 12
-        root.readerFirstLineIndentChars = 2
         root.readerMargin = 64
         root.readerLayoutSelfTestCases = []
         var fonts = ["系统", "微米黑", "正黑", "霞鹜文楷", "思源黑体", "思源宋体", "寒蝉正楷", "寒蝉活宋",
@@ -3664,7 +3865,6 @@ Window {
         root.readerFontWeight = settings.fontWeight === undefined ? Font.DemiBold : settings.fontWeight
         root.readerLineHeight = settings.lineHeight
         root.readerParagraphSpacing = settings.paragraphSpacing
-        root.readerFirstLineIndentChars = settings.firstLineIndentChars
         root.readerMargin = settings.margin
         root.readerFontChoice = settings.fontChoice
         root.markReaderPaginationDirty()
@@ -5022,6 +5222,10 @@ Window {
     }
 
     function openCachedReader(bookId, title) {
+        if (root.selfTestMode === "" && !downloadStore.hasCompleteDownload(bookId)) {
+            root.openOrDownloadBook({bookId: bookId, title: title})
+            return
+        }
         if (root.resumeLoadedReader(bookId)) return
         root.deferredReaderBookId = bookId
         root.deferredReaderTitle = title || bookId
@@ -5055,6 +5259,10 @@ Window {
     }
 
     function enterReaderForBook(bookId, title) {
+        if (root.selfTestMode === "" && !downloadStore.hasCompleteDownload(bookId)) {
+            root.openOrDownloadBook({bookId: bookId, title: title})
+            return
+        }
         if (!bookId || bookId === "") {
             return
         }
@@ -5161,6 +5369,10 @@ Window {
         if (!book || !book.bookId) {
             return
         }
+        if (root.selfTestMode === "" && !downloadStore.hasCompleteDownload(book.bookId)) {
+            root.downloadCatalogChapter(book, chapter)
+            return
+        }
         root.enterReaderForBook(book.bookId, book.title)
         root.goToReaderTextOffset(root.readerTextOffsetForCatalogChapter(chapter))
     }
@@ -5171,36 +5383,138 @@ Window {
         }
         root.pendingCatalogBookId = book.bookId
         root.pendingCatalogChapter = chapter || ({})
-        downloadStore.downloadBook(book.bookId, book.title)
+        root.openOrDownloadBook(book)
+    }
+
+    property string readerDownloadNotice: ""
+    property string pendingReadTitle: ""
+    property bool detailNetworkWasConnected: false
+
+    function ensureFullBookDownload(book) {
+        if (!book || !book.bookId || root.selfTestMode !== "") return
+        if (!downloadStore.hasCompleteDownload(book.bookId) && networkStore.connected)
+            downloadStore.downloadBook(book.bookId, book.title || book.bookId)
     }
 
     function openOrDownloadBook(book) {
-        if (!book || !book.bookId) {
-            return
-        }
-        if (book.downloadState === "full" || book.localEpubPath !== "") {
+        if (!book || !book.bookId) return
+        root.readerDownloadNotice = ""
+        if (downloadStore.hasCompleteDownload(book.bookId)) {
             root.openCachedReader(book.bookId, book.title)
             return
         }
+        root.pendingReadTitle = book.title || book.bookId
+        if (!networkStore.connected) {
+            root.pendingOpenBookId = ""
+            root.pendingCatalogBookId = ""
+            root.readerDownloadNotice = "此书尚未完整下载，请联网完成整本下载后阅读。"
+            return
+        }
         root.pendingOpenBookId = book.bookId
-        downloadStore.downloadOpeningChapter(book.bookId, book.title)
+        root.ensureFullBookDownload(book)
     }
 
     function openDownloadRecord(record) {
-        if (!record || !record.bookId) {
-            return
-        }
-        var title = record.title || record.bookId
-        if (record.localEpubPath && record.localEpubPath !== "" && record.state !== "error") {
-            root.enterReaderForBook(record.bookId, title)
-            return
-        }
-        root.pendingOpenBookId = record.bookId
-        downloadStore.downloadBook(record.bookId, title)
+        if (record && record.bookId)
+            root.openOrDownloadBook({bookId: record.bookId, title: record.title || record.bookId})
     }
 
-    function openDiscoverBookDetail(book) {
+    Timer {
+        id: detailAutoDownloadTimer
+        interval: 100
+        repeat: false
+        onTriggered: {
+            if (detailPage.visible) root.ensureFullBookDownload(detailPage.book)
+        }
+    }
+
+    Connections {
+        target: networkStore
+        function onChanged() {
+            if (detailPage.visible && networkStore.connected && !root.detailNetworkWasConnected)
+                detailAutoDownloadTimer.restart()
+            root.detailNetworkWasConnected = networkStore.connected
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        z: 99998
+        color: root.paperColor
+        visible: root.pendingOpenBookId !== "" || root.pendingCatalogBookId !== "" || root.readerDownloadNotice !== ""
+        MouseArea { anchors.fill: parent }
+        Column {
+            anchors.centerIn: parent
+            width: parent.width - 96
+            spacing: 30
+            Text {
+                width: parent.width
+                text: root.readerDownloadNotice !== "" ? "暂时无法阅读" : "正在下载整本"
+                font.pixelSize: 32
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                color: root.inkColor
+            }
+            Text {
+                width: parent.width
+                text: root.pendingReadTitle + "\n" + (root.readerDownloadNotice !== "" ? root.readerDownloadNotice
+                    : "完整下载后自动进入阅读\n" + downloadStore.progressText)
+                font.pixelSize: 24
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+                color: root.inkColor
+            }
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 360
+                height: 72
+                radius: 36
+                color: root.inkColor
+                Text { anchors.centerIn: parent; text: "返回书架"; color: "white"; font.pixelSize: 24 }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        root.pendingOpenBookId = ""
+                        root.pendingCatalogBookId = ""
+                        root.pendingCatalogChapter = ({})
+                        root.readerDownloadNotice = ""
+                        root.screenName = "shelf"
+                    }
+                }
+            }
+        }
+    }
+
+    function openReaderBookDetails() {
+        if (!root.currentBookId) return
+        root.flushPendingFreeInkStrokes()
+        root.saveReaderWindow()
+        var book = {bookId: root.currentBookId, title: readerStore.title || root.currentBookId}
+        var books = shelfStore.books
+        for (var i = 0; i < books.length; ++i)
+            if (books[i].bookId === root.currentBookId) { book = books[i]; break }
+        root.closeReaderSettings()
+        root.openDiscoverBookDetail(book, true)
+    }
+
+    function openShelfBook(book, index) {
+        root.detailBookOverride = ({})
+        root.selectedIndex = index
+        if (downloadStore.hasCompleteDownload(book.bookId)) {
+            root.openOrDownloadBook(book)
+            return
+        }
+        root.showDetailCatalog = false
+        root.screenName = "detail"
+        shelfStore.refreshBookDetails(book.bookId)
+    }
+
+    function openDiscoverBookDetail(book, forceDetails) {
         if (!book || !book.bookId) {
+            return
+        }
+        if (!forceDetails && downloadStore.hasCompleteDownload(book.bookId)) {
+            root.openOrDownloadBook(book)
             return
         }
         root.detailBookOverride = {
@@ -5264,14 +5578,14 @@ Window {
     }
 
     function setReaderPage(value) {
-        paginationAheadTimer.stop()
+        root.pauseReaderBackgroundWork()
         if (root.readerInkStoreAllowed()) {
             root.flushPendingFreeInkStrokes()
         }
         root.closeReaderSocialPopup()
         root.readerOcrBlockSelection = false
         root.readerSelectedInkBlockId = ""
-        readerInkCanvas.clearLive()
+        if (root.readerInkEnabled) readerInkCanvas.clearLive()
         var count = root.readerPageCountFor(readerStore.bodyText, root.readerTextTopY())
         if (Number(value) < 0 && root.currentReaderTextStart > 0) {
             root.rebuildReaderPaginationWindowBackward()
@@ -5288,8 +5602,9 @@ Window {
         count = root.readerCachedPageCount
         if (root.currentBookId !== "") {
             root.loadReaderInkForCurrentPage()
-            if (root.selfTestMode === "") {
-                readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
+            if (root.selfTestMode === "" || root.selfTestMode === "reader-turn-perf") {
+                if (root.readerPerfBaseline) readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
+                else readerStore.queueProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
                 root.scheduleReaderSocialPrefetch()
                 if (root.pageIndex >= count - 1) {
                     root.requestReaderContinuationDownload()
@@ -5302,11 +5617,56 @@ Window {
         if (Date.now() < root.readerSuppressPageTurnUntilMs) {
             return
         }
-        if (root.showReaderSettings || root.showReaderCatalog || root.showReaderSocialPopup) {
+        if (root.showReaderJump || root.showReaderSettings || root.showReaderCatalog || root.showReaderSocialPopup) {
             return
         }
         var delta = PageGesture.readerDelta(side, endX - startX, endY - startY)
         if (delta !== 0) root.setReaderPage(root.pageIndex + delta)
+    }
+
+    function readerSettingsOptionWidth(count, gap) {
+        return Math.max(1, (root.width - 146 - (count - 1) * gap) / count)
+    }
+
+    function readerSettingsFooterWidth() {
+        return (root.width - 48 - 36) / 4
+    }
+
+    function readerSettingsFooterX(index) {
+        return 24 + index * (root.readerSettingsFooterWidth() + 12)
+    }
+
+    function readerSettingsY(value) {
+        return Math.round((value - (value >= 744 ? 88 : 0) + (value >= 620 ? 64 : 0) + (value >= 788 ? 68 : value >= 744 ? 44 : 0)
+            - (value >= 548 ? 26 : 0)) * root.readerSettingsScale)
+    }
+
+    function readerSettingsH(value) {
+        return Math.round(value * root.readerSettingsScale)
+    }
+
+    function readerProgressPreviewTitle(percent) {
+        var target = Math.floor(root.clamp(Number(percent) || 0, 0, 100)
+            / 100 * Math.max(0, root.readerProgressTextLength - 1))
+        var chapters = readerStore.chapters || []
+        var low = 0, high = chapters.length - 1, found = -1
+        while (low <= high) {
+            var middle = Math.floor((low + high) / 2)
+            if (Number(chapters[middle].textStart || 0) <= target) {
+                found = middle
+                low = middle + 1
+            } else high = middle - 1
+        }
+        return found >= 0 ? String(chapters[found].title || "正文") : "暂无章节信息"
+    }
+
+    function readerNearestSettingValue(value, choices) {
+        var nearest = choices[0]
+        for (var i = 1; i < choices.length; ++i) {
+            if (Math.abs(Number(value) - choices[i]) < Math.abs(Number(value) - nearest))
+                nearest = choices[i]
+        }
+        return nearest
     }
 
     function readerPointInRect(x, y, rx, ry, rw, rh) {
@@ -5344,34 +5704,54 @@ Window {
         if (readerFontPicker.visible) {
             return readerFontPicker.tap(lx, ly)
         }
+        ly = ly / root.readerSettingsScale
+        if (ly >= (744 - 88 + 64 + 44 - 26)) ly += 88
+        if (ly >= 522) ly += 26 // Removed indent row; margin now has a full row.
+        if (ly >= 620 && ly < 684) {
+            var weights = [Font.DemiBold, Font.Bold]
+            var weightWidth = root.readerSettingsOptionWidth(2, 12)
+            for (var wi = 0; wi < weights.length; ++wi) {
+                if (root.readerPointInRect(lx, ly, 122 + wi * (weightWidth + 12), 620, weightWidth, 44)) {
+                    root.readerFontWeight = weights[wi]
+                    root.applyReaderSettingChange(true)
+                }
+            }
+            return true
+        }
+        if (ly >= 684) ly -= 64
+        var networkRow = ly >= 788 && ly < 856
+        if (ly >= 856) ly -= 68
+        else if (networkRow) ly -= 44
+        else if (ly >= 744) return true // Chapter preview has no action.
         if (root.readerPointInRect(lx, ly, readerSettingsPanel.width - 68, 24, 60, 60)) {
             root.closeReaderSettings()
             return true
         }
 
-        var fontStepperX = Math.round((readerSettingsPanel.width - 246) / 2)
-        if (root.readerPointInRect(lx, ly, fontStepperX, 118, 90, 70)) {
+        var fontStepperX = 122
+        var fontCellWidth = root.readerSettingsOptionWidth(3, 0)
+        if (root.readerPointInRect(lx, ly, fontStepperX, 118, fontCellWidth, 70)) {
             root.readerFontSize = root.clamp(root.readerFontSize - 4, 30, 64)
             root.applyReaderSettingChange(true)
             return true
         }
-        if (root.readerPointInRect(lx, ly, fontStepperX + 156, 118, 90, 70)) {
+        if (root.readerPointInRect(lx, ly, fontStepperX + 2 * fontCellWidth, 118, fontCellWidth, 70)) {
             root.readerFontSize = root.clamp(root.readerFontSize + 4, 30, 64)
             root.applyReaderSettingChange(true)
             return true
         }
 
         for (var lh = 0; lh < root.readerLineHeightSteps.length; lh++) {
-            var lineX = 122 + lh * (132 + 12)
-            if (root.readerPointInRect(lx, ly, lineX, 246, 132, 58)) {
+            var lineX = 122 + lh * (root.readerSettingsOptionWidth(4, 12) + 12)
+            if (root.readerPointInRect(lx, ly, lineX, 224, root.readerSettingsOptionWidth(4, 12), 56)) {
                 root.readerLineHeight = root.readerLineHeightSteps[lh].value
                 root.applyReaderSettingChange(true)
                 return true
             }
         }
         for (var ps = 0; ps < root.readerParagraphSpacingSteps.length; ps++) {
-            var paragraphX = 122 + ps * (132 + 12)
-            if (root.readerPointInRect(lx, ly, paragraphX, 354, 132, 58)) {
+            var paragraphX = 122 + ps * (root.readerSettingsOptionWidth(4, 12) + 12)
+            if (root.readerPointInRect(lx, ly, paragraphX, 332, root.readerSettingsOptionWidth(4, 12), 56)) {
                 root.readerParagraphSpacing = root.readerParagraphSpacingSteps[ps].value
                 root.applyReaderSettingChange(true)
                 return true
@@ -5380,76 +5760,52 @@ Window {
 
         var marginValues = [48, 72, 104, 136]
         for (var m = 0; m < marginValues.length; m++) {
-            var marginX = 132 + m * (78 + 20)
-            if (root.readerPointInRect(lx, ly, marginX, 416, 86, 64)) {
+            var marginX = 122 + m * (root.readerSettingsOptionWidth(4, 12) + 12)
+            if (root.readerPointInRect(lx, ly, marginX, 440, root.readerSettingsOptionWidth(4, 12), 56)) {
                 root.readerMargin = marginValues[m]
                 root.applyReaderSettingChange(true)
                 return true
             }
         }
 
-        var indentValues = [0, 1, 2, 3]
-        for (var ind = 0; ind < indentValues.length; ind++) {
-            var indentX = 132 + ind * (86 + 14)
-            if (root.readerPointInRect(lx, ly, indentX, 480, 94, 58)) {
-                root.readerFirstLineIndentChars = indentValues[ind]
-                root.applyReaderSettingChange(true)
-                return true
-            }
-        }
-
-        if (root.readerPointInRect(lx, ly, 124, 552, readerSettingsPanel.width - 340, 56)) {
+        if (root.readerPointInRect(lx, ly, 122, 552, readerSettingsPanel.width - 146, 56)) {
             readerFontPicker.visible = true
             return true
         }
 
-        var weightValues = [Font.DemiBold, Font.Bold]
-        for (var w = 0; w < weightValues.length; w++) {
-            var weightX = readerSettingsPanel.width - 128 + w * (52 + 6)
-            if (root.readerPointInRect(lx, ly, weightX, 552, 60, 56)) {
-                root.readerFontWeight = weightValues[w]
-                root.applyReaderSettingChange(true)
-                return true
-            }
-        }
-
         for (var b = 0; b < root.frontlightLevels.length; b++) {
-            var lightX = 102 + b * (88 + 10)
-            if (root.readerPointInRect(lx, ly, lightX, 614, 88, 62)) {
+            var lightX = 122 + b * (root.readerSettingsOptionWidth(root.frontlightLevels.length, 10) + 10)
+            if (root.readerPointInRect(lx, ly, lightX, 614, root.readerSettingsOptionWidth(root.frontlightLevels.length, 10), 62)) {
                 root.applyFrontlightPercent(root.frontlightLevels[b])
                 root.forceReaderRefresh += 1
                 return true
             }
         }
 
-        if (readerSettingsPanel.height > 720
-                && root.readerPointInRect(lx, ly, 150, 690, readerSettingsPanel.width - 270, 50)) {
-            root.setReaderProgressPercent((lx - 150) / Math.max(1, readerSettingsPanel.width - 270) * 100)
-            return true
-        }
         if (readerSettingsPanel.height > 780
-                && root.readerPointInRect(lx, ly, readerSettingsPanel.width - 164, 746, 136, 58)) {
+                && root.readerPointInRect(lx, ly, readerSettingsPanel.width - 136, 746, 112, 58)) {
             networkStore.reload()
             return true
         }
+        if (networkRow) return true
         if (readerSettingsPanel.height > 812
-                && root.readerPointInRect(lx, ly, 24, 790, 128, 58)) {
+                && root.readerPointInRect(lx, ly, root.readerSettingsFooterX(0), 790, root.readerSettingsFooterWidth(), 58)) {
             root.exitReaderToShelf()
             return true
         }
         if (readerSettingsPanel.height > 812
-                && root.readerPointInRect(lx, ly, 164, 790, 128, 58)) {
-            root.forceReaderRefresh += 1
+                && root.readerPointInRect(lx, ly, root.readerSettingsFooterX(1), 790, root.readerSettingsFooterWidth(), 58)) {
+            root.openReaderBookDetails()
             return true
         }
         if (readerSettingsPanel.height > 812
-                && root.readerPointInRect(lx, ly, 304, 790, 128, 58)
+                && root.readerPointInRect(lx, ly, root.readerSettingsFooterX(2), 790, root.readerSettingsFooterWidth(), 58)
                 && !progressSyncStore.running) {
             root.syncCurrentReaderProgress(true)
             return true
         }
         if (readerSettingsPanel.height > 812
-                && root.readerPointInRect(lx, ly, 444, 790, 128, 58)
+                && root.readerPointInRect(lx, ly, root.readerSettingsFooterX(3), 790, root.readerSettingsFooterWidth(), 58)
                 && !progressSyncStore.running) {
             root.requestReaderProgressPull(true)
             return true
@@ -5458,6 +5814,21 @@ Window {
     }
 
     function handleStylusTap(x, y) {
+        if (root.screenName === "reader" && root.showReaderJump) {
+            if (x >= root.width - 120 && y < 90) root.closeReaderJump()
+            else if (y >= root.height - 192 && y <= root.height - 104) {
+                root.previewReaderJumpAt((x - 64) / Math.max(1, root.width - 128) * 100)
+                root.commitReaderJump()
+            }
+            return
+        }
+        if (root.screenName === "reader" && !root.showReaderSettings && !root.showReaderCatalog
+                && y >= root.readerFooterTop && y < root.readerFooterTop + root.readerFooterHeight) {
+            if (x < root.readerMargin + (root.width - root.readerMargin * 2) * 0.68) {
+                root.closeReaderSettings(); root.showReaderCatalog = true
+            } else root.openReaderJump()
+            return
+        }
         root.readerSuppressPageTurnUntilMs = Date.now() + 600
         if (root.readerStylusCollapsePending) {
             readerStylusCollapseTimer.restart()
@@ -5472,6 +5843,32 @@ Window {
         }
         if (root.screenName === "reader" && root.handleReaderSettingsStylusTap(x, y)) {
             return
+        }
+    }
+
+    function requestReaderProgressJump(percent) {
+        if (root.screenName !== "reader" || root.currentBookId === ""
+                || String(readerStore.bodyText || "").length === 0) return
+        readerProgressJumpTimer.bookId = root.currentBookId
+        readerProgressJumpTimer.percent = root.clamp(Number(percent) || 0, 0, 100)
+        root.closeReaderSettings()
+        root.closeReaderJump()
+        readerProgressJumpTimer.targetOffset = -1
+        root.readerSuppressPageTurnUntilMs = Date.now() + 600
+        readerProgressJumpTimer.restart()
+    }
+
+    Timer {
+        id: readerProgressJumpTimer
+        property string bookId: ""
+        property real percent: 0
+        property int targetOffset: -1
+        interval: 50
+        repeat: false
+        onTriggered: {
+            if (root.screenName === "reader" && root.currentBookId === bookId)
+                if (targetOffset >= 0) root.goToReaderTextOffset(targetOffset)
+                else root.setReaderProgressPercent(percent)
         }
     }
 
@@ -5552,6 +5949,7 @@ Window {
     }
 
     function prepareDeviceSleep(reason) {
+        readerStore.flushPendingProgress()
         if (root.sleepOverlayVisible) {
             return
         }
@@ -5560,6 +5958,7 @@ Window {
             readerStore.saveProgress(root.currentBookId, root.pageIndex, count, root.currentReaderTextStart)
             root.syncCurrentReaderProgress(false)
         }
+        root.closeReaderJump()
         root.closeReaderSettings()
         root.closeReaderCatalog()
         root.closeReaderFootnote()
@@ -5598,9 +5997,19 @@ Window {
 
     Connections {
         target: downloadStore
+        function onChanged() {
+            if ((root.pendingOpenBookId === downloadStore.bookId || root.pendingCatalogBookId === downloadStore.bookId)
+                    && ["partial", "error", "cancelled"].indexOf(downloadStore.state) >= 0) {
+                root.readerDownloadNotice = "整本尚未下载完成，已下载章节会保留。请重试完成下载后阅读。"
+                root.pendingOpenBookId = ""
+                root.pendingCatalogBookId = ""
+            }
+        }
         function onEpubReady(bookId, title) {
             shelfStore.reload()
+            if (downloadStore.state !== "done" || !downloadStore.hasCompleteDownload(bookId)) return
             if (root.pendingCatalogBookId === bookId) {
+                root.pendingOpenBookId = ""
                 root.enterReaderForCatalogChapter({ "bookId": bookId, "title": title }, root.pendingCatalogChapter)
                 root.pendingCatalogBookId = ""
                 root.pendingCatalogChapter = ({})
@@ -5624,10 +6033,9 @@ Window {
         }
         function onOpeningChapterReady(bookId, title) {
             shelfStore.reload()
-            if (root.pendingOpenBookId === bookId) {
-                root.pendingOpenBookId = ""
-                root.enterReaderForBook(bookId, title)
-            }
+            // Older restored jobs may still be opening-only; never read them.
+            if (root.pendingOpenBookId === bookId || root.pendingCatalogBookId === bookId)
+                root.ensureFullBookDownload({bookId: bookId, title: title})
         }
     }
 
@@ -5912,25 +6320,42 @@ Window {
         }
 
         Rectangle {
-            x: root.width - 242
-            y: 56
-            width: 104
-            height: 46
-            radius: 4
+            id: shelfSyncButton
+            x: root.width - 188
+            y: 48
+            width: 64
+            height: 64
+            radius: 8
             color: shelfStore.refreshingShelf ? root.inkColor : root.surfaceColor
             border.color: root.inkColor
             border.width: 2
-
-            Text {
+            Canvas {
                 anchors.centerIn: parent
-                text: shelfStore.refreshingShelf ? "同步中" : "同步"
-                color: shelfStore.refreshingShelf ? "#ffffff" : root.inkColor
-                font.pixelSize: 22
-                font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
+                width: 40
+                height: 40
+                property color strokeColor: shelfStore.refreshingShelf ? "#ffffff" : root.inkColor
+                onStrokeColorChanged: requestPaint()
+                onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    ctx.strokeStyle = strokeColor
+                    ctx.lineWidth = 3
+                    ctx.lineCap = "round"
+                    ctx.lineJoin = "round"
+                    ctx.beginPath()
+                    ctx.moveTo(9, 14)
+                    ctx.bezierCurveTo(14, 4, 29, 7, 31, 17)
+                    ctx.moveTo(24, 14)
+                    ctx.lineTo(31, 17)
+                    ctx.lineTo(33, 10)
+                    ctx.moveTo(31, 26)
+                    ctx.bezierCurveTo(26, 36, 11, 33, 9, 23)
+                    ctx.moveTo(16, 26)
+                    ctx.lineTo(9, 23)
+                    ctx.lineTo(7, 30)
+                    ctx.stroke()
+                }
             }
-
             MouseArea {
                 anchors.fill: parent
                 enabled: !shelfStore.refreshingShelf
@@ -5939,75 +6364,32 @@ Window {
         }
 
         Rectangle {
-            x: root.width - 370
-            y: 56
-            width: 116
-            height: 46
-            radius: 4
-            color: downloadStore.running ? root.goldAccent : root.surfaceColor
-            border.color: root.inkColor
-            border.width: 2
-
-            Text {
-                anchors.centerIn: parent
-                text: "下载本页"
-                color: root.inkColor
-                font.pixelSize: 19
-                font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-
-            MouseArea {
-                anchors.fill: parent
-                onClicked: downloadStore.downloadBooks(root.currentShelfPageBooks())
-            }
-        }
-
-        Rectangle {
-            x: root.width - 522
-            y: 56
-            width: 140
-            height: 46
-            radius: 4
-            visible: shelfStore.recentBook.bookId !== undefined && shelfStore.recentBook.bookId !== ""
-            color: root.brandGreenDark
-            border.color: root.inkColor
-            border.width: 2
-
-            Text {
-                anchors.centerIn: parent
-                text: "继续阅读"
-                color: "#ffffff"
-                font.pixelSize: 19
-                font.bold: true
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-            }
-
-            MouseArea {
-                anchors.fill: parent
-                onClicked: root.openOrDownloadBook(shelfStore.recentBook)
-            }
-        }
-
-        Rectangle {
             id: shelfExitSystemButton
-            x: root.width - 126
-            y: 56
-            width: 82
-            height: 46
-            radius: 4
+            x: root.width - 108
+            y: 48
+            width: 64
+            height: 64
+            radius: 8
             color: root.surfaceColor
             border.color: root.inkColor
             border.width: 2
 
-            Text {
+            Canvas {
                 anchors.centerIn: parent
-                text: "退出"
-                color: root.inkColor
-                font.pixelSize: 20
-                font.bold: true
+                width: 40
+                height: 40
+                onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    ctx.strokeStyle = root.inkColor
+                    ctx.lineWidth = 3
+                    ctx.lineCap = "round"
+                    ctx.beginPath()
+                    ctx.arc(20, 22, 12, -Math.PI / 4, Math.PI * 5 / 4)
+                    ctx.moveTo(20, 4)
+                    ctx.lineTo(20, 20)
+                    ctx.stroke()
+                }
             }
 
             MouseArea {
@@ -6060,6 +6442,19 @@ Window {
                 id: shelfBooksRepeater
 
                 delegate: Item {
+                id: shelfBookTile
+                property alias titleOpacity: shelfBookTitle.opacity
+                property var activeDownload: {
+                    var rows = downloadStore.downloads
+                    for (var i = 0; i < rows.length; ++i)
+                        if (rows[i].bookId === book.bookId) return rows[i]
+                    return ({})
+                }
+                property bool downloading: downloadStore.running && downloadStore.bookId === book.bookId
+                                           && (activeDownload.state === "starting" || activeDownload.state === "running")
+                property bool fullyDownloaded: book.downloadState === "full" && String(book.localEpubPath || "") !== ""
+                property int downloadPercent: activeDownload.totalChapters > 0
+                    ? Math.min(99, Math.max(0, Math.floor(100 * activeDownload.completedChapters / activeDownload.totalChapters))) : 0
                 property int bookIndex: root.shelfPageIndex * 9 + index
                 property var book: shelfStore.books[bookIndex] || ({})
                 visible: book.bookId !== undefined && book.bookId !== ""
@@ -6070,6 +6465,7 @@ Window {
 
                 Rectangle {
                     id: cover
+                    opacity: shelfBookTile.fullyDownloaded ? 1 : 0.5
                     width: shelfGrid.coverWidth
                     height: width / root.coverAspectRatio
                     x: (parent.width - width) / 2
@@ -6102,21 +6498,28 @@ Window {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: 8
-                        width: 112
-                        height: 38
-                        radius: 5
+                        width: 44
+                        height: width
+                        radius: width / 2
                         z: 1
                         visible: parent.parent.book.downloadState === "full"
                                  && String(parent.parent.book.localEpubPath || "") !== ""
-                        color: "white"
-                        border.color: root.inkColor
-                        border.width: 2
-                        Text {
-                            anchors.centerIn: parent
-                            text: "✓ 已下载"
-                            color: root.inkColor
-                            font.pixelSize: 19
-                            font.bold: true
+                        color: "#239B56"
+                        Canvas {
+                            anchors.fill: parent
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.clearRect(0, 0, width, height)
+                                ctx.strokeStyle = "white"
+                                ctx.lineWidth = 4
+                                ctx.lineCap = "round"
+                                ctx.lineJoin = "round"
+                                ctx.beginPath()
+                                ctx.moveTo(width * 0.27, height * 0.51)
+                                ctx.lineTo(width * 0.43, height * 0.67)
+                                ctx.lineTo(width * 0.74, height * 0.34)
+                                ctx.stroke()
+                            }
                         }
                     }
 
@@ -6124,15 +6527,53 @@ Window {
                         acceptedDevices: PointerDevice.TouchScreen | PointerDevice.Mouse | PointerDevice.Stylus
                         gesturePolicy: TapHandler.DragThreshold
                         onTapped: {
-                            root.detailBookOverride = ({})
-                            root.selectedIndex = bookIndex
-                            root.screenName = "detail"
-                            shelfStore.refreshBookDetails(book.bookId)
+                            root.openShelfBook(book, bookIndex)
                         }
                     }
                 }
 
+                Rectangle {
+                    id: coverDownloadProgress
+                    x: cover.x + (cover.width - width) / 2
+                    y: cover.y + (cover.height - height) / 2
+                    width: 112
+                    height: width
+                    radius: width / 2
+                    color: "white"
+                    visible: shelfBookTile.downloading
+                    property int percent: shelfBookTile.downloadPercent
+                    onPercentChanged: downloadRing.requestPaint()
+                    onVisibleChanged: if (visible) downloadRing.requestPaint()
+                    Canvas {
+                        id: downloadRing
+                        anchors.fill: parent
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.clearRect(0, 0, width, height)
+                            ctx.lineWidth = 7
+                            ctx.strokeStyle = "#dddddd"
+                            ctx.beginPath()
+                            ctx.arc(width / 2, height / 2, width / 2 - 7, 0, 2 * Math.PI)
+                            ctx.stroke()
+                            ctx.strokeStyle = "black"
+                            ctx.beginPath()
+                            ctx.arc(width / 2, height / 2, width / 2 - 7, -Math.PI / 2,
+                                    -Math.PI / 2 + 2 * Math.PI * coverDownloadProgress.percent / 100)
+                            ctx.stroke()
+                        }
+                    }
+                    Text {
+                        anchors.centerIn: parent
+                        text: coverDownloadProgress.percent + "%"
+                        font.pixelSize: 26
+                        font.bold: true
+                        color: "black"
+                    }
+                }
+
                 Text {
+                    id: shelfBookTitle
+                    opacity: shelfBookTile.fullyDownloaded ? 1 : 0.5
                     x: 14
                     y: cover.y + cover.height + 14
                     width: parent.width - 28
@@ -6195,7 +6636,7 @@ Window {
                 y: 158
                 width: 240
                 height: 66
-                radius: 4
+                radius: 8
                 color: shelfStore.refreshingShelf ? root.goldAccent : root.brandGreenDark
                 border.color: root.inkColor
                 border.width: 2
@@ -6265,6 +6706,7 @@ Window {
             visible: root.shelfTab === "发现"
 
             Flickable {
+                id: discoverScroll
                 anchors.fill: parent
                 contentHeight: discoverColumn.height + 24
                 boundsBehavior: Flickable.StopAtBounds
@@ -6679,9 +7121,11 @@ Window {
                         }
 
                         Repeater {
+                            id: downloadRecordsRepeater
                             model: downloadStore.downloads
 
                             Rectangle {
+                                property alias deleteButton: downloadDeleteButton
                                 width: parent.width
                                 height: 78
                                 radius: 4
@@ -6717,6 +7161,7 @@ Window {
                                 }
 
                                 Rectangle {
+                                    id: downloadDeleteButton
                                     x: parent.width - 116
                                     y: 14
                                     width: 98
@@ -6740,7 +7185,6 @@ Window {
                                         anchors.fill: parent
                                         onClicked: {
                                             downloadStore.deleteDownload(modelData.bookId, modelData.title || modelData.bookId)
-                                            shelfStore.reload()
                                         }
                                     }
                                 }
@@ -7652,26 +8096,28 @@ Window {
 
             Row {
                 anchors.centerIn: parent
-                spacing: 48
+                spacing: 32
                 Repeater {
-                    model: ["书架", "发现", "我的", "魔法笔记本"]
-                    Text {
-                        width: 116
-                        text: modelData
-                        color: root.shelfTab === modelData ? root.brandGreenDark : root.inkColor
-                        font.pixelSize: 24
-                        font.bold: root.shelfTab === modelData
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
+                    id: shelfTabsRepeater
+                    model: ["书架", "发现", "我的"]
+                    Rectangle {
+                        property bool selected: root.shelfTab === modelData
+                        width: 180
+                        height: 58
+                        radius: 8
+                        color: selected ? "#000000" : root.surfaceColor
+                        Text {
+                            anchors.fill: parent
+                            text: modelData
+                            color: parent.selected ? "#ffffff" : root.inkColor
+                            font.pixelSize: 24
+                            font.bold: parent.selected
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: {
-                                if (modelData === "魔法笔记本") {
-                                    root.openMagicBook()
-                                } else {
-                                    root.shelfTab = modelData
-                                }
-                            }
+                            onClicked: root.shelfTab = modelData
                         }
                     }
                 }
@@ -7957,6 +8403,33 @@ Window {
         visible: root.screenName === "detail"
 
         property var book: root.currentDetailBook()
+        property var downloadRecord: {
+            var rows = downloadStore.downloads
+            for (var i = 0; i < rows.length; ++i)
+                if (rows[i].bookId === book.bookId) return rows[i]
+            return ({})
+        }
+        property bool completeDownload: book.downloadState === "full" && String(book.localEpubPath || "") !== ""
+        property bool downloadingBook: downloadStore.running && downloadStore.bookId === book.bookId
+                                      && (downloadRecord.state === "running" || downloadRecord.state === "starting")
+        property int downloadPercent: completeDownload ? 100 : downloadRecord.totalChapters > 0
+            ? Math.min(99, Math.max(0, Math.floor(100 * downloadRecord.completedChapters / downloadRecord.totalChapters))) : 0
+        property string downloadLabel: completeDownload ? "下载完成 · 100%"
+            : downloadingBook ? "正在下载 · " + downloadPercent + "%"
+            : downloadRecord.state === "queued" ? "等待下载"
+            : downloadRecord.state === "partial" || downloadRecord.state === "error" ? "下载未完成 · " + downloadPercent + "%"
+            : downloadRecord.state === "cancelled" ? "下载已暂停 · " + downloadPercent + "%" : "未下载"
+        property string autoDownloadBookId: ""
+        onVisibleChanged: {
+            autoDownloadBookId = visible ? String(book.bookId || "") : ""
+            if (visible) detailAutoDownloadTimer.restart()
+        }
+        onBookChanged: {
+            if (visible && String(book.bookId || "") !== autoDownloadBookId) {
+                autoDownloadBookId = String(book.bookId || "")
+                detailAutoDownloadTimer.restart()
+            }
+        }
 
         Text {
             x: 34
@@ -8180,7 +8653,7 @@ Window {
         Text {
             x: 52
             y: 836
-            width: (root.width - 104) / 3
+            width: (root.width - 104) / 2
             height: 30
             text: "目录"
             color: root.inkColor
@@ -8198,31 +8671,9 @@ Window {
         }
 
         Text {
-            x: 52 + (root.width - 104) / 3
+            x: 52 + (root.width - 104) / 2
             y: 836
-            width: (root.width - 104) / 3
-            height: 30
-            visible: !downloadStore.running && (detailPage.book.downloadState === "full" || detailPage.book.localEpubPath !== "")
-            text: "删除下载"
-            color: root.inkColor
-            font.pixelSize: 19
-            font.bold: true
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            MouseArea {
-                anchors.fill: parent
-                onClicked: {
-                    downloadStore.deleteDownload(detailPage.book.bookId, detailPage.book.title)
-                    shelfStore.reload()
-                    shelfStore.refreshBookDetails(detailPage.book.bookId)
-                }
-            }
-        }
-
-        Text {
-            x: 52 + (root.width - 104) / 3 * 2
-            y: 836
-            width: (root.width - 104) / 3
+            width: (root.width - 104) / 2
             height: 30
             visible: !downloadStore.running && (detailPage.book.downloadState === "full" || detailPage.book.localEpubPath !== "")
             text: "修复插图"
@@ -8511,10 +8962,42 @@ Window {
                 }
             }
 
+            Text {
+                id: detailDownloadProgressLabel
+                x: 48
+                y: 712
+                width: root.width - 96
+                height: 30
+                text: "下载进度  " + detailPage.downloadLabel
+                color: root.inkColor
+                font.pixelSize: 22
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            Rectangle {
+                id: detailDownloadProgressBar
+                x: 48
+                y: 752
+                width: root.width - 96
+                height: 16
+                radius: 3
+                color: root.paperColor
+                border.color: root.inkColor
+                border.width: 2
+                Rectangle {
+                    x: 2
+                    y: 2
+                    width: (parent.width - 4) * detailPage.downloadPercent / 100
+                    height: parent.height - 4
+                    radius: 2
+                    color: root.brandGreenDark
+                }
+            }
+
             Rectangle {
                 id: detailPrimaryAction
                 x: 48
-                y: 744
+                y: 808
                 width: 560
                 height: 78
                 radius: 4
@@ -8536,16 +9019,16 @@ Window {
 
             Rectangle {
                 x: 628
-                y: 744
+                y: 808
                 width: root.width - 676
                 height: 78
                 radius: 4
-                color: downloadStore.running ? root.goldAccent : root.paperColor
+                color: detailPage.downloadingBook ? root.goldAccent : root.paperColor
                 border.color: root.inkColor
                 border.width: 2
                 Text {
                     anchors.centerIn: parent
-                    text: downloadStore.running ? "取消下载" : detailPage.book.downloadActionText
+                    text: detailPage.downloadingBook ? "取消下载" : detailPage.book.downloadActionText
                     color: root.inkColor
                     font.pixelSize: 26
                     font.weight: Font.Bold
@@ -8553,7 +9036,7 @@ Window {
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
-                        if (downloadStore.running) {
+                        if (detailPage.downloadingBook) {
                             downloadStore.cancelDownload()
                         } else if (detailPage.book.downloadState === "full") {
                             root.openOrDownloadBook(detailPage.book)
@@ -8566,15 +9049,15 @@ Window {
 
             Row {
                 x: 48
-                y: 850
+                y: 914
                 width: root.width - 96
                 height: 58
                 spacing: 0
 
                 Repeater {
-                    model: ["目录", "删除下载", "修复插图"]
+                    model: ["目录", "修复插图"]
                     Rectangle {
-                        width: (root.width - 96) / 3
+                        width: (root.width - 96) / 2
                         height: 58
                         color: root.paperColor
                         border.color: root.inkColor
@@ -8592,10 +9075,6 @@ Window {
                                 if (index === 0) {
                                     root.showDetailCatalog = true
                                     bookCatalogStore.loadCatalog(detailPage.book.bookId, detailPage.book.title)
-                                } else if (index === 1) {
-                                    downloadStore.deleteDownload(detailPage.book.bookId, detailPage.book.title)
-                                    shelfStore.reload()
-                                    shelfStore.refreshBookDetails(detailPage.book.bookId)
                                 } else {
                                     downloadStore.repairBookImages(detailPage.book.bookId, detailPage.book.title)
                                 }
@@ -8607,7 +9086,7 @@ Window {
 
             Text {
                 x: 48
-                y: 928
+                y: 992
                 width: root.width - 96
                 height: 42
                 text: shelfStore.refreshingDetails
@@ -8625,7 +9104,7 @@ Window {
 
             Rectangle {
                 x: 48
-                y: 990
+                y: 1054
                 width: root.width - 96
                 height: 2
                 color: root.inkColor
@@ -8633,7 +9112,7 @@ Window {
 
             Text {
                 x: 48
-                y: 1018
+                y: 1082
                 width: root.width - 96
                 height: 52
                 text: shelfStore.refreshingDetails ? "正在刷新书籍信息…" : "刷新书籍信息（联网）"
@@ -8860,7 +9339,7 @@ Window {
             width: 96
             height: root.height - root.readerBottomGestureHeight - 170
             z: 8
-            enabled: !root.showReaderCatalog && !root.showReaderSettings
+            enabled: !root.showReaderJump && !root.showReaderCatalog && !root.showReaderSettings
             property real startX: 0
             property real startY: 0
             onPressed: function(mouse) {
@@ -8907,6 +9386,7 @@ Window {
 
         MouseArea {
             id: readerInkGestureArea
+            enabled: root.readerInkEnabled
             x: root.width - 430
             y: 0
             width: 112
@@ -8947,7 +9427,7 @@ Window {
                     y: 0
                     width: 52
                     height: 42
-                    property bool selected: Math.abs(readerQuickFrontlight.currentPercent - modelData) <= 13
+                    property bool selected: root.readerNearestSettingValue(readerQuickFrontlight.currentPercent, root.readerQuickFrontlightLevels) === modelData
                     color: selected ? root.inkColor : root.paperColor
 
                     Rectangle {
@@ -9081,7 +9561,9 @@ Window {
             z: 2
             width: root.readerTextWidth()
             height: root.readerTextViewportHeight(root.currentReaderTextTopY)
-            text: root.formatReaderText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextEnd) + "<!--" + root.forceReaderRefresh + "-->"
+            text: (root.readerInkEnabled
+                ? root.formatReaderText(root.currentReaderPageText, root.currentReaderTextStart, root.currentReaderTextEnd)
+                : root.readerRenderedPageHtml) + "<!--" + root.forceReaderRefresh + "-->"
             textFormat: TextEdit.RichText
             color: "#111111"
             font.pixelSize: root.readerFontSize
@@ -9108,32 +9590,27 @@ Window {
         }
 
         Text {
-            x: root.readerMargin
-            y: root.readerFooterTop + 9
-            width: (root.width - root.readerMargin * 2) / 2
-            height: root.readerFooterHeight - 9
-            z: 3
-            text: "第 " + (root.pageIndex + 1) + " / " + Math.max(1, root.readerCachedPageCount) + " 页"
-            color: root.inkColor
-            font.pixelSize: 18
-            font.family: root.readerFontFamily
-            font.bold: true
+            id: readerFooterChapter
+            x: root.readerMargin; y: root.readerFooterTop + 9
+            width: (root.width - root.readerMargin * 2) * 0.68
+            height: root.readerFooterHeight - 9; z: 9
+            text: String(root.readerChapterForOffset(root.currentReaderTextStart).title || readerStore.title || "正文")
+            elide: Text.ElideRight
+            color: root.inkColor; font.pixelSize: 18; font.family: root.readerFontFamily; font.bold: true
             verticalAlignment: Text.AlignVCenter
+            MouseArea { anchors.fill: parent; onClicked: { root.closeReaderJump(); root.closeReaderSettings(); root.showReaderCatalog = true } }
         }
 
         Text {
-            x: root.width / 2
+            id: readerFooterPages
+            x: readerFooterChapter.x + readerFooterChapter.width
             y: root.readerFooterTop + 9
-            width: root.width / 2 - root.readerMargin
-            height: root.readerFooterHeight - 9
-            z: 3
-            text: "进度 " + Math.round(root.currentReaderProgressPercent()) + "%"
-            color: root.inkColor
-            font.pixelSize: 18
-            font.family: root.readerFontFamily
-            font.bold: true
-            horizontalAlignment: Text.AlignRight
-            verticalAlignment: Text.AlignVCenter
+            width: root.width - root.readerMargin - x
+            height: root.readerFooterHeight - 9; z: 9
+            text: root.readerGlobalPageLabel()
+            color: root.inkColor; font.pixelSize: 18; font.family: root.readerFontFamily; font.bold: true
+            horizontalAlignment: Text.AlignRight; verticalAlignment: Text.AlignVCenter
+            MouseArea { anchors.fill: parent; onClicked: root.openReaderJump() }
         }
 
         Repeater {
@@ -9146,7 +9623,7 @@ Window {
                 width: modelData.width
                 height: modelData.height
                 z: 8.5
-                enabled: !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
+                enabled: !root.showReaderJump && !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
                 preventStealing: true
                 onClicked: {}
             }
@@ -9182,7 +9659,7 @@ Window {
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
+                    enabled: !root.showReaderJump && !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
                     preventStealing: true
                     onPressed: function(mouse) { mouse.accepted = true }
                     onReleased: root.openReaderSocialPopup(socialUnderlineDelegate.socialIndex)
@@ -9406,12 +9883,12 @@ Window {
             id: readerInkLayer
             anchors.fill: parent
             z: 8
-            visible: root.screenName === "reader"
+            visible: root.readerInkEnabled && root.screenName === "reader"
 
             InkCanvas {
                 id: readerInkCanvas
                 anchors.fill: parent
-                strokes: root.readerVisibleInkStrokes()
+                strokes: root.readerInkEnabled ? root.readerVisibleInkStrokes() : []
             }
 
             MouseArea {
@@ -9425,7 +9902,7 @@ Window {
             }
 
             Repeater {
-                model: readerStore.pageInkBlocks
+                model: root.readerInkEnabled ? readerStore.pageInkBlocks : []
 
                 Item {
                     property var inkBlock: modelData || ({})
@@ -9657,7 +10134,7 @@ Window {
             }
 
             Repeater {
-                model: readerStore.paragraphNotes
+                model: root.readerInkEnabled ? readerStore.paragraphNotes : []
 
                 Item {
                     property var note: modelData || ({})
@@ -9779,7 +10256,7 @@ Window {
                     + root.readerStylusSectionGap
                     : 74
             z: 9
-            visible: root.screenName === "reader"
+            visible: root.readerInkEnabled && root.screenName === "reader"
                      && !root.showReaderSettings
                      && !root.showReaderCatalog
                      && !root.showReaderSocialPopup
@@ -9874,10 +10351,11 @@ Window {
             width: root.width / 2
             height: Math.max(0, root.readerContentBottom - 90)
             z: 6
-            enabled: !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
+            enabled: !root.showReaderJump && !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
             property real startX: 0
             property real startY: 0
             onPressed: function(mouse) {
+                root.pauseReaderBackgroundWork()
                 startX = mouse.x
                 startY = mouse.y
             }
@@ -9893,10 +10371,11 @@ Window {
             width: root.width / 2
             height: Math.max(0, root.readerContentBottom - 90)
             z: 6
-            enabled: !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
+            enabled: !root.showReaderJump && !root.showReaderSettings && !root.showReaderCatalog && !root.showReaderSocialPopup
             property real startX: 0
             property real startY: 0
             onPressed: function(mouse) {
+                root.pauseReaderBackgroundWork()
                 startX = mouse.x
                 startY = mouse.y
             }
@@ -9920,6 +10399,109 @@ Window {
                     root.settingsDragOffset = 0
                     root.openReaderSettings()
                 }
+            }
+        }
+
+        Rectangle {
+            id: readerJumpOverlay
+            anchors.fill: parent
+            z: 25
+            visible: root.showReaderJump
+            color: root.paperColor
+            // Consume all input behind the preview, including footer and swipes.
+            MouseArea { anchors.fill: parent; onClicked: {} }
+            Text {
+                x: 36; y: 24; width: parent.width - 160; height: 52
+                text: "跳转页面"
+                font.pixelSize: 28; font.bold: true; color: root.inkColor
+            }
+            Rectangle {
+                x: parent.width - 104; y: 20; width: 76; height: 60
+                radius: 30; color: root.inkColor
+                Text { anchors.centerIn: parent; text: "关闭"; color: "white"; font.pixelSize: 22 }
+                MouseArea { anchors.fill: parent; onClicked: root.closeReaderJump() }
+            }
+            Text {
+                id: readerProgressChapterPreview
+                x: 36; y: 92; width: parent.width - 72; height: 54
+                text: root.readerJumpChapter
+                font.pixelSize: 24; font.bold: true; color: root.inkColor; elide: Text.ElideRight
+            }
+            Rectangle {
+                id: readerJumpPreviewCard
+                x: (parent.width - width) / 2; y: 158
+                property real previewScale: Math.min((readerJumpOverlay.width - 96) / root.width,
+                    (readerJumpOverlay.height - 460) / root.readerContentBottom)
+                width: root.width * previewScale
+                height: root.readerContentBottom * previewScale
+                color: root.paperColor; border.color: root.inkColor; border.width: 2
+                clip: true
+                Item {
+                    width: root.width; height: root.readerContentBottom
+                    scale: readerJumpPreviewCard.previewScale
+                    transformOrigin: Item.TopLeft
+                    Column {
+                        x: root.readerMargin; y: root.readerImageTopMargin
+                        width: root.readerTextWidth()
+                        visible: root.readerImageEntrySource(root.readerJumpTarget.image || ({})) !== ""
+                        spacing: root.readerImageGroupSpacing(root.readerJumpTarget.image || ({}))
+                        Repeater {
+                            model: root.readerImageEntriesFor(root.readerJumpTarget.image || ({}))
+                            Image {
+                                required property var modelData
+                                width: parent.width
+                                height: root.readerImageEntryHeight(modelData, root.readerJumpTarget.image || ({}))
+                                source: String(modelData.source || "")
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                            }
+                        }
+                    }
+                    TextEdit {
+                        x: root.readerMargin
+                        y: root.readerImageEntrySource(root.readerJumpTarget.image || ({})) !== ""
+                            ? root.readerImageTextTopFor(root.readerJumpTarget.image) : root.readerTextTopMargin
+                        width: root.readerTextWidth(); height: root.readerTextViewportHeight(y)
+                        text: root.readerJumpHtml; textFormat: TextEdit.RichText
+                        font.pixelSize: root.readerFontSize; font.family: root.readerFontFamily
+                        font.weight: root.readerFontWeight; color: "#111111"
+                        wrapMode: TextEdit.Wrap; readOnly: true; cursorVisible: false
+                        selectByMouse: false; selectByKeyboard: false; activeFocusOnPress: false
+                        clip: true
+                    }
+                }
+            }
+            Text {
+                x: 36; y: parent.height - 258; width: parent.width - 72; height: 56
+                text: root.readerJumpTarget.page >= 0
+                    ? (root.readerJumpTarget.page + 1) + "/" + root.readerFullPageCount
+                    : Math.round(root.readerJumpPercent) + "% · " + (root.readerIndexFailed ? "页码计算失败" : "页码计算中 " + root.readerIndexPercent + "%")
+                font.pixelSize: 24; font.bold: true; horizontalAlignment: Text.AlignHCenter; color: root.inkColor
+            }
+            Rectangle {
+                id: progressJumpSlider
+                x: 64; y: parent.height - 154
+                width: parent.width - 128; height: 12; radius: 6; color: "#cccccc"
+                Rectangle { width: parent.width * root.readerJumpPercent / 100; height: parent.height; radius: 6; color: root.inkColor }
+                Rectangle {
+                    x: parent.width * root.readerJumpPercent / 100 - width / 2
+                    y: (parent.height - height) / 2; width: 38; height: 38; radius: 19; color: root.inkColor
+                }
+                MouseArea {
+                    id: progressJumpInput
+                    x: -20; y: -38; width: parent.width + 40; height: 88
+                    preventStealing: true
+                    function previewAt(x) { root.previewReaderJumpAt((x - 20) / Math.max(1, progressJumpSlider.width) * 100) }
+                    onPressed: function(mouse) { previewAt(mouse.x) }
+                    onPositionChanged: function(mouse) { if (pressed) previewAt(mouse.x) }
+                    onReleased: function(mouse) { previewAt(mouse.x); root.commitReaderJump() }
+                    onCanceled: root.closeReaderJump()
+                }
+            }
+            Text {
+                x: 36; y: parent.height - 90; width: parent.width - 72; height: 48
+                text: "拖动预览，松手跳转"
+                font.pixelSize: 20; color: root.inkColor; horizontalAlignment: Text.AlignHCenter
             }
         }
 
@@ -9969,9 +10551,9 @@ Window {
 
             Rectangle {
                 x: (parent.width - width) / 2
-                y: 12
+                y: root.readerSettingsY(12)
                 width: 54
-                height: 6
+                height: root.readerSettingsH(6)
                 radius: 3
                 color: "#111111"
             }
@@ -9979,9 +10561,9 @@ Window {
             MouseArea {
                 id: gestureCloseArea
                 x: 0
-                y: 0
+                y: root.readerSettingsY(0)
                 width: parent.width
-                height: 96
+                height: root.readerSettingsH(96)
                 z: 4
                 preventStealing: true
                 property real startY: 0
@@ -10030,7 +10612,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 78
+                y: root.readerSettingsY(78)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10039,7 +10621,7 @@ Window {
 
             Text {
                 x: 0
-                y: 34
+                y: root.readerSettingsY(34)
                 width: parent.width
                 text: "阅读设置"
                 color: root.inkColor
@@ -10050,9 +10632,9 @@ Window {
 
             Text {
                 x: parent.width - 62
-                y: 32
+                y: root.readerSettingsY(32)
                 width: 44
-                height: 44
+                height: root.readerSettingsH(44)
                 z: 5
                 text: "×"
                 color: root.inkColor
@@ -10071,36 +10653,31 @@ Window {
 	            }
 
             Text {
+                id: readerSettingLabel0
                 x: 24
-                y: 98
+                y: root.readerSettingsY(126)
+                height: root.readerSettingsH(52)
+                verticalAlignment: Text.AlignVCenter
                 text: "字号"
                 color: root.inkColor
-                font.pixelSize: 20
-                font.bold: true
-            }
-
-            Text {
-                x: 48
-                y: 140
-                text: "A"
-                color: root.inkColor
-                font.pixelSize: 27
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Rectangle {
-                x: (parent.width - width) / 2
-                y: 126
-                width: 246
-                height: 52
+                id: readerFontSizeStepper
+                x: 122
+                y: root.readerSettingsY(126)
+                width: parent.width - 146
+                height: root.readerSettingsH(52)
                 radius: 7
                 color: root.surfaceColor
                 border.color: root.inkColor
                 border.width: 1
 
                 Rectangle {
-                    x: 78
-                    y: 0
+                    x: parent.width / 3
+                    y: root.readerSettingsY(0)
                     width: 1
                     height: parent.height
                     color: root.inkColor
@@ -10108,8 +10685,8 @@ Window {
                 }
 
                 Rectangle {
-                    x: 168
-                    y: 0
+                    x: parent.width * 2 / 3
+                    y: root.readerSettingsY(0)
                     width: 1
                     height: parent.height
                     color: root.inkColor
@@ -10118,8 +10695,8 @@ Window {
 
                 Text {
                     x: 0
-                    y: 0
-                    width: 78
+                    y: root.readerSettingsY(0)
+                    width: parent.width / 3
                     height: parent.height
                     text: "-"
                     color: root.inkColor
@@ -10131,16 +10708,16 @@ Window {
 
                 MouseArea {
                     x: 0
-                    y: 0
-                    width: 78
+                    y: root.readerSettingsY(0)
+                    width: parent.width / 3
                     height: parent.height
                     onClicked: readerSettingsPanel.adjust("readerFontSize", -4, 30, 64)
                 }
 
                 Text {
-                    x: 78
-                    y: 0
-                    width: 90
+                    x: parent.width / 3
+                    y: root.readerSettingsY(0)
+                    width: parent.width / 3
                     height: parent.height
                     text: root.readerFontSize
                     color: root.inkColor
@@ -10151,9 +10728,9 @@ Window {
                 }
 
                 Text {
-                    x: 168
-                    y: 0
-                    width: 78
+                    x: parent.width * 2 / 3
+                    y: root.readerSettingsY(0)
+                    width: parent.width / 3
                     height: parent.height
                     text: "+"
                     color: root.inkColor
@@ -10164,26 +10741,17 @@ Window {
                 }
 
                 MouseArea {
-                    x: 168
-                    y: 0
-                    width: 78
+                    x: parent.width * 2 / 3
+                    y: root.readerSettingsY(0)
+                    width: parent.width / 3
                     height: parent.height
                     onClicked: readerSettingsPanel.adjust("readerFontSize", 4, 30, 64)
                 }
             }
 
-            Text {
-                x: parent.width - 82
-                y: 132
-                text: "A"
-                color: root.inkColor
-                font.pixelSize: 38
-                font.bold: true
-            }
-
             Rectangle {
                 x: 0
-                y: 198
+                y: root.readerSettingsY(198)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10191,24 +10759,28 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel1
                 x: 24
-                y: 218
+                y: root.readerSettingsY(224)
+                height: root.readerSettingsH(56)
+                verticalAlignment: Text.AlignVCenter
                 text: "行距"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Row {
                 x: 122
-                y: 246
+                y: root.readerSettingsY(224)
                 spacing: 12
 
                 Repeater {
+                    id: readerLineOptions
                     model: root.readerLineHeightSteps
                     Rectangle {
-                        width: 132
-                        height: 58
+                        width: root.readerSettingsOptionWidth(4, 12)
+                        height: root.readerSettingsH(56)
                         radius: height / 2
                         property bool selected: Math.abs(root.readerLineHeight - modelData.value) < 0.01
                         color: selected ? root.inkColor : root.paperColor
@@ -10238,7 +10810,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 306
+                y: root.readerSettingsY(306)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10246,24 +10818,28 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel2
                 x: 24
-                y: 326
+                y: root.readerSettingsY(332)
+                height: root.readerSettingsH(56)
+                verticalAlignment: Text.AlignVCenter
                 text: "段距"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Row {
                 x: 122
-                y: 354
+                y: root.readerSettingsY(332)
                 spacing: 12
 
                 Repeater {
+                    id: readerParagraphOptions
                     model: root.readerParagraphSpacingSteps
                     Rectangle {
-                        width: 132
-                        height: 58
+                        width: root.readerSettingsOptionWidth(4, 12)
+                        height: root.readerSettingsH(56)
                         radius: height / 2
                         property bool selected: root.readerParagraphSpacing === modelData.value
                         color: selected ? root.inkColor : root.paperColor
@@ -10293,7 +10869,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 414
+                y: root.readerSettingsY(414)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10301,20 +10877,24 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel3
                 x: 24
-                y: 432
+                y: root.readerSettingsY(440)
+                height: root.readerSettingsH(56)
+                verticalAlignment: Text.AlignVCenter
                 text: "页边距"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Row {
-                x: 132
-                y: 422
-                spacing: 20
+                x: 122
+                y: root.readerSettingsY(440)
+                spacing: 12
 
                 Repeater {
+                    id: readerMarginOptions
                     model: [
                         { label: "窄", value: 48 },
                         { label: "标准", value: 72 },
@@ -10323,80 +10903,27 @@ Window {
                     ]
 
                     Rectangle {
-                        width: 78
-                        height: 52
-                        radius: 7
-                        color: root.surfaceColor
-                        border.color: root.readerMargin === modelData.value ? root.brandGreenDark : root.inkColor
-                        border.width: root.readerMargin === modelData.value ? 2 : 1
-
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: modelData.value === 48 ? 34 : modelData.value === 72 ? 28 : modelData.value === 104 ? 22 : 16
-                            height: 32
-                            color: "transparent"
-                            border.color: root.readerMargin === modelData.value ? root.brandGreenDark : root.inkColor
-                            border.width: 2
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-	                            onClicked: {
-	                                root.readerMargin = modelData.value
-	                                root.markReaderPaginationDirty()
-	                                root.rebuildReaderPagination()
-	                                root.forceReaderRefresh += 1
-	                            }
-                        }
-                    }
-                }
-            }
-
-            Text {
-                x: 24
-                y: 496
-                text: "首行"
-                color: root.inkColor
-                font.pixelSize: 20
-                font.bold: true
-            }
-
-            Row {
-                x: 132
-                y: 486
-                spacing: 14
-
-                Repeater {
-                    model: [
-                        { label: "无", value: 0 },
-                        { label: "一字", value: 1 },
-                        { label: "两字", value: 2 },
-                        { label: "三字", value: 3 }
-                    ]
-
-                    Rectangle {
-                        width: 86
-                        height: 44
-                        radius: 7
-                        color: root.surfaceColor
-                        border.color: root.readerFirstLineIndentChars === modelData.value ? root.brandGreenDark : root.inkColor
-                        border.width: root.readerFirstLineIndentChars === modelData.value ? 2 : 1
+                        width: root.readerSettingsOptionWidth(4, 12)
+                        height: root.readerSettingsH(56)
+                        radius: height / 2
+                        property bool selected: root.readerNearestSettingValue(root.readerMargin, [48, 72, 104, 136]) === modelData.value
+                        color: selected ? root.inkColor : root.paperColor
+                        border.color: root.inkColor
+                        border.width: selected ? 3 : 1
 
                         Text {
                             anchors.centerIn: parent
                             text: modelData.label
-                            color: root.readerFirstLineIndentChars === modelData.value ? root.brandGreenDark : root.inkColor
-                            font.pixelSize: 17
+                            color: parent.selected ? root.paperColor : root.inkColor
+                            font.pixelSize: 18
                             font.bold: true
                         }
 
                         MouseArea {
                             anchors.fill: parent
 	                            onClicked: {
-	                                root.readerFirstLineIndentChars = modelData.value
-	                                root.markReaderPaginationDirty()
-	                                root.rebuildReaderPagination()
-	                                root.forceReaderRefresh += 1
+	                                root.readerMargin = modelData.value
+	                                root.applyReaderSettingChange(true)
 	                            }
                         }
                     }
@@ -10405,7 +10932,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 548
+                y: root.readerSettingsY(548)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10413,19 +10940,23 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel4
                 x: 24
-                y: 566
+                y: root.readerSettingsY(558)
+                height: root.readerSettingsH(44)
+                verticalAlignment: Text.AlignVCenter
                 text: "字体"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Rectangle {
-                x: 124
-                y: 558
-                width: parent.width - 340
-                height: 44
+                id: readerFontChoiceControl
+                x: 122
+                y: root.readerSettingsY(558)
+                width: parent.width - 146
+                height: root.readerSettingsH(44)
                 radius: 7
                 color: root.surfaceColor
                 border.color: root.inkColor
@@ -10439,36 +10970,42 @@ Window {
             }
 
             Text {
-                x: parent.width - 194
-                y: 566
+                id: readerSettingLabel5
+                x: 24
+                y: root.readerSettingsY(620) - root.readerSettingsH(64)
+                height: root.readerSettingsH(44)
+                verticalAlignment: Text.AlignVCenter
                 text: "字重"
                 color: root.inkColor
-                font.pixelSize: 18
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Row {
-                x: parent.width - 128
-                y: 558
-                spacing: 6
+                id: readerWeightRow
+                x: 122
+                y: root.readerSettingsY(620) - root.readerSettingsH(64)
+                spacing: 12
 
                 Repeater {
+                    id: readerWeightOptions
                     model: [
                         { label: "加黑", value: Font.DemiBold },
                         { label: "浓黑", value: Font.Bold }
                     ]
                     Rectangle {
-                        width: 52
-                        height: 42
+                        width: root.readerSettingsOptionWidth(2, 12)
+                        height: root.readerSettingsH(44)
                         radius: 7
-                        color: root.surfaceColor
-                        border.color: root.readerFontWeight === modelData.value ? root.brandGreenDark : root.inkColor
-                        border.width: root.readerFontWeight === modelData.value ? 2 : 1
+                        property bool selected: root.readerFontWeight === modelData.value
+                        color: selected ? root.inkColor : root.paperColor
+                        border.color: root.inkColor
+                        border.width: selected ? 3 : 1
 
                         Text {
                             anchors.centerIn: parent
                             text: modelData.label
-                            color: root.readerFontWeight === modelData.value ? root.brandGreenDark : root.inkColor
+                            color: parent.selected ? root.paperColor : root.inkColor
                             font.pixelSize: 14
                             font.bold: true
                         }
@@ -10477,8 +11014,7 @@ Window {
                             anchors.fill: parent
                             onClicked: {
                                 root.readerFontWeight = modelData.value
-                                root.scheduleReaderPaginationRebuild()
-                                root.forceReaderRefresh += 1
+                                root.applyReaderSettingChange(true)
                             }
                         }
                     }
@@ -10487,7 +11023,16 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 612
+                y: root.readerSettingsY(612)
+                width: parent.width
+                height: 1
+                color: root.inkColor
+                opacity: 0.22
+            }
+
+            Rectangle {
+                x: 0
+                y: root.readerSettingsY(612) + root.readerSettingsH(64)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10495,30 +11040,35 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel6
                 x: 24
-                y: 630
+                y: root.readerSettingsY(620)
+                height: root.readerSettingsH(54)
+                verticalAlignment: Text.AlignVCenter
                 text: "灯光"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
             }
 
             Row {
-                x: 102
-                y: 620
+                x: 122
+                y: root.readerSettingsY(620)
                 spacing: 10
 
                 Repeater {
+                    id: readerLightOptions
                     model: root.frontlightLevels
                     Rectangle {
-                        width: 88
-                        height: 48
+                        width: root.readerSettingsOptionWidth(root.frontlightLevels.length, 10)
+                        height: root.readerSettingsH(48)
                         radius: height / 2
-                        property int currentPercent: Math.round(frontlightStore.brightness / Math.max(1, frontlightStore.maxBrightness) * 100)
-                        property bool selected: Math.abs(currentPercent - modelData) <= 10
+                        property int currentPercent: frontlightStore.powered
+                            ? Math.round(frontlightStore.brightness / Math.max(1, frontlightStore.maxBrightness) * 100) : 0
+                        property bool selected: root.readerNearestSettingValue(currentPercent, root.frontlightLevels) === modelData
                         color: selected ? root.inkColor : root.paperColor
                         border.color: root.inkColor
-                        border.width: Math.abs(currentPercent - modelData) <= 10 ? 2 : 1
+                        border.width: selected ? 3 : 1
 
                         Text {
                             anchors.centerIn: parent
@@ -10538,75 +11088,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 682
-                width: parent.width
-                height: 1
-                color: root.inkColor
-                opacity: 0.22
-                visible: parent.height > 720
-            }
-
-            Text {
-                x: 24
-                y: 696
-                text: "跳转进度"
-                color: root.inkColor
-                font.pixelSize: 20
-                font.bold: true
-                visible: parent.height > 720
-            }
-
-            Rectangle {
-                id: progressJumpSlider
-                x: 150
-                y: 709
-                width: parent.width - 270
-                height: 12
-                radius: 6
-                color: root.surfaceColor
-                border.color: root.inkColor
-                border.width: 1
-                visible: parent.height > 720
-
-	                Rectangle {
-	                    x: 0
-	                    y: 0
-	                    width: parent.width * root.currentReaderProgressValue / 100
-	                    height: parent.height
-	                    radius: 6
-	                    color: root.brandGreenDark
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: function(mouse) {
-                        root.setReaderProgressPercent(mouse.x / progressJumpSlider.width * 100)
-                    }
-                    onPositionChanged: function(mouse) {
-                        if (pressed) {
-                            root.setReaderProgressPercent(mouse.x / progressJumpSlider.width * 100)
-                        }
-                    }
-                }
-            }
-
-            Text {
-                x: parent.width - 102
-	                y: 694
-	                width: 76
-	                height: 42
-	                text: Math.round(root.currentReaderProgressValue) + "%"
-                color: root.inkColor
-                font.pixelSize: 18
-                font.bold: true
-                horizontalAlignment: Text.AlignRight
-                verticalAlignment: Text.AlignVCenter
-                visible: parent.height > 720
-            }
-
-            Rectangle {
-                x: 0
-                y: 744
+                y: root.readerSettingsY(744)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10615,20 +11097,23 @@ Window {
             }
 
             Text {
+                id: readerSettingLabel8
                 x: 24
-                y: 758
+                y: root.readerSettingsY(754)
+                height: root.readerSettingsH(42)
+                verticalAlignment: Text.AlignVCenter
                 text: "网络"
                 color: root.inkColor
-                font.pixelSize: 20
+                font.pixelSize: root.readerSettingsLabelFontSize
                 font.bold: true
                 visible: parent.height > 780
             }
 
             Text {
-                x: 102
-                y: 758
-                width: parent.width - 278
-                height: 42
+                x: 122
+                y: root.readerSettingsY(758)
+                width: parent.width - 270
+                height: root.readerSettingsH(42)
                 text: networkStore.summary
                 color: root.inkColor
                 font.pixelSize: 15
@@ -10639,10 +11124,10 @@ Window {
             }
 
             Rectangle {
-                x: parent.width - 154
-                y: 754
+                x: parent.width - 136
+                y: root.readerSettingsY(754)
                 width: 112
-                height: 42
+                height: root.readerSettingsH(42)
                 radius: 7
                 color: root.surfaceColor
                 border.color: root.inkColor
@@ -10665,7 +11150,7 @@ Window {
 
             Rectangle {
                 x: 0
-                y: 788
+                y: root.readerSettingsY(788)
                 width: parent.width
                 height: 1
                 color: root.inkColor
@@ -10674,10 +11159,11 @@ Window {
             }
 
             Rectangle {
-                x: 24
-                y: 798
-                width: 128
-                height: 42
+                id: readerSettingsExitButton
+                x: root.readerSettingsFooterX(0)
+                y: root.readerSettingsY(798)
+                width: root.readerSettingsFooterWidth()
+                height: root.readerSettingsH(42)
                 radius: 7
                 color: root.inkColor
                 border.color: root.inkColor
@@ -10699,10 +11185,11 @@ Window {
             }
 
             Rectangle {
-                x: 164
-                y: 798
-                width: 128
-                height: 42
+                id: readerSettingsDetailsButton
+                x: root.readerSettingsFooterX(1)
+                y: root.readerSettingsY(798)
+                width: root.readerSettingsFooterWidth()
+                height: root.readerSettingsH(42)
                 radius: 7
                 color: root.surfaceColor
                 border.color: root.inkColor
@@ -10711,7 +11198,7 @@ Window {
 
                 Text {
                     anchors.centerIn: parent
-                    text: "重绘本页"
+                    text: "书籍详情"
                     color: root.inkColor
                     font.pixelSize: 16
                     font.bold: true
@@ -10719,15 +11206,15 @@ Window {
 
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: root.forceReaderRefresh += 1
+                    onClicked: root.openReaderBookDetails()
                 }
             }
 
             Rectangle {
-                x: 304
-                y: 798
-                width: 128
-                height: 42
+                x: root.readerSettingsFooterX(2)
+                y: root.readerSettingsY(798)
+                width: root.readerSettingsFooterWidth()
+                height: root.readerSettingsH(42)
                 radius: 7
                 color: progressSyncStore.running ? root.inkColor : root.surfaceColor
                 border.color: root.inkColor
@@ -10750,10 +11237,11 @@ Window {
             }
 
             Rectangle {
-                x: 444
-                y: 798
-                width: 128
-                height: 42
+                id: readerSettingsPullButton
+                x: root.readerSettingsFooterX(3)
+                y: root.readerSettingsY(798)
+                width: root.readerSettingsFooterWidth()
+                height: root.readerSettingsH(42)
                 radius: 7
                 color: progressSyncStore.running ? root.inkColor : root.surfaceColor
                 border.color: root.inkColor
@@ -10776,13 +11264,15 @@ Window {
             }
 
             Text {
-                x: 588
-                y: 798
-                width: parent.width - 612
-                height: 42
-                text: readingTimeStore.hasUncertainSubmission
-                    ? progressSyncStore.statusText + " · " + readingTimeStore.statusText
-                    : progressSyncStore.statusText
+                id: readerSettingsProgressStatus
+                horizontalAlignment: Text.AlignRight
+                x: 24
+                y: root.readerSettingsY(846)
+                width: parent.width - 48
+                height: root.readerSettingsH(24)
+                // Keep this request's result separate from historical duration
+                // uncertainty, which remains retained in the local ledger.
+                text: progressSyncStore.statusText
                 color: root.inkColor
                 font.pixelSize: 15
                 font.bold: true
@@ -10793,10 +11283,10 @@ Window {
 
             MouseArea {
                 id: settingsPanelBottomCloseArea
-                x: parent.width - 92
-                y: parent.height - 190
-                width: 92
-                height: 190
+                x: parent.width - 24
+                y: parent.height - root.readerSettingsH(190)
+                width: 24
+                height: root.readerSettingsH(190)
                 z: 8
                 preventStealing: true
                 property real startY: 0
@@ -10907,7 +11397,7 @@ Window {
                 spacing: 12
 
                 Rectangle {
-                    width: Math.floor((parent.width - 12) / 2)
+                    width: parent.width
                     height: 48
                     radius: 24
                     color: root.surfaceColor
@@ -10928,28 +11418,6 @@ Window {
                     }
                 }
 
-                Rectangle {
-                    width: Math.floor((parent.width - 12) / 2)
-                    height: 48
-                    radius: 24
-                    color: downloadStore.running ? root.goldAccent : root.brandGreenDark
-                    border.color: root.inkColor
-                    border.width: 2
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: downloadStore.running ? "下载中" : "下载整本"
-                        color: downloadStore.running ? root.inkColor : "#ffffff"
-                        font.pixelSize: 18
-                        font.bold: true
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: !downloadStore.running && root.currentBookId !== ""
-                        onClicked: downloadStore.downloadBook(root.currentBookId, readerStore.title)
-                    }
-                }
             }
 
             Text {
@@ -11604,7 +12072,48 @@ Window {
     Connections {
         target: root
         function onFrameSwapped() {
+            if (root.selfTestMode === "reader-turn-perf" && readerTurnPerfStep.pending) {
+                readerTurnPerfStep.pending = false
+                console.log("reader-turn-perf sample=" + readerTurnPerfStep.sample
+                    + " js-ms=" + readerTurnPerfStep.jsMilliseconds
+                    + " frame-ms=" + (Date.now() - readerTurnPerfStep.startedAt))
+                if (readerTurnPerfStep.sample >= 16) readerTurnPerfFinish.start()
+                else readerTurnPerfStep.restart()
+            }
             if (root.exitingToSystem && !exitFeedbackTimer.running) exitFeedbackTimer.start()
+        }
+    }
+    Timer {
+        interval: 1000
+        running: root.selfTestMode === "reader-turn-perf"
+        onTriggered: {
+            root.enterReaderForBook("ink-probe", "Performance fixture")
+            if (!root.readerPerfBaseline)
+                console.log("reader-no-ink-selftest=" + (!root.readerInkEnabled && !readerInkLayer.visible && !readerStylusToolBar.visible ? "ok" : "fail"))
+            else console.log("reader-perf-baseline-mode=true")
+            root.buildReaderPaginationWindowFromOffset(0, 24)
+            root.setReaderPage(0)
+            readerTurnPerfStep.start()
+        }
+    }
+    Timer {
+        id: readerTurnPerfFinish
+        interval: 250
+        onTriggered: appControl.quitToSystem()
+    }
+    Timer {
+        id: readerTurnPerfStep
+        interval: 350
+        property bool pending: false
+        property int sample: 0
+        property double startedAt: 0
+        property double jsMilliseconds: 0
+        onTriggered: {
+            sample += 1
+            startedAt = Date.now()
+            pending = true
+            root.setReaderPage(sample)
+            jsMilliseconds = Date.now() - startedAt
         }
     }
     Timer {
@@ -11619,9 +12128,51 @@ Window {
         }
     }
     Timer {
+        interval: 300
+        running: root.selfTestMode === "exit-ui"
+        onTriggered: appControl.saveSelfTestScreen()
+    }
+    Timer {
+        interval: 500
+        running: root.selfTestMode === "exit-ui"
+        onTriggered: {
+            var completeBefore = downloadStore.hasCompleteDownload("shelf-probe-0")
+            downloadStore.downloadBook("shelf-probe-0", "Completed fixture")
+            console.log("completed-file-gate-selftest=" + (completeBefore && !downloadStore.running
+                && downloadStore.state === "done" && shelfStore.books[0].downloadState === "full" ? "ok" : "fail"))
+            var fullTitle = shelfBooksRepeater.itemAt(0).titleOpacity === 1
+            var remoteTitle = shelfBooksRepeater.itemAt(1).titleOpacity === 0.5
+            root.shelfTab = "发现"
+            var tab = shelfTabsRepeater.itemAt(1)
+            var tabStyle = shelfTabsRepeater.count === 3 && tab.selected
+                && String(tab.color) === "#000000" && String(tab.children[0].color) === "#ffffff"
+                && !shelfTabsRepeater.itemAt(0).selected && !shelfTabsRepeater.itemAt(2).selected
+            console.log("shelf-title-tabs-selftest=" + (fullTitle && remoteTitle && tabStyle ? "ok" : "fail"))
+            discoverScroll.contentY = Math.max(0, discoverScroll.contentHeight - discoverScroll.height)
+            deleteDownloadClickProbe.start()
+        }
+    }
+    Timer {
+        id: deleteDownloadClickProbe
+        interval: 200
+        onTriggered: {
+            var row = downloadRecordsRepeater.itemAt(0)
+            var button = row.deleteButton
+            var point = button.mapToItem(root.contentItem, button.width / 2, button.height / 2)
+            appControl.injectSelfTestSwipe(Math.round(point.x), Math.round(point.y), Math.round(point.x), Math.round(point.y))
+        }
+    }
+    Timer {
         interval: 1200
         running: root.selfTestMode === "exit-ui"
         onTriggered: {
+            var tile = shelfBooksRepeater.itemAt(0)
+            var deleted = downloadStore.downloads[0].state === "deleted"
+            var refreshed = shelfStore.books[0].downloadState === "remote" && !tile.fullyDownloaded
+                            && tile.children[0].opacity === 0.5 && tile.titleOpacity === 0.5
+            console.log("download-delete-ui-selftest=" + (deleted && refreshed ? "ok" : "fail")
+                        + " deleted=" + deleted + " refreshed=" + refreshed)
+            root.shelfTab = "书架"
             var passed = shelfStore.books.length === 195 && root.shelfPageCount === 22
             appControl.injectSelfTestSwipe(700, 400, 550, 420)
             passed = passed && root.shelfPageIndex === 1 && root.screenName === "shelf"
@@ -11647,6 +12198,102 @@ Window {
             appControl.injectSelfTestSwipe(650, 500, 790, 480)
             readerPassed = readerPassed && root.pageIndex === initialPage
             console.log("reader-swipe-selftest=" + (readerPassed ? "ok" : "fail"))
+            var footerPoint = readerFooterChapter.mapToItem(root.contentItem, 40, readerFooterChapter.height / 2)
+            appControl.injectSelfTestSwipe(Math.round(footerPoint.x), Math.round(footerPoint.y), Math.round(footerPoint.x), Math.round(footerPoint.y))
+            var footerOk = root.showReaderCatalog
+            root.closeReaderCatalog()
+            footerPoint = readerFooterPages.mapToItem(root.contentItem, readerFooterPages.width / 2, readerFooterPages.height / 2)
+            appControl.injectSelfTestSwipe(Math.round(footerPoint.x), Math.round(footerPoint.y), Math.round(footerPoint.x), Math.round(footerPoint.y))
+            console.log("reader-footer-navigation-selftest=" + (footerOk && root.showReaderJump && root.readerJumpHtml.length > 0 ? "ok" : "fail"))
+            root.readerInteractionUntilMs = 0
+            var indexStarted = Date.now()
+            for (var step = 0; step < 2000 && root.readerFullPageCount === 0 && !root.readerIndexFailed; ++step)
+                root.buildReaderFullIndexStep()
+            console.log("reader-full-index-selftest=" + (root.readerFullPageCount > 0 ? "ok" : "fail")
+                + " pages=" + root.readerFullPageCount + " elapsed-ms=" + (Date.now() - indexStarted))
+            root.readerJumpPercent = 30
+            root.updateReaderJumpPreview()
+            readerJumpPreviewCheckTimer.originalOffset = root.currentReaderTextStart
+            readerJumpPreviewCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readerJumpPreviewCheckTimer
+        property int originalOffset: 0
+        interval: 350
+        onTriggered: {
+            var target = root.readerJumpTarget
+            var previewOk = root.readerFullPageCount > 0 && target.page >= 0
+                && target.start === root.readerFullIndex.starts[target.page]
+                && root.readerJumpHtml === root.formatReaderText(String(readerStore.bodyText).slice(target.start, target.end).trim(), target.start, target.end, root.readerImageEntrySource(target.image))
+                && root.currentReaderTextStart === originalOffset
+                && root.showReaderJump && readerJumpPreviewCard.width > 0
+            console.log("reader-page-preview-selftest=" + (previewOk ? "ok" : "fail") + " pages=" + root.readerFullPageCount)
+            appControl.saveSelfTestScreen("reader-preview")
+            // Tap above the 12px visible bar, inside its enlarged touch target.
+            var point = progressJumpSlider.mapToItem(root.contentItem, progressJumpSlider.width * 0.7, -10)
+            appControl.injectSelfTestSwipe(Math.round(point.x), Math.round(point.y), Math.round(point.x), Math.round(point.y))
+            readerProgressJumpCheckTimer.expectedOffset = root.readerJumpTarget.start
+            readerProgressJumpCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readerProgressJumpCheckTimer
+        property int expectedOffset: 0
+        interval: 800
+        onTriggered: {
+            var passed = !root.showReaderJump && !root.showReaderSettings && Math.abs(root.currentReaderTextStart - expectedOffset) <= 2
+            console.log("reader-progress-jump-selftest=" + (passed ? "ok" : "fail"))
+            root.openReaderSettings()
+            var option = readerMarginOptions.itemAt(2)
+            var point = option.mapToItem(root.contentItem, option.width / 2, option.height / 2)
+            appControl.injectSelfTestSwipe(Math.round(point.x), Math.round(point.y), Math.round(point.x), Math.round(point.y))
+            readerSettingsStyleCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readerSettingsStyleCheckTimer
+        interval: 700
+        onTriggered: {
+            var option = readerMarginOptions.itemAt(2)
+            var valid = root.readerMargin === 104 && option.selected
+                && String(option.color) === String(root.inkColor)
+                && !readerMarginOptions.itemAt(1).selected
+            console.log("reader-margin-selection-selftest=" + (valid ? "ok" : "fail"))
+            var footerFits = readerSettingsExitButton.y + readerSettingsExitButton.height
+                <= readerSettingsPanel.height - root.readerSettingsH(20)
+            console.log("reader-settings-footer-selftest=" + (footerFits ? "ok" : "fail"))
+            var labels = [readerSettingLabel0, readerSettingLabel1, readerSettingLabel2,
+                readerSettingLabel3, readerSettingLabel4, readerSettingLabel5,
+                readerSettingLabel6, readerSettingLabel8]
+            var consistent = readerSettingsProgressStatus.horizontalAlignment === Text.AlignRight
+            for (var li = 0; li < labels.length; ++li)
+                consistent = consistent && labels[li].font.pixelSize === root.readerSettingsLabelFontSize
+            console.log("reader-settings-label-status-selftest=" + (consistent ? "ok" : "fail"))
+            function aligned(item) {
+                return Math.abs(item.mapToItem(readerSettingsPanel, item.width, 0).x - readerSettingsPanel.width + 24) < 1
+            }
+            var fullWidth = aligned(readerFontSizeStepper) && aligned(readerFontChoiceControl)
+                && aligned(readerMarginOptions.itemAt(3)) && aligned(readerLineOptions.itemAt(3))
+                && aligned(readerParagraphOptions.itemAt(3)) && aligned(readerWeightOptions.itemAt(1))
+                && aligned(readerLightOptions.itemAt(readerLightOptions.count - 1)) && aligned(readerSettingsPullButton)
+            console.log("reader-settings-width-selftest=" + (fullWidth ? "ok" : "fail"))
+            // Synthetic reader only: capture settings before navigating to details.
+            appControl.saveSelfTestScreen()
+            readerDetailsCheckTimer.expectedBookId = root.currentBookId
+            var point = readerSettingsDetailsButton.mapToItem(root.contentItem, readerSettingsDetailsButton.width / 2, readerSettingsDetailsButton.height / 2)
+            appControl.injectSelfTestSwipe(Math.round(point.x), Math.round(point.y), Math.round(point.x), Math.round(point.y))
+            readerDetailsCheckTimer.start()
+        }
+    }
+    Timer {
+        id: readerDetailsCheckTimer
+        property string expectedBookId: ""
+        interval: 400
+        onTriggered: {
+            var passed = root.screenName === "detail" && !root.showReaderSettings
+                && String(detailPage.book.bookId) === expectedBookId
+            console.log("reader-details-button-selftest=" + (passed ? "ok" : "fail"))
             appControl.quitToSystem()
         }
     }

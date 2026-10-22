@@ -4,6 +4,160 @@
 
 这份文档面向第一次接手仓库的新 AI Agent。先读 `AGENTS.md`，再从头读完本文，然后才运行命令或接触设备。本文只记录可公开的项目状态，不包含设备地址、账号、书名、Cookie、API Key、二维码 UID、用户缓存或原始日志。
 
+### 2026-10-21 页脚章节/页码与独立跳转预览
+
+页脚左侧 readerFooterChapter 显示当前章节名并打开目录；右侧 readerFooterPages 通过 readerGlobalPageLabel 显示全书页码并打开 showReaderJump 独立层。阅读设置中的旧跳转滑块/百分比/章节行已移出，后续 readerSettingsY>=744 减88，笔反向映射补回88；其他四列/全宽/底部安全区域保留。手指页脚及笔 handleStylusTap 有入口，预览层遮挡并禁止底层翻页。
+
+全书页码不能再用局部分页窗口数量。readerFullIndex 使用当前书+排版签名，空闲每80ms计算一页，触摸后退让750ms；完成后停表，休眠暂停，不改可见窗口。首次未完成显示“页码计算中”，失败显式显示失败，不猜总页数。ReaderStore.loadPageIndex/savePageIndex 共用经过指纹/签名/checksum/边界验证的布局缓存方法，独立 reader-page-index-v1.json，不能覆盖 reader-window-v1.json。正文/排版变化失效，完成结果下次打开可恢复；目前未持久化未完成草稿。
+
+拖动预览120ms节流，不改变阅读位置；预览卡按当前排版缩小正文及图片组，上方章节名，下方页码。索引未完成可按文本位置预览/跳转；完成则按真实页序选页，完成时自动刷新已打开预览。松手刷新最新目标后50ms提交同一start，已索引目标直接切两页缓存（含纯图尾页）。关闭取消。closeReaderJump 仅真正打开时设置600ms防穿透，不能无条件设置：首个候选设备验证曾因此导致刚进入阅读的滑动失败，已修复并增加行为断言。测量/预览图片标题识别显式传目标图片，避免依赖当前正在读的另一页。
+
+新增 tests/validate-reader-page-preview.mjs 与缓存Qt行为脚本；扩展 document cache unit 覆盖独立文件、不覆盖窗口、字体/源变化及损坏失效。exit-ui 增加真实左右页脚点击、完整索引、预览保持原位置、准确跳转及截图；saveSelfTestScreen 可选固定reader-preview标签，仅隔离测试且环境显式允许时生成合成正文截图，不能传任意路径。初个候选已证实151页预览/跳转成功；最终构建再次核对合成正文预览截图。最终源码完整Linux回归、shell语法、宿主Qt文档/页码缓存与进度队列行为、官方SDK构建已通过。最终二进制 SHA-256 5f270f4223c93b8d708dc6613551f186cac6b6d6614daddd9913f2469936218c。连接曾在上传前USB SSH超时，用户唤醒后已原子安装最终版，exit-ui干净退出0；完整文件门禁、真实删除状态刷新、书架翻页、正文滑动、两侧页脚点击、全书索引/预览/跳转、边距选中、设置标签/宽度/安全边距和详情按钮均ok。合成151页索引同步验收耗时12193ms；正常模式逐页80ms计时切片且交互退让，首次索引可能较慢，不是后台线程，勿承诺即刻显示总页数。正常应用已恢复，服务active、进程存在、无QML启动失败，设备哈希与最终构建一致；恢复前系统active/NRestarts=0。原始设备日志及截图不加入Git。旧稳定回退备份 before-page-preview 是68256阅读优先版；任何 before-page-preview-final 是候选，不能混为稳定备份。本任务未开启单色快刷，未改系统汉化/XOVI或helper、未写云进度。
+
+### 2026-10-21 阅读优先：停用笔迹、进度合并与翻页退让
+
+用户明确优先阅读体验、先取消笔迹。正常阅读 readerInkEnabled=false，隐藏笔迹层、侧栏和入口手势，禁用笔迹起/续/落笔路径，不读取每页 strokes、不清直接画布；原笔迹/段落笔记文件完全保留。底层仅 reader-ink 隔离回归及显式 reader-turn-perf 对照可启用；无正常 UI 开关。脚注仍保留行框定位，普通无脚注页不生成只供笔迹/脚注使用的行框。
+
+翻页改 ReaderStore.queueProgress：只更新待保存行，800ms 无新翻页后统一 QSaveFile 原子落盘；savedTextOffset 等读取会合并待保存数据，快速恢复不会回到旧磁盘位置。切书、离开阅读的 saveProgress、休眠、Window关闭、QCoreApplication.aboutToQuit 和析构都强制刷新，失败保留待保存行，已有其他书记录不覆盖。正常退出/休眠保障即时保存，异常断电可能丢未落盘尾部，不能承诺每次翻页已写盘。
+
+翻页按下/实际翻页先停止补排，至少安静750ms后才补下一页，后续单页400ms节奏和前方5页目标不变；不是后台线程，也不是整本预排。正文改先统一更新当前页字段，再一次提交 readerRenderedPageHtml，避免字段变动重复生成/重排 HTML；不是整页图像预渲染。仍保留必要缓存未命中时的当页分页。
+
+新增 reader_progress_queue_smoke.cpp 和 run-reader-progress-queue-smoke.sh，覆盖翻页不写盘、内存恢复、停顿自动落盘、强制保存合并多书、析构刷新、写失败保留/恢复重试。新增 validate-reader-performance.mjs 验证关闭笔迹后无画布/笔迹读取、缓存页不分页、格式化一次且脚注定位保留；分页测试改可控时钟、检查交互暂停和非同步保存。完整 Linux（含新增用例）、宿主 QtCore/Gui进度和旧笔迹数据行为测试、shell语法、官方SDK已通过。
+
+性能验证：reader-turn-perf 始终 main.cpp QTemporaryDir 和独立退出会话，默认跳过账号初始化，无云进度/时长写入。16次缓存翻页分别记录 setReaderPage JS耗时和 Qt frameSwapped 首帧；不包含物理墨水刷新完成，也不是官方客户端对照。初始旧诊断构建采用重复文本，最后退出阶段139（样本采集完）；不使用其夸大的重复文本速度作主结论。最终同构建改用每段独立编号正文，对照只允许在该隔离模式用 RM_WEREAD_PERF_BASELINE=1 开笔迹/同步保存，正常模式即使env=1也不能启用。退出改计时器离开frameSwapped回调，最终对照已正常退出。同一最终构建、独立编号文本各16次：对照 JS均值29.25ms/Qt首帧101.75ms，优化12.12ms/79.25ms；首帧中位数100/77.5ms，范围82–140/62–102ms。对照开启笔迹+同步QSaveFile保存，非旧发布版精确复刻。两组最终均干净退出；优化 reader-no-ink-selftest=ok。设备 exit-ui 全链路通过，设备Qt6独立进度合并/故障重试测试通过；保留笔迹诊断 reader-ink 七阶段全部通过，正常应用重新启动成功、服务 active、无 QML 启动失败；系统 active/NRestarts=0。实际仅更新应用二进制，当前hash见本段；已保存的用户书籍/笔迹及系统汉化/XOVI配置不动。正常回退可用 rm_weread_qt.before-reading-priority-baseline（上一稳定图标版本），其余 before-reading-priority-* 为诊断/中间候选，不应误认全部为稳定版本。详见 docs/reader-performance-2026-10-21.md。构建 SHA-256：68256ddbb1d09c8aee8951159d1b089f59f1ab946b4f46d5d526d9ef7d90bb0c。
+
+### 2026-10-21 书架图标操作与设置文字统一
+
+移除书架顶部“继续阅读”入口；同步和退出改 64x64 无视觉文字的按钮，Canvas 分别画双箭头和标准电源符号，不使用 Accessible 附加对象：设备精简 Qt 报 Non-existent attached object（SDK 构建不拦截），首次隔离自检发现后已移除该属性，后续不得重新引入。同步时黑底白图标、禁止重复点击，无旋转动画；退出仍只是 quitToSystem，不关机/重启设备。阅读设置九项标题统一 readerSettingsLabelFontSize=20（原字重18已统一），底部进度同步/拉取结果 Text.AlignRight、右边距24。
+
+完整 Linux、shell 语法和官方 SDK 构建通过。exit-ui 新增实际九标题字体/状态对齐属性断言，并分别保存临时合成书架与设置截图；首次隔离自检因上述属性加载失败，系统自动恢复 active/NRestarts=0，修正后 reader-settings-label-status-selftest=ok，既有完整文件/删除/书架滑动/正文/进度/宽度/详情/退出回归全部通过。合成书架截图核对：仅同步双箭头与电源图标，无继续阅读；合成设置截图核对九标题字号一致、底部状态靠右且无裁切。有效回退备份 rm_weread_qt.before-header-icons；修正前候选另存 before-header-icons-final（不要将它当可用回退）。正常应用已重新启动，系统 active/NRestarts=0。没有调用真实同步/退出图标做网络或系统动作测试，沿用既有回调；原删除/宽度/详情按钮/正文与退出回归继续运行。构建 SHA-256：3c7f7439d340db7b63de637c855185d077237093046cfbff9d9a74eaadf29e5e。
+
+### 2026-10-21 已下载书直接阅读、设置全宽与详情入口
+
+书架封面 TapHandler 改走 openShelfBook：共享 hasCompleteDownload 成功则直接 openOrDownloadBook，不进详情/不取元数据；未完成仍进详情。发现/笔记书籍入口同样对已完成书直接阅读。openDiscoverBookDetail 增加 forceDetails，新的 openReaderBookDetails 先保存当前阅读窗口/待写笔迹，按 currentBookId 找书，明确 forceDetails=true 进入详情，避免被直接阅读策略循环带回。
+
+阅读设置保持原主体结构，只调整几何：控件列从 x122 到右侧24，四列/两列/灯光/字号按可用宽度分配；移除字号两侧装饰 A，三个字号单元横向铺开。字体/字重拆为独立整行，额外64基准像素；readerSettingsY 对>=620增加64，面板1280上限/1000基高，保留先前章节预览、网络和缩进移除映射。手写笔命中同步所有横向计算及字重新增行反向映射。底部四操作等分可用宽度，状态单独置于其下，保留安全边距；“重绘本页”改“书籍详情”，手指和笔同一动作。
+
+JS 行为覆盖完整书跳过详情/网络元数据、未完成仍进详情、强制查看详情，720/954/1200宽下选项/底部对齐，以及新字重行笔命中。完整 Linux、shell 和官方 SDK 通过。设备 exit-ui 增加实际设置控件右边界对齐、真正点击详情按钮并验证当前书ID；合成 ink-probe 增加本地元数据保证详情测试不联网。应用已备份 rm_weread_qt.before-reader-fullwidth 并原子更新；短暂 USB 超时后恢复连接。设备 reader-settings-width-selftest=ok、reader-details-button-selftest=ok；完整文件直接放行、删除后状态、书名/底部标签、书架/正文滑动、进度跳转、边距选中、底部安全区与退出均通过。合成设置截图实际核对：字号/四列/字体/字重/灯光均铺满可用宽度，独立字重行、底部四按钮完整且状态独立显示。系统 active/NRestarts=0，正常应用已重新打开。真实完成书跳过详情由 JS 行为和构建验证，本次设备测试没有为点击用户书籍采集画面；详情按钮则有真实 Qt 点击验收。构建 SHA-256：d44e065b1a4b29c5b24300edbefc50a8b45eaeb144fa50708024b335a1b98c96。
+
+### 2026-10-21 已完成文件与下载任务状态分离
+
+用户报告已下载书进入下载管线并失败。只读设备初始检查：9 本有 full EPUB，8 行状态 full、1 行 downloading；出错行失败计数 0、fullFile 有效，ZIP CRC 通过，106 章对应 107 个 spine 项，任务进度停在 11/106，Qt 记录退出码 15，不能据此声称网络失败或文件损坏。排查期间设备状态自行变为全部 9 行 full、错误记录消失；未为诊断写元数据/重下书籍。只读新规则审计识别 9 本完整文件。
+
+根因是书架过去只看文件名，而阅读入口只接受 downloadState=full/failed=0；任务进度、取目录或修复会覆盖这些任务字段。已有 fullFile 在自有 helper 中只在整本成功打包时设置，后续 partial 保留旧 fullFile，因此它本身记录上次成功的完整产物，不应被新任务状态撤销。
+
+新增共享 local_download_state.h/completedLocalEpub，DownloadStore 和 ShelfStore 使用同一规则：优先有效 fullFile（非空普通文件、full.epub 后缀、canonical 路径在本书目录内），不让 downloading/partial/failedChapterCount 的后续任务字段撤销该旧产物；旧 full 记录无路径时仅允许 full 且失败数 0 的目录扫描回退。无完成记录的任意 full 文件名、partial 文件、空文件、缺失或越界路径仍拒绝。ShelfStore 两种元数据来源均传入 fullFile/failedChapterCount，封面和阅读门禁一致。没有改 Lua 的旧原型读取/缓存快捷路径，也没有自动修复历史元数据；正常 Qt 快捷路径会在启动 Lua 前直接使用已有完整文件。
+
+宿主 Qt Core 行为覆盖 downloading+旧 full 直接 done 且进程不启动、partial/失败修复不撤销旧 full、无完成记录不得仅凭文件名放行、partial/空文件/越界拒绝。完整 Linux、shell 语法、官方 SDK 通过。设备 exit-ui fixture 设为 downloading+失败数 1+旧 fullFile，completed-file-gate-selftest 检查下载 API 直接 done/无进程/书架 full，再跑真实删除和阅读 UI 回归。设备 completed-file-gate-selftest=ok，书名/标签、真实删除按钮、书架/正文翻页、进度跳转、设置和退出回归全部通过；备份 rm_weread_qt.before-completed-file 并原子更新，系统 active/NRestarts=0，正常应用已重新打开。未联网下载用户书籍做测试，也未写云端进度。更新脚本停止应用前再次检查在途 helper，有下载则退出等待，避免编译期间新发起任务被中断。构建 SHA-256：ec511c27c22e25145c81330bd06f19775df5bbe9764563bdf2ef17a1b70f03cb。
+
+### 2026-10-21 书名透明度与底部标签样式
+
+按用户要求，未完整下载书籍的 shelfBookTitle.opacity 与封面一样为 0.5，完整书为 1；下载完成/删除后随同一书籍状态刷新。底部删除魔法笔记本入口，保留书架/发现/我的三个标签，180x58、间距 32、圆角 8，选中纯黑底白字，未选中沿用浅底黑字。仅移除导航入口，未删除笔记本数据或功能代码。旧测试对必须出现魔法笔记本入口的契约按新需求更新。
+
+新增 exit-ui 的 shelf-title-tabs-selftest，检查完整/未完整书名实际 opacity 和三标签黑底白字；原删除按钮回归同时确认删除后书名变为 0.5。完整 Linux、shell 语法、官方 SDK 构建通过。设备 shelf-title-tabs-selftest=ok，实际删除按钮后封面及书名透明度回归、书架/正文滑动和设置/退出回归均通过。备份 rm_weread_qt.before-shelf-tabs 后原子升级；系统 active/NRestarts=0，正常应用已重启。测试仅使用隔离合成书，不访问用户封面截图。构建 SHA-256：6b72e03bebe0559bd464e9d5e03c0bbeacf6982f52002014b36822bd6a9af776。
+
+### 2026-10-21 删除下载回调中断：真实按钮复现与修复
+
+用户反馈上一轮仍不能自动恢复。上一轮只验证了 normalizeBook 对已删除文件的重算，未验证 QML 实际按钮链路，不能把它表述为完整 UI 修复。新增 exit-ui 临时书库 fixture：195 本中的 shelf-probe-0 放合成 full EPUB/陈旧 full 元数据/下载记录；打开真实发现页、滚动到真实“删除下载”按钮，注入 Qt 点击，再检查 downloads 的 deleted、书架 remote、tile.fullyDownloaded=false 与实际 cover.opacity=0.5，随后继续原滑动/正文/设置/退出回归。
+
+修复前设备明确复现 download-delete-ui-selftest=fail deleted=true refreshed=false，证明文件已删而刷新未完成；真实用户数据只做计数，两个 deleted 记录均无残留 EPUB，不输出 ID/书名。原按钮调用 deleteDownload 会 emit changed 重建 Repeater 并销毁当前回调所属 delegate，后续 shelfStore.reload 不可靠。改为 DownloadStore 成功删除后发 downloadRemoved(bookId)，main.cpp 在对象层连接 ShelfStore.reload，移除按钮内后续 reload；失败不发成功信号。之前的文件存在优先修复仍保留。
+
+Linux 全回归、shell 语法、宿主四组 Qt Core 行为、官方 SDK 构建通过；新增成功信号实际在目录消失后触发且不误删目录外文件的合成断言。修复后同一设备/同一真实按钮点击路径通过 download-delete-ui-selftest=ok deleted=true refreshed=true，滑动/22 页书架/正文翻页/进度跳转/边距选中/底部安全区/退出全部通过。备份 rm_weread_qt.before-delete-ui-fixed 并原子升级，系统 active/NRestarts=0，正常应用已重新打开。全部删除测试仅操作临时合成书，不删除用户书籍。构建 SHA-256：24d70cc1f9a8cf193b7020ed4c6c74e72f4b710c56af27eb6b28e8f056c239a1。
+
+### 2026-10-21 删除下载后书架状态纠正
+
+发现页删除动作原本已调用 shelfStore.reload；实际问题是 ShelfStore.normalizeBook 在找不到 EPUB 时仍保留 book-status 的 full/partial。现在本地 full/partial 文件存在则对应完整/部分，否则统一 remote，使文件删除后下载状态、动作文字、完成角标和封面透明度一致。保留元数据和阅读位置，不清除账户或缓存总目录。
+
+新增 shelf_download_state_smoke.cpp：临时合成 full 文件先确认 full，删除文件但保留 raw full 元数据，确认 remote/空路径/全部下载。宿主 Qt5 无法编译 ShelfStore 原有 QProcess::finished 重载，未为测试改动产品信号连接；改用官方 SDK Qt6 编译测试并在设备运行。完整 Linux 回归、shell 语法和 SDK 构建通过。设备合成文件删除行为测试和 reader-ink 七阶段通过；备份 rm_weread_qt.before-deleted-shelf 后原子更新最终应用，系统 active/NRestarts=0，正常应用重新启动且服务 active。未删除任何用户书籍做测试，真实发现页触摸/详情视觉仍待用户验收。二进制 SHA-256：f688b8d7d3fc2fc021cbbb76a886f8f5ed993c08c3bedcd5705fb2c52014e080。
+
+### 2026-10-21 详情下载进度、移除本页下载与书名门禁
+
+详情可见新布局在阅读进度下增加下载状态文字和进度条（y712/752），后续操作区下移 64px；按当前 bookId 查下载记录，百分比按章节估算、打包前最高 99%，full 状态显示 100%。暂停/失败保留当前记录章节数，不继承别的书。当前书的取消按钮不会取消别的书；移除书架“下载本页”和对应 UI 调用，继续阅读按钮收拢，底层批量队列兼容 API 和回归所需 currentShelfPageBooks 保留。
+
+下载 helper 在 start_full_download 之前通过自有 download_title.lua 选择有效书名：调用参数、书架、本地状态依次检查；空白、Untitled（大小写不敏感）、unknown、未命名/未命名书籍和书籍 ID 均不接受。缺失时调用已有 BookInfoService 获取元数据，失败或仍无有效名称则停止，不下载正文/生成占位名文件。有效名称写回状态，title= 协议刷新 Qt 下载记录；元数据获取期显示“正在获取书籍名称”。不批量重命名或重打包此前已经下载的 Untitled 文件。
+
+完整 Linux、shell 语法、宿主 Qt Core 四组、官方 SDK 构建通过；Lua 合成测试覆盖有效缓存不联网、占位名获取成功、无效响应和离线失败。未联网下载用户书籍，未声称实测元数据网络端到端。应用及 redownload-book.lua/download_title.lua 已部署，旧文件备份 .before-detail-title；设备 LuaJIT 书名行为用例和 reader-ink 七阶段通过。随后书架状态修复的最终二进制见下段，不把此中间构建当作最新版。
+
+### 2026-10-21 完成角标改为绿色圆底白勾
+
+按用户要求，coverDownloadBadge 去掉“已下载”文字，改为 44px 绿色（#239B56）圆底、Canvas 白色勾；右下 8px 间距及 full/非空路径条件不变，无新增输入处理。完整 Linux 回归、shell 语法与官方 SDK 构建通过。已备份旧程序 rm_weread_qt.before-green-check 并原子更新；设备 reader-ink 七阶段通过，系统 active/NRestarts=0，正常应用已重启且服务 active。未导出真实用户封面，实际彩色角标视觉待用户验收。二进制 SHA-256：263ddf1416283ff11b89ae732b985fdeab80c1e864aad84e720370844d373267。
+
+### 2026-10-21 书架封面透明度和下载进度圈
+
+未完整下载封面 opacity=0.5，完整下载保持 1；标题不变淡。中央白底圆形进度圈独立于封面透明度，只有当前进程 running、bookId 匹配且记录 starting/running 时显示，排队或历史中断记录不冒充当前任务。无输入处理器，保持原封面点击和书架滑动路由。Canvas 按百分比变化重画，不加连续旋转动画。
+
+DownloadStore 将 helper index 的已处理/总章节数保存到当前下载记录，启动新任务清零、已处理数限制在总数内；排队记录不继承其他书的数值。百分比按章节数估算，非字节/剩余时间；完成打包前上限 99%，成功后圈消失并沿用已下载角标。失败/取消停止显示圈，已有缓存保留。
+
+完整 Linux、shell 语法、宿主四组 Qt Core 行为检查、官方 SDK 构建通过；新增真实解析进度、上界和跨书排队隔离测试。已备份并原子更新单个应用，备份 rm_weread_qt.before-cover-progress；设备 reader-ink 七阶段 passed=true，系统 active/NRestarts=0，正常应用已重启且服务 active。合成空书架仍有既存 undefined 颜色/标题占位警告，不将其当作实际下载圈视觉验收。未为本次测试联网下载用户书籍，实际下载期间视觉效果尚待用户验收。构建 SHA-256：24b9a9d71946d30844833aa4b86ff9fa753561158295e8fe6d6d15a393d6b650。
+
+### 2026-10-21 阅读前必须完整下载（已部署）
+
+用户明确改政策：每次进入未完整下载书籍，有网络即下载整本，未完成不允许阅读；删除详情“删除下载”。当前正常入口不再调用 downloadOpeningChapter。DownloadStore.hasCompleteDownload 要求 book-status.json 对应 real bookId 的 downloadState=full、failedChapterCount=0，且当前书目录内存在非空完整文件（canonical 路径防止越界）；不能仅凭本地任意 EPUB、书架旧状态或 full 文件名放行。Lua 满足同样 full/无失败状态后才可短路缓存，继续保留已验证章节续传。
+
+详情首次显示/切换书籍会自动排整本下载，网络从断到连时可触发；同一本的元数据刷新不重复排队。阅读请求设置明确 pending intent，显示整本下载等待/进度；最近阅读、下载记录、冷开/内存恢复和目录章跳转均门禁。离线完整书可读，不完整书提示联网。partial/error/cancelled 保留缓存但不打开，onEpubReady 必须本次 state=done 且元数据/文件完整才兑现阅读意图；旧 opening-only 完成信号只触发整本下载，不打开。返回书架可撤销阅读意图并保留后台下载；其他书完成仍不抢占界面。旧 opening API/队列兼容层仍存在，但正常 UI 不再请求开头章节。
+
+详情可见 Row 和旧隐藏布局的删除入口均移除，目录/修复插图两列排列。下载管理区原有删除能力不属于本次移除范围。
+
+完整 Linux 检查、shell 语法、官方 SDK 构建通过。宿主 Qt5 Core 四组行为测试通过，下载文件测试覆盖 full 状态、部分/失败状态、文件为空、元数据缺失、越界链接；JS 覆盖离线、部分缓存、仅本次 full 通知放行、opening/partial 通知拦截及后台不抢占。设备 LuaJIT 合成续传通过，加入旧 fullFile 不能绕过 partial/失败状态用例。设备 reader-ink 七阶段通过；这些不是用户真实书籍的整本联网下载端到端验收，未为测试额外下载用户书籍。
+
+仅备份并原子更新应用和 helper/lib/download_manager.lua，无在途下载任务，用户数据/系统配置保留；正常应用已重新启动。备份 rm_weread_qt.before-fullread-gate、download_manager.lua.before-fullread-gate。二进制 SHA-256：e464e8095429fc36fdd2c45f519f5096a4338602ac12cd397d02c41775198a94；下载器 SHA-256：d57d299443cfe5425dfa0ad00b658f83cee6de7163060b30ba55e1ffbab700bc。后续不要恢复“partial 本地路径即可读”或“opening 完成即进入正文”的旧源码断言。
+
+### 2026-10-21 边距胶囊统一、固定两字缩进与底部安全区（已部署）
+
+用户要求边距与行距/段距完全相同的四列胶囊，删除首行设置并固定两字，修复底部按钮裁切。margin 控件现宽 132、基准高 56、间距 12、radius=height/2，边距行上下留白也匹配另两行。删除首行控件、笔命中和 Settings 别名，readerFirstLineIndentChars 改为 readonly 2；移除自检/恢复的赋值，旧偏好值不能覆盖两字，旧磁盘键不必删除。
+
+底部原 y+height 等于面板高度，圆角/边框被 clip 边界截断。重分配去掉的首行空间和边距行留白：基高 906，原坐标 >=548 减 26，仍保留进度/网络附加间隔；底部增加 24 基准像素，实际至少 20 的安全留白。笔反向映射同步更新。不要把先前 908 基高或 indent 行的坐标重新加回来。
+
+完整 Linux 检查、shell 语法、官方 SDK 构建通过；逻辑测试覆盖胶囊规格、固定缩进不被覆盖、扩大控件笔命中和底部边界。设备 reader-ink 七阶段、滑动、进度跳转、宽边距单选黑底与 footer 安全边界均通过；实际合成画面已核对三行四列胶囊一致、无首行行、底部四个按钮完整且留白。账号/用户书籍/偏好其他项不变，旧边距值保留。未做真实手写笔物理坐标验收。
+
+已备份并原子更新单个应用可执行文件，备份 rm_weread_qt.before-margin-pills；正常应用重新打开。二进制 SHA-256：50f0701f5ab0950dde88dacdc19ecac8710a747530682cbc5bddf35853c49326。同步协议没有新增变化，手机进度问题仍未归因。
+
+### 2026-10-21 目录去掉整本下载、同步归因澄清（已部署）
+
+用户质疑“零章节字段导致手机进度不更新”的确定性。当前确认的是 Qt 未传真实章节位置、helper 的兼容路径置零，以及一次真实零时长调用返回 succ=1。尚无受控的上传前后和手机回读实验，不能宣称这是已证实的唯一根因，更不能将请求成功当作手机位置采用成功。本轮只读检查最近本地记录和 Web/gateway 进度快照：云端两者百分比一致，但与最近本地不同；缺少同期快照，不能据此判断字段语义、同步顺序或手机冲突。没有再次写云进度或上报时长，没有改同步协议。
+
+按用户明确要求删除 readerCatalogPanel 的“下载整本/下载中”按钮及点击入口，回到书架按钮扩至该行宽度。书籍详情等其他下载入口保留，目录列表与跳转不改。原有 scaffold 契约调整为目录不得出现整本下载操作。完整 Linux 检查、shell 语法和官方 SDK 构建通过。仅备份并更新应用程序，备份 rm_weread_qt.before-catalog-download-removal，未修改 helper/系统或用户数据。二进制 SHA-256：b4c28cc152f48e91c84328a701091952d6a367e14271a1382939e3617bd6081f。
+
+设备 reader-ink 七阶段通过，退出恢复系统 active、NRestarts=0，正常应用已重新打开。目录按钮删除由源码契约与构建验证，本次未导出正常用户目录画面。
+
+### 2026-10-21 设置面板同排加高与章节预览（已部署）
+
+用户仍报告边距选中不明显，后续要求整个面板加高、行距/段距标题与选项同排，以及拖动进度时显示目标章节。确认实际运行文件哈希与上一版一致，正常保存边距为 64。找到另一差异：边距和首行的手指 onClicked 直接同步 rebuildReaderPagination，笔和其他选项则延迟局部重排。现手指统一 applyReaderSettingChange(true)，重排定时器保留原 textOffset、仅预排目标两页，先让选中状态显示。
+
+面板上限 1160（原 840），readerSettingsY/H 按高度伸展控件和留白，不拉伸文字；标签和选项同排居中。基础坐标 744 后新增 44 的章节预览空间，788 后累计新增 68（包含网络行额外留白），总基高 908。笔点击反向映射同一坐标，字体选择面板仍保持自身坐标。右下关闭手势收窄为 24px 空白边缘，避开控件。后续改布局不能只改视觉坐标而遗漏笔命中。
+
+进度拖动只改百分比预览，readerProgressPreviewTitle 按缓存正文长度和已加载章节 textStart 二分查找标题，不联网、不分页、不改变当前位置；松手沿用实际跳转。目录为空显示暂无章节信息，不猜测章节。
+
+完整 Linux 检查、shell 语法、官方 SDK 构建和宿主行为测试通过。设备 reader-ink 七阶段通过；实际 Qt 点击“宽”后数值 104、单项 selected、黑色背景及其他档未选中均通过（reader-margin-selection-selftest=ok），进度触区跳转和书架/正文滑动通过。合成设置画面已核对：行距/段距同排、宽边距黑底白字、章节名 Ink probe、加高后所有功能完整显示。笔命中扩大后控件的逻辑行为测试通过，非真实笔坐标验收。用户实际书籍体验仍待确认。
+
+已备份并原子更新应用，无在途下载任务，helper 和系统配置未改；正常应用已重新打开。二进制 SHA-256：605b639e85c4f601c910ff0c816c0aa9a897a882ccc004f20b84805a1c192140。旧程序备份 rm_weread_qt.before-settings-layout，账号、书籍和原偏好保留；截图仅为隔离合成书，不入库。
+
+### 2026-10-21 进度跳转与统一选中样式（已部署）
+
+进度条原手指触区仅 12px，拖动每个位置事件都调用同步排版且跳转后设置面板仍遮挡正文。现在触区 48px，拖动只预览百分比，松手一次提交；笔触路径共用 requestReaderProgressJump，先关闭面板、抑制 600ms 翻页穿透，再用 50ms 单次定时器检查当前书籍/界面后跳转。重复请求覆盖目标。goToReaderTextOffset 的目标窗口从 12 页改为 2 页，继续用原有空闲逐页预排；不是预排整本或从书头扫描到目标。
+
+页边距、首行、字重与字体选择卡片改成和行距/段距一致的黑底白字。页边距以窄/标准/宽/特宽文字显示，未改变设置值或字体加载逻辑。旧默认边距 64 不等于菜单标准 72，保持实际值不变，按最近档显示标准选中。灯光和顶栏快捷灯光也按最近档单选，避免阈值范围相交造成双选；关灯时使用 0。新增 validate-reader-progress-jump.mjs 逻辑行为测试；exit-ui 合成正文增加真实 Qt 指针在可视条上方 10px 处点击，检查面板关闭和目标偏移，日志 reader-progress-jump-selftest=ok。
+
+完整 Linux 检查、shell 语法与官方 SDK 构建通过；设备合成翻页/笔迹七阶段和滑动回归通过，修正自检坐标映射后实际跳转回归通过。QQuickWindow 不能直接当作 mapToItem 的 Item 参数，使用 root.contentItem；注入 C++ int 坐标时先 Math.round，并按实际命中坐标计算预期偏移。不要把测试入口的早期类型异常写成产品点击成功。当前二进制 SHA-256：081406c9ed65f75d77744878fcf9583594cb28e79244dbebb04cd156444781be。用户实际手指手感及真实大书耗时仍待验收，不能承诺与原生固定同速。
+
+最终设置面板合成截图已视觉核对：标准边距、两字首行、加黑均为黑底白字，灯光仅关档高亮；截图未入库。最终扩展触区实际 Qt 点击、目标偏移、滑动和退出提示通过，正常应用已重新打开。字体卡片样式已实现和构建检查，但本次截图是主设置面板，不冒充卡片截图验收。
+
+仅更新应用可执行文件，旧程序保留 rm_weread_qt.before-progress-ui，后续自检候选保留额外备份；用户数据和系统配置不变。自检图片只能使用隔离合成书画面，不获取正常用户阅读屏幕。
+
+### 2026-10-21 历史时长提醒不再拼接到同步结果（已部署）
+
+用户要求去掉反复显示的历史“部分阅读时长提交结果未确认”。根因是 Main.qml 阅读设置区只要 hasUncertainSubmission 为真，就在每次 ProgressSyncStore.statusText 后追加整个账户的账本提醒。现在该处仅显示本次进度同步/拉取状态；新失败和超时仍显示，历史 uncertain 账本完全保留，不标为成功、不清除、不重报，阅读统计不变。本次是显示调整，不是账本记录迁移。
+
+完整 Linux 检查、shell 语法及官方 chiappa SDK 构建通过。备份并原子升级单个应用可执行文件，短暂退出应用后 reader-ink 七阶段隔离回归通过，系统恢复 active、NRestarts=0，随后正常应用重新启动且服务 active。无在途下载任务；helper 及系统配置不改。新二进制 SHA-256：8b8ec2b670f8dcddb7e1b8c99ca0a3b0b96c09035abbde113db6d4ce55e537ea。用户实际打开设置面板的提示验收待确认；未导出用户画面或正文。
+
+### 2026-10-21 进度同步成功误判（已部署）
+
+用户报告每次手动同步均显示失败。只读诊断确认网页获取、状态解析、载荷构造正常。用户明确授权一次真实进度写入后，用最近保存的实际百分比、零阅读时长执行测试，服务端返回数值 succ=1、不含 errCode；旧 ReadSyncProtocol 只承认 errCode=0，误判为未确认。不能将这一成功响应解释为手机端精确章节位置已验收；百分比兼容路径仍发送零章节字段，此次未改位置协议或读取用户正文。
+
+read_sync_protocol.lua 现在认可 succ=1/true 与旧 errCode=0；非零 errCode、明确拒绝、未知 succ 和未知响应仍不确认。时长账本、超时处理、失败不重放规则不变。新增真实 helper 配假客户端的响应到退出状态集成测试，覆盖成功/拒绝/未知响应与零时长、中文摘要边界。宿主 Lua、设备 LuaJIT、完整 Linux 检查、shell 语法及官方 SDK 增量构建通过。
+
+仅原子升级 helper/lib/read_sync_protocol.lua，备份 read_sync_protocol.lua.before-web-ack-fix；安装后在设备重跑协议和 helper 假网络响应测试通过，无需重启。没有再次写真实进度，也没有重发历史待确认时长；下一次 helper 生效。真实用户点击后的界面提示和手机端进度仍待验收。诊断不输出凭据、书名、正文或原始响应。
+
 ### 2026-10-21 EPUB 兼容性修复（已部署）
 
 用户提供的本地 EPUB 严格检查发现 XHTML 未声明的 `&nbsp;`，以及内容相同的重复 ZIP 图片成员和 OPF href；用户确认手动规范实体并去重后的副本可在原系统打开。ZIP CRC 正常不等于 EPUB/XML 合法，不要再以 unzip -t 代替章节 XML 验证。

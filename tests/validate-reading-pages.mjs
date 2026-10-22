@@ -22,6 +22,6 @@ assert(cmake.includes('ReadingStatsPage.qml') && cmake.includes('ReaderFontPicke
 const control = fs.readFileSync('apps/weread-qt/app_control.cpp', 'utf8');
 assert(control.includes('qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST")'));
 assert(control.includes('qEnvironmentVariable("RM_WEREAD_SELFTEST_SCREEN") != "1"'));
-assert(control.includes('buffer.snapshot(') && control.includes('QSaveFile output("/tmp/'));
+assert(control.includes('buffer.snapshot(') && control.includes('QSaveFile output(label.isEmpty() ? QStringLiteral("/tmp/'));
 assert(control.includes('QFileDevice::ReadOwner | QFileDevice::WriteOwner'));
 console.log('reading statistics and font picker contracts ok');

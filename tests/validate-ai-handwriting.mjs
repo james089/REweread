@@ -33,7 +33,7 @@ assert(qml.includes('readerForceNewFreeInkGroup') && qml.includes('"groupId"'), 
 assert(qml.includes('askReaderInkBlockAi') && qml.includes('AI 回复'), 'a selected handwritten block must support manual AI retry');
 assert(qml.includes('readerAiRevealTimer') && qml.includes('lxgwWenKaiFont.name'), 'Chinese AI replies must reveal progressively in the bundled handwriting-like font');
 assert(qml.includes('id: magicPage') && qml.includes('id: magicInk'), 'the shelf must provide a dedicated full-page Magic Book');
-assert(qml.includes('model: ["书架", "发现", "我的", "魔法笔记本"]') && qml.includes('openMagicBook()'), 'Magic Notebook must be directly reachable after My on the shelf navigation');
+assert(!qml.includes('model: ["书架", "发现", "我的", "魔法笔记本"]'), 'Magic Notebook must not appear in shelf bottom navigation');
 assert(qml.includes('magicPauseTimer') && qml.includes('recognizeStrokeBlock(batch)'), 'Magic Book must OCR only the paused handwriting batch');
 assert(qml.includes('magicStrokeRecords') && qml.includes('strokes: root.magicStrokeRecords') && qml.includes('magicQuestionFadeTimer'), 'Magic Book must preserve a question until it starts the original-style ink fade');
 assert(!qml.includes('magicStrokeRecords.length > 0 || magicAwaitingReply'), 'Magic Book must not erase earlier pen strokes while a Chinese character is still being written');

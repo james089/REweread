@@ -42,6 +42,16 @@ int main(int argc, char **argv) {
     write(base+"/reader-window-v1.json","broken");
     expect(second.loadPageWindow("fixture","font42",10).isEmpty(),"corrupt page window was accepted");
     second.savePageWindow("fixture","font42",window);
+    QVariantMap pageIndex;
+    pageIndex.insert("starts",QVariantList{0,10});pageIndex.insert("images",QVariantList{"",""});
+    pageIndex.insert("page",0);pageIndex.insert("complete",true);
+    second.savePageIndex("fixture","font42",pageIndex);
+    expect(!second.loadPageIndex("fixture","font42").isEmpty(),"complete full index must restore");
+    expect(!second.loadPageWindow("fixture","font42",10).isEmpty(),"full index must not overwrite reading window");
+    expect(second.loadPageIndex("fixture","font46").isEmpty(),"font change must invalidate full index");
+    write(base+"/reader-page-index-v1.json","broken");
+    expect(second.loadPageIndex("fixture","font42").isEmpty(),"corrupt index must be rejected");
+    second.savePageIndex("fixture","font42",pageIndex);
     const auto fingerprint=second.documentFingerprint(base+"/epub-expanded", second.chapterPaths(base+"/epub-expanded"));
     write(base+"/reader-document-v1.json", "broken");
     expect(!second.restoreDocumentCache("fixture",fingerprint), "corrupt cache accepted");
@@ -51,6 +61,7 @@ int main(int argc, char **argv) {
     expect(!second.canReuseBook("fixture"), "modified source must reject in-memory resume");
     ReaderStore changed; changed.loadBook("fixture","Fixture");
     expect(changed.loadPageWindow("fixture","font42",10).isEmpty(),"changed source reused page window");
+    expect(changed.loadPageIndex("fixture","font42").isEmpty(),"source change must invalidate full index");
     expect(changed.bodyText()!=body, "source change reused stale cache");
     qInfo("document-cache-test passed cold-ms=%lld warm-ms=%lld",cold,warm);
 }

@@ -63,7 +63,7 @@ const freeStrokeSaveSnippet = qml.slice(qml.indexOf('function saveCurrentFreeInk
 assert(freeStrokeSaveSnippet.includes('pendingFreeInkStrokes') && freeStrokeSaveSnippet.includes('readerInkPersistTimer.restart()'), 'freehand pen-up must queue persistence until the user pauses');
 assert(!freeStrokeSaveSnippet.includes('readerStore.addPageStroke('), 'freehand pen-up must not synchronously serialize the complete strokes file');
 assert(qml.includes('id: readerInkPersistTimer') && qml.includes('function flushPendingFreeInkStrokes'), 'queued ink must persist after a short idle period and before a page turn');
-assert(qml.includes('strokes: root.readerVisibleInkStrokes()'), 'queued strokes must remain visible before disk persistence finishes');
+assert(qml.includes('strokes: root.readerInkEnabled ? root.readerVisibleInkStrokes() : []'), 'queued strokes must remain visible before disk persistence finishes');
 assert(qml.includes('readerInkPersistTimer.stop()') && qml.includes('currentFreeNotePoints || []).length > 0'), 'page persistence must never run while a freehand stroke is active');
 assert(qml.includes('clientStrokeId') && readerCpp.includes('clientStrokeId'), 'pending and persisted forms of one stroke must be deduplicated during the save handoff');
 assert(inkCpp.includes('sameStoredStrokeVisual') && inkCpp.includes('!sameStoredStrokeVisual(m_strokes.at(index), strokes.at(index))'), 'metadata-only persistence changes must not rebuild and refresh the ink canvas');

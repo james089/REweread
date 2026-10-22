@@ -57,7 +57,13 @@ bool prepareReaderInkSelfTestBook(const QString &dataDir) {
     const QByteArray paragraph("<p>这是隔离手写笔迹测试文本，用于生成多个真实阅读页面并验证翻页、擦除与清页。"
                                "页面内容仅存在于临时目录，不会读取或修改用户书籍。</p>");
     for (int index = 0; index < 900; ++index) {
-        body.append(paragraph);
+        if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-turn-perf")) {
+            body.append(QStringLiteral("<p>第%1段：这一页使用独立编号，避免重复文字使页面缓存获得不真实的优势。"
+                "风穿过树林，远处的山脊逐渐清晰；读者翻向新的内容，页面需要重新绘制。"
+                "本段仅用于本地性能测试，不包含用户书籍内容。</p>").arg(index + 1).toUtf8());
+        } else {
+            body.append(paragraph);
+        }
     }
     body.append("</body></html>");
     return writeReaderInkSelfTestFile(QDir(bookDir).filePath(QStringLiteral("foo.epub")), QByteArray("probe"))
@@ -80,7 +86,8 @@ int main(int argc, char *argv[]) {
             || qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("startup-splash"))
         return runStartupSplash(app);
     std::unique_ptr<QTemporaryDir> readerInkSelfTestDir;
-    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-ink")) {
+    if (qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-ink")
+            || qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-turn-perf")) {
         // This mode is a real QML/ReaderStore exercise, but it must never
         // enumerate or write the normal rm-weread directory.
         readerInkSelfTestDir = std::make_unique<QTemporaryDir>(QStringLiteral("/tmp/rm-weread-reader-ink-XXXXXX"));
@@ -104,6 +111,13 @@ int main(int argc, char *argv[]) {
         const QString path = readerInkSelfTestDir->path();
         qputenv("RM_WEREAD_DATA_DIR", path.toUtf8());
         qputenv("RM_WEREAD_SESSION_PATH", QDir(path).filePath("session.json").toUtf8());
+        if (!writeReaderInkSelfTestFile(QDir(path).filePath("books/shelf-probe-0/probe-full.epub"), QByteArray("synthetic")) ||
+            !writeReaderInkSelfTestFile(QDir(path).filePath("book-status.json"),
+                QJsonDocument(QJsonObject{{"ink-probe", QJsonObject{{"infoUpdatedAt", 1}, {"title", "Gesture probe"}}}, {"shelf-probe-0", QJsonObject{
+                    {"downloadState", "downloading"}, {"failedChapterCount", 1},
+                    {"fullFile", QDir(path).filePath("books/shelf-probe-0/probe-full.epub")}}}}).toJson()) ||
+            !writeReaderInkSelfTestFile(QDir(path).filePath("downloads.json"),
+                QByteArray("[{\"bookId\":\"shelf-probe-0\",\"title\":\"Delete fixture\",\"state\":\"done\"}]"))) return 2;
         QJsonArray books;
         for (int i = 0; i < 195; ++i) {
             books.append(QJsonObject{{"bookId", QString("shelf-probe-%1").arg(i)},
@@ -238,6 +252,8 @@ int main(int argc, char *argv[]) {
     ReaderStore readerStore;
     ReadingTimeStore readingTimeStore;
     DownloadStore downloadStore;
+    QObject::connect(&downloadStore, &DownloadStore::downloadRemoved,
+                     &shelfStore, &ShelfStore::reload);
     DiscoverStore discoverStore;
     FrontlightStore frontlightStore;
     NetworkStore networkStore;
@@ -254,6 +270,9 @@ int main(int argc, char *argv[]) {
 
     QQmlApplicationEngine engine;
     engine.addImageProvider("wereadqr", new QrImageProvider);
+    engine.rootContext()->setContextProperty("runtimeReaderPerfBaseline",
+        qEnvironmentVariable("RM_WEREAD_QT_SELFTEST") == QStringLiteral("reader-turn-perf")
+        && qEnvironmentVariableIntValue("RM_WEREAD_PERF_BASELINE") == 1);
     engine.rootContext()->setContextProperty("shelfStore", &shelfStore);
     engine.rootContext()->setContextProperty("readerStore", &readerStore);
     engine.rootContext()->setContextProperty("readingTimeStore", &readingTimeStore);

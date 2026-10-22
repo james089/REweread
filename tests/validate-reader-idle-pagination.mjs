@@ -8,16 +8,19 @@ function method(name) {
  while(depth){if(qml[end]==='{')depth++;if(qml[end]==='}')depth--;end++;}
  return qml.slice(start,end);
 }
-let scheduled=0, stopped=0, extensions=[];
+let scheduled=0, stopped=0, extensions=[], now=100000, queued=0;
 const timer={bookId:'',signature:'',restart(){scheduled++;},stop(){stopped++;}};
-const root={screenName:'reader',currentBookId:'book-a',readerPaginationDirty:false,selfTestMode:'',readerPaginationSignature:'layout-a',readerCachedPageCount:2,pageIndex:0,showReaderSettings:false,showReaderCatalog:false,annotationMode:false,pendingFreeInkStrokes:[],readerTextTopY:()=>0,readerInkStoreAllowed:()=>false,closeReaderSocialPopup(){},readerPageCountFor(){return this.readerCachedPageCount;},clamp:(v,a,b)=>Math.max(a,Math.min(b,v)),refreshReaderPageCache(){},loadReaderInkForCurrentPage(){},scheduleReaderSocialPrefetch(){},requestReaderContinuationDownload(){},extendReaderPaginationWindow(n){extensions.push(n);this.readerCachedPageCount+=n;return true;}};
-const context=vm.createContext({root,paginationAheadTimer:timer,readerInkCanvas:{clearLive(){}},readerStore:{saveProgress(){}},console});
-for(const name of ['ensureReaderPaginationWindowAhead','prefetchReaderPaginationPage','setReaderPage']){
+const root={readerPerfBaseline:false,readerInteractionUntilMs:0,screenName:'reader',currentBookId:'book-a',readerPaginationDirty:false,selfTestMode:'',readerPaginationSignature:'layout-a',readerCachedPageCount:2,pageIndex:0,showReaderSettings:false,showReaderCatalog:false,annotationMode:false,pendingFreeInkStrokes:[],readerTextTopY:()=>0,readerInkStoreAllowed:()=>false,closeReaderSocialPopup(){},readerPageCountFor(){return this.readerCachedPageCount;},clamp:(v,a,b)=>Math.max(a,Math.min(b,v)),refreshReaderPageCache(){},loadReaderInkForCurrentPage(){},scheduleReaderSocialPrefetch(){},requestReaderContinuationDownload(){},extendReaderPaginationWindow(n){extensions.push(n);this.readerCachedPageCount+=n;return true;}};
+const context=vm.createContext({root,paginationAheadTimer:timer,readerInkCanvas:{clearLive(){}},readerStore:{queueProgress(){queued++;},saveProgress(){throw new Error("cached turn must not write disk");}},console,Date:{now:()=>now}});
+for(const name of ['pauseReaderBackgroundWork','ensureReaderPaginationWindowAhead','prefetchReaderPaginationPage','setReaderPage']){
  vm.runInContext(method(name),context);root[name]=context[name];
 }
 root.ensureReaderPaginationWindowAhead();
 assert.equal(scheduled,1);assert.equal(extensions.length,0,'scheduling must not paginate synchronously');
-root.setReaderPage(1);assert.equal(root.pageIndex,1);assert.equal(extensions.length,0,'cached turn must not compute extra pages');
+root.setReaderPage(1);assert.equal(queued,1);assert.equal(root.pageIndex,1);assert.equal(extensions.length,0,'cached turn must not compute extra pages');
+root.prefetchReaderPaginationPage('book-a','layout-a');
+assert.equal(extensions.length,0,'recent input must defer prefetch');
+now+=800;
 for(let i=0;i<10;i++)root.prefetchReaderPaginationPage('book-a','layout-a');
 assert.equal(root.readerCachedPageCount-root.pageIndex,6);assert(extensions.every(n=>n===1),'idle slices must be single-page');
 let before=extensions.length;
@@ -26,7 +29,7 @@ assert.equal(extensions.length,before,'stale callbacks must do no work');
 root.readerCachedPageCount=2;root.pageIndex=0;root.annotationMode=true;
 root.prefetchReaderPaginationPage('book-a','layout-a');assert.equal(extensions.length,before,'inking must not trigger prefetch');root.annotationMode=false;
 root.setReaderPage(2);assert.equal(root.pageIndex,2);assert.equal(extensions.length,before+1);assert.equal(extensions.at(-1),1,'cache miss must compute only the required next page');
-root.extendReaderPaginationWindow=()=>false;scheduled=0;
+now+=800;root.extendReaderPaginationWindow=()=>false;scheduled=0;
 root.prefetchReaderPaginationPage('book-a','layout-a');assert.equal(scheduled,0,'EOF must not create a timer loop');
 root.screenName='shelf';root.ensureReaderPaginationWindowAhead();assert(stopped>0);
 // Exercise the real extension routine: ordered, nonduplicated pages through EOF.

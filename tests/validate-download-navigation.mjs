@@ -1,61 +1,50 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+const qml=fs.readFileSync('apps/weread-qt/Main.qml','utf8');
+function method(name){const start=qml.indexOf(`function ${name}(`);assert(start>=0);let end=qml.indexOf('{',start)+1,depth=1;while(depth){if(qml[end]==='{')depth++;if(qml[end]==='}')depth--;end++;}return qml.slice(start,end);}
+const opened=[],downloads=[],full=new Set();
+const root={selfTestMode:'',screenName:'reader',currentBookId:'reading-book',pendingOpenBookId:'',pendingCatalogBookId:'',readerPendingContinueDownload:false,readerPendingContinueBookId:'',enterReaderForBook:id=>opened.push(id),openCachedReader:id=>opened.push(id),enterReaderForCatalogChapter:book=>opened.push(`catalog:${book.bookId}`),continueReaderAfterFullDownload:id=>opened.push(`continue:${id}`)};
+const network={connected:true};
+const context=vm.createContext({root,shelfStore:{reload(){}},networkStore:network,downloadStore:{state:'done',hasCompleteDownload:id=>full.has(id),downloadBook:id=>downloads.push(id),progressText:'synthetic'}});
+for(const name of ['ensureFullBookDownload','openOrDownloadBook','openDownloadRecord']){vm.runInContext(method(name),context);root[name]=context[name];}
+const complete=vm.runInContext(`(${method('onEpubReady')})`,context);
+const opening=vm.runInContext(`(${method('onOpeningChapterReady')})`,context);
+full.add('background');complete('background','Background');assert.equal(opened.length,0);
+root.pendingOpenBookId='requested';complete('partial','Partial');assert.equal(opened.length,0);
+complete('requested','Requested');assert.equal(opened.length,0,'partial result cannot unlock reading');
+full.add('requested');complete('requested','Requested');assert.deepEqual(opened,['requested']);assert.equal(root.pendingOpenBookId,'');
+root.pendingOpenBookId='opening';opening('opening','Opening');assert.deepEqual(opened,['requested'],'opening-only results must not read');assert.equal(downloads.at(-1),'opening');
+root.pendingCatalogBookId='catalog';full.add('catalog');complete('catalog','Catalog');assert.equal(opened.at(-1),'catalog:catalog');
+root.pendingCatalogBookId='';root.pendingOpenBookId='';
+root.readerPendingContinueDownload=true;root.readerPendingContinueBookId='reading-book';full.add('reading-book');complete('reading-book','Reading');assert.equal(opened.at(-1),'continue:reading-book');
+root.screenName='shelf';const count=opened.length;complete('reading-book','Reading');assert.equal(opened.length,count);
+root.openOrDownloadBook({bookId:'partial-cache',title:'Partial',localEpubPath:'/synthetic/partial.epub',downloadState:'partial'});
+assert.equal(root.pendingOpenBookId,'partial-cache');assert.equal(downloads.at(-1),'partial-cache');assert.equal(opened.length,count);
+network.connected=false;const requested=downloads.length;
+root.openDownloadRecord({bookId:'partial-cache',localEpubPath:'/synthetic/partial.epub'});
+assert.equal(downloads.length,requested);assert.equal(opened.length,count);assert(root.readerDownloadNotice.includes('联网'));
+full.add('offline-full');root.openOrDownloadBook({bookId:'offline-full'});assert.equal(opened.at(-1),'offline-full','complete books stay readable offline');
+const detail=qml.slice(qml.indexOf('id: detailPage'),qml.indexOf('id: readerSettingsBackdrop'));
+assert(!detail.includes('删除下载') && !detail.includes('deleteDownload('),'detail must not delete downloaded books');
+assert(qml.includes('if (visible) detailAutoDownloadTimer.restart()') && qml.includes('onBookChanged:'),'detail entry and book changes must queue incomplete books');
+console.log('full-download reading gate behavior ok');
 
-const qml = fs.readFileSync('apps/weread-qt/Main.qml', 'utf8');
-function method(name) {
-  const start = qml.indexOf(`function ${name}(`);
-  assert(start >= 0, `${name} must exist`);
-  const opening = qml.indexOf('{', start);
-  let depth = 1, end = opening + 1;
-  while (depth && end < qml.length) {
-    if (qml[end] === '{') depth++;
-    if (qml[end] === '}') depth--;
-    end++;
-  }
-  return qml.slice(start, end);
-}
-const opened = [];
-const root = {
-  screenName: 'reader', currentBookId: 'reading-book',
-  pendingOpenBookId: '', pendingCatalogBookId: '',
-  readerPendingContinueDownload: false, readerPendingContinueBookId: '',
-  enterReaderForBook: id => opened.push(id),
-  enterReaderForCatalogChapter: book => opened.push(`catalog:${book.bookId}`),
-  continueReaderAfterFullDownload: id => opened.push(`continue:${id}`),
-};
-const downloads = [];
-const context = vm.createContext({root, shelfStore: {reload() {}}, downloadStore: {
-  downloadOpeningChapter: id => downloads.push(id),
-  downloadBook: id => downloads.push(id),
-}});
-const complete = vm.runInContext(`(${method('onEpubReady')})`, context);
-const openingComplete = vm.runInContext(`(${method('onOpeningChapterReady')})`, context);
-complete('background-book', 'Background');
-assert.deepEqual(opened, [], 'background download must not replace the current reader');
-root.pendingOpenBookId = 'requested-book';
-complete('another-book', 'Another');
-assert.deepEqual(opened, [], 'unrelated completion must not consume a pending open');
-complete('requested-book', 'Requested');
-assert.deepEqual(opened, ['requested-book']);
-assert.equal(root.pendingOpenBookId, '', 'a completed open request must be consumed');
-openingComplete('queued-opening', 'Queued');
-assert.equal(opened.length, 1, 'restored opening downloads must not navigate without current intent');
-root.pendingOpenBookId = 'opening-book';
-openingComplete('opening-book', 'Opening');
-assert.equal(opened.at(-1), 'opening-book');
-root.pendingCatalogBookId = 'catalog-book';
-complete('catalog-book', 'Catalog');
-assert.equal(opened.at(-1), 'catalog:catalog-book');
-root.readerPendingContinueDownload = true;
-root.readerPendingContinueBookId = 'reading-book';
-complete('reading-book', 'Reading');
-assert.equal(opened.at(-1), 'continue:reading-book');
-root.screenName = 'shelf';
-const count = opened.length;
-complete('reading-book', 'Reading');
-assert.equal(opened.length, count, 'continuation completion must not reopen a reader the user left');
-vm.runInContext(`(${method('openOrDownloadBook')})`, context)({bookId: 'uncached', title: 'Uncached', localEpubPath: ''});
-assert.equal(root.pendingOpenBookId, 'uncached', 'read action must record an explicit open intent');
-assert.equal(downloads.at(-1), 'uncached');
-console.log('download navigation behavior ok');
+root.pendingOpenBookId='requested';context.downloadStore.state='partial';
+const beforePartial=opened.length;complete('requested','Requested');
+assert.equal(opened.length,beforePartial,'partial result cannot unlock an older full cache');
+
+const detailCalls=[];
+context.shelfStore.refreshBookDetails=id=>detailCalls.push(id);
+vm.runInContext(method('openShelfBook'),context);root.openShelfBook=context.openShelfBook;
+full.add('direct-complete');
+root.openShelfBook({bookId:'direct-complete',title:'Complete'},0);
+assert.equal(opened.at(-1),'direct-complete');assert.equal(detailCalls.length,0,'complete shelf book must skip metadata/details');
+root.openShelfBook({bookId:'new-book',title:'New'},1);
+assert.equal(root.screenName,'detail');assert.deepEqual(detailCalls,['new-book']);
+vm.runInContext(method('openDiscoverBookDetail'),context);root.openDiscoverBookDetail=context.openDiscoverBookDetail;
+root.openDiscoverBookDetail({bookId:'direct-complete',title:'Complete'});
+assert.equal(opened.at(-1),'direct-complete');
+root.openDiscoverBookDetail({bookId:'direct-complete',title:'Complete'},true);
+assert.equal(root.screenName,'detail','explicit reader details must bypass auto-reading');
+assert.equal(detailCalls.at(-1),'direct-complete');

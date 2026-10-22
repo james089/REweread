@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QTimer>
 
 class ReaderStore : public QObject {
     Q_OBJECT
@@ -28,6 +29,7 @@ class ReaderStore : public QObject {
 
 public:
     explicit ReaderStore(QObject *parent = nullptr);
+    ~ReaderStore() override;
 
     QString title() const;
     QString bodyText() const;
@@ -49,6 +51,8 @@ public:
     Q_INVOKABLE bool canReuseBook(const QString &bookId) const;
     Q_INVOKABLE QVariantMap loadPageWindow(const QString &bookId, const QString &layout, int savedOffset) const;
     Q_INVOKABLE void savePageWindow(const QString &bookId, const QString &layout, const QVariantMap &window) const;
+    Q_INVOKABLE QVariantMap loadPageIndex(const QString &bookId, const QString &layout) const;
+    Q_INVOKABLE void savePageIndex(const QString &bookId, const QString &layout, const QVariantMap &window) const;
     Q_INVOKABLE void loadBook(const QString &bookId, const QString &title);
     Q_INVOKABLE int savedPage(const QString &bookId) const;
     Q_INVOKABLE int savedTextOffset(const QString &bookId) const;
@@ -58,6 +62,8 @@ public:
     // representations. Only a unique text-summary match is accepted.
     Q_INVOKABLE QVariantMap textAnchorForRemoteProgress(const QString &chapterUid, const QString &summary) const;
     Q_INVOKABLE void saveProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset);
+    Q_INVOKABLE void queueProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset);
+    Q_INVOKABLE void flushPendingProgress();
     Q_INVOKABLE bool isPageBookmarked(const QString &bookId, int pageIndex) const;
     Q_INVOKABLE void toggleBookmark(const QString &bookId, const QString &title, int pageIndex, int pageCount);
     Q_INVOKABLE bool isPageHighlighted(const QString &bookId, int pageIndex) const;
@@ -92,6 +98,8 @@ signals:
     void searchChanged();
 
 private:
+    QVariantMap loadLayoutCache(const QString &fileName, const QString &bookId, const QString &layout, int savedOffset) const;
+    void saveLayoutCache(const QString &fileName, const QString &bookId, const QString &layout, const QVariantMap &window) const;
     void refreshStrokesIfVisible(const QString &bookId, int pageIndex);
     void setStrokesForPage(const QString &bookId, int pageIndex, const QVariantList &strokes);
     QString dataDir() const;
@@ -149,5 +157,7 @@ private:
     int m_strokesPageIndex = -1;
     QString m_paragraphNotesBookId;
     QString m_status;
+    QTimer m_progressSaveTimer;
+    QVariantMap m_pendingProgress;
     bool m_openingCache = false;
 };

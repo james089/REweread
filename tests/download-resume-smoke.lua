@@ -189,4 +189,18 @@ assert(content.fetches.retry == 2 and #retried.failed == 1, "failed chapter must
 assert(content.invalidations == 2, "each failed chapter attempt must invalidate reused reader state")
 assert(content.saved[#content.saved].suffix == "partial", "bounded failure must produce a partial EPUB")
 
+-- A stale file named full must not bypass a partial/failed status.
+local stale_full = root .. "/stale-full.epub"
+local stale = assert(io.open(stale_full, "wb")); stale:write("synthetic old full"); stale:close()
+local saved_status = status.values.book
+saved_status.fullFile = stale_full
+saved_status.imageAssets = true
+saved_status.downloadState = "partial"
+local blocked = new_manager():start_full_download(book)
+assert(blocked.state == "running", "partial metadata must not shortcut to an old full file")
+saved_status.downloadState = "full"
+saved_status.failedChapterCount = 1
+local incomplete = new_manager():start_full_download(book)
+assert(incomplete.state == "running", "failed chapters must not shortcut to an old full file")
+
 print("download resume behavior ok")

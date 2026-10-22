@@ -31,7 +31,7 @@ void AppControl::finishQuitToSystem() {
     QCoreApplication::quit();
 }
 
-bool AppControl::saveSelfTestScreen() {
+bool AppControl::saveSelfTestScreen(const QString &label) {
     // Opt-in diagnostics only: copy the existing CPU framebuffer, never ask
     // the epaper scenegraph to create an unsupported render target.
     if (qEnvironmentVariableIsEmpty("RM_WEREAD_QT_SELFTEST") ||
@@ -42,7 +42,9 @@ bool AppControl::saveSelfTestScreen() {
     if (width <= 0 || height <= 0 || pixels.size() != width * height * 4) return false;
     const QImage image(reinterpret_cast<const uchar *>(pixels.constData()),
                        width, height, width * 4, QImage::Format_RGB32);
-    QSaveFile output("/tmp/rm-weread-selftest-screen.png");
+    if (!label.isEmpty() && label != QStringLiteral("reader-preview")) return false;
+    QSaveFile output(label.isEmpty() ? QStringLiteral("/tmp/rm-weread-selftest-screen.png")
+        : QStringLiteral("/tmp/rm-weread-selftest-reader-preview.png"));
     if (!output.open(QIODevice::WriteOnly)) return false;
     output.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     return image.save(&output, "PNG") && output.commit();

@@ -1,4 +1,5 @@
 #include "shelf_store.h"
+#include "local_download_state.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -246,7 +247,7 @@ QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
     const bool hasRemoteProgress = raw.contains(QStringLiteral("remoteProgress"));
     const double remoteProgress = qBound(0.0, raw.value(QStringLiteral("remoteProgress")).toDouble(), 100.0);
     QString downloadState = raw.value(QStringLiteral("downloadState")).toString();
-    const QString fullEpubPath = findFullEpub(bookId);
+    const QString fullEpubPath = completedLocalEpub(bookDir(bookId), raw);
     const QString partialEpubPath = findPartialEpub(bookId);
     const QString localEpubPath = !fullEpubPath.isEmpty() ? fullEpubPath : partialEpubPath;
     int rating = raw.value(QStringLiteral("newRating")).toInt();
@@ -263,7 +264,8 @@ QVariantMap ShelfStore::normalizeBook(const QVariantMap &raw, int index) const {
         downloadState = QStringLiteral("full");
     } else if (!partialEpubPath.isEmpty()) {
         downloadState = QStringLiteral("partial");
-    } else if (downloadState.isEmpty()) {
+    } else {
+        // Removed files override stale book-status metadata (including full).
         downloadState = QStringLiteral("remote");
     }
     const QString downloadActionText = downloadState == QStringLiteral("full")
@@ -355,7 +357,7 @@ QVariantList ShelfStore::loadBooksFromShelf(const QString &shelfPath) const {
                  QStringLiteral("intro"), QStringLiteral("publisher"), QStringLiteral("publishTime"),
                  QStringLiteral("isbn"), QStringLiteral("translator"), QStringLiteral("categoryName"),
                  QStringLiteral("wordCount"), QStringLiteral("newRating"), QStringLiteral("newRatingCount"),
-                 QStringLiteral("downloadState"), QStringLiteral("remoteProgress")
+                 QStringLiteral("downloadState"), QStringLiteral("fullFile"), QStringLiteral("failedChapterCount"), QStringLiteral("remoteProgress")
              }) {
             const QVariant value = status.value(key);
             if (value.isValid() && !value.toString().isEmpty() && (raw.value(key).toString().isEmpty() || raw.value(key).toInt() == 0)) {
@@ -436,7 +438,7 @@ QVariantMap ShelfStore::loadDetachedDetailBook(const QString &bookId) const {
              QStringLiteral("publisher"), QStringLiteral("publishTime"), QStringLiteral("isbn"),
              QStringLiteral("translator"), QStringLiteral("categoryName"), QStringLiteral("wordCount"),
              QStringLiteral("newRating"), QStringLiteral("newRatingCount"), QStringLiteral("downloadState"),
-             QStringLiteral("remoteProgress")
+             QStringLiteral("fullFile"), QStringLiteral("failedChapterCount"), QStringLiteral("remoteProgress")
          }) {
         const QVariant value = status.value(key);
         if (value.isValid() && !value.toString().isEmpty()) {

@@ -254,7 +254,7 @@ function DownloadManager:open(book)
     local book_id = canonical_book_id(book)
     local status = self.status_store and self.status_store:get(book_id) or {}
     local scope = self:account_cache_scope(settings)
-    if scope and status.accountScope == scope and status.fullFile and status.fullFile ~= "" and file_exists(status.fullFile) then
+    if scope and status.accountScope == scope and status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0 and status.fullFile and status.fullFile ~= "" and file_exists(status.fullFile) then
         return status.fullFile
     end
     if scope and status.accountScope == scope and status.cachedFile and status.cachedFile ~= "" and file_exists(status.cachedFile) then
@@ -333,7 +333,7 @@ function DownloadManager:download_full(book)
     local book_id = canonical_book_id(book)
     local status = self.status_store and self.status_store:get(book_id) or {}
     local scope = self:account_cache_scope(settings)
-    if scope and status.accountScope == scope and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and file_exists(status.fullFile) then
+    if scope and status.accountScope == scope and status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0 and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and file_exists(status.fullFile) then
         return status.fullFile, book.chapters or {}
     end
 
@@ -419,7 +419,7 @@ function DownloadManager:start_full_download(book, opts)
     local book_id = canonical_book_id(book)
     local status = self.status_store and self.status_store:get(book_id) or {}
     local scope = self:account_cache_scope(settings)
-    if not opts.force and scope and status.accountScope == scope and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and file_exists(status.fullFile) then
+    if not opts.force and scope and status.accountScope == scope and status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0 and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and file_exists(status.fullFile) then
         return {
             state = "done",
             book = book,

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 
 function read(path) {
@@ -38,7 +39,7 @@ assert(manager.includes('版权信息') || manager.includes('前言'), 'opening 
 assert(downloadStore.includes('findOpeningEpub'), 'download store must distinguish stale opening EPUBs from full EPUBs');
 assert(downloadStore.includes('existing.value(QStringLiteral("openingChapter")).toBool()'), 'queued opening-chapter mode must survive app restart');
 assert(downloadStore.includes('QString(), openingChapter)'), 'queued opening-chapter mode must be persisted with the queue record');
-assert(downloadStore.includes('openingChapter && !findFullEpub(bookId).isEmpty()'), 'opening-chapter flow may only short-circuit on a full EPUB, not stale opening EPUBs');
+assert(downloadStore.includes('openingChapter && hasCompleteDownload(bookId)'), 'opening-chapter flow may only short-circuit on a full EPUB, not stale opening EPUBs');
 assert(!downloadStore.includes('openingChapter && !findReadableEpub(bookId).isEmpty()'), 'opening-chapter flow must not reuse stale partial EPUBs that may start at copyright');
 assert(shelfStore.includes('QStringList() << QStringLiteral("*full.epub")') && !shelfStore.includes('QStringLiteral("*full.epub") << QStringLiteral("*.epub")'), 'shelf full-cache detection must not mark opening EPUBs as fully downloaded');
 assert(readerStore.includes('findReadableEpub'), 'reader store may still open partial EPUBs after the download/opening flow chooses them');
@@ -55,3 +56,11 @@ assert(manager.includes('请在微信读书 App 的账号页使用扫码登录')
 assert(runner.includes('validate-redownload-tool.mjs'), 'run-all must include redownload tool validation');
 
 console.log('redownload tool ok');
+
+for (const runtime of ['luajit', 'lua']) {
+  const result = spawnSync(runtime, ['tests/download-title-smoke.lua'], {encoding:'utf8'});
+  if (result.error?.code === 'ENOENT') continue;
+  assert(result.status === 0, result.stderr || result.stdout);
+  process.stdout.write(result.stdout);
+  break;
+}

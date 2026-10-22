@@ -10,6 +10,7 @@ class DownloadStore : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool running READ running NOTIFY changed)
     Q_PROPERTY(QString state READ state NOTIFY changed)
+    Q_PROPERTY(QString bookId READ bookId NOTIFY changed)
     Q_PROPERTY(QString progressText READ progressText NOTIFY changed)
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
     Q_PROPERTY(QVariantList downloads READ downloads NOTIFY changed)
@@ -21,6 +22,8 @@ public:
 
     bool running() const;
     QString state() const;
+    QString bookId() const;
+    Q_INVOKABLE bool hasCompleteDownload(const QString &bookId) const;
     QString progressText() const;
     QString lastError() const;
     QVariantList downloads() const;
@@ -39,6 +42,7 @@ public:
 
 signals:
     void changed();
+    void downloadRemoved(const QString &bookId);
     void epubReady(const QString &bookId, const QString &title);
     void openingChapterReady(const QString &bookId, const QString &title);
 
@@ -77,6 +81,8 @@ private:
     QString m_helperResultPath;
     QByteArray m_stdoutBuffer;
     QByteArray m_stderrBuffer;
+    int m_completedChapters = 0;
+    int m_totalChapters = 0;
     bool m_openingChapterMode = false;
     QVariantList m_downloads;
     QVariantList m_queue;

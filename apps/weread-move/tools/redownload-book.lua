@@ -18,6 +18,8 @@ local ConfigBridge = require("config_bridge")
 local ShelfCache = require("shelf_cache")
 local BookStatusStore = require("book_status_store")
 local DownloadManager = require("download_manager")
+local DownloadTitle = require("download_title")
+local BookInfoService = require("book_info_service")
 
 local function usage()
     io.stderr:write("usage: redownload-book.lua <bookId> [title]\n")
@@ -71,12 +73,24 @@ local original_status = snapshot_status(status)
 local book = find_book(book_id) or {}
 book.bookId = book_id
 book.book_id = book_id
-book.title = arg[2] or book.title or status.title or book_id
+local config = ConfigBridge:new()
+local resolved_title, info = DownloadTitle.resolve(book_id, {arg[2] or "", book.title or "", status.title or ""}, function()
+    print("state=metadata")
+    config:reload()
+    return BookInfoService:new(config):load(book_id)
+end)
+book.title = resolved_title
+if info then
+    info.infoUpdatedAt = info.updatedAt
+    status_store:update(book_id, info)
+end
+status_store:update(book_id, {title = resolved_title})
+print("title=" .. resolved_title)
 book.author = book.author or status.author or ""
 book.cover = book.cover or status.cover
 
 local manager = DownloadManager:new{
-    config = ConfigBridge:new(),
+    config = config,
     status_store = status_store,
 }
 local force = os.getenv("RM_WEREAD_FORCE") == "1"
@@ -87,7 +101,6 @@ local job = manager:start_full_download(book, {
     opening = stop_after ~= nil and opening_progress ~= "0",
 })
 print("bookId=" .. tostring(book_id))
-print("title=" .. tostring(book.title))
 print("force=" .. tostring(force))
 if stop_after then
     print("stop_after=" .. tostring(stop_after))

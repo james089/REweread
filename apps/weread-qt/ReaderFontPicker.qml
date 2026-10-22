@@ -53,19 +53,20 @@ Rectangle {
                 required property var modelData
                 width: (picker.width - 84) / 3
                 height: Math.min(110, Math.max(76, (picker.height - 160) / 5 - 14))
-                radius: 7; color: "white"
+                property bool selected: picker.selectedName === modelData.name
+                radius: 7; color: selected ? picker.inkColor : "white"
                 border.width: picker.selectedName === modelData.name ? 3 : 1
-                border.color: picker.selectedName === modelData.name ? picker.accentColor : picker.inkColor
+                border.color: picker.inkColor
                 Text {
                     x: 8; y: 12; width: parent.width - 16; height: 36
                     text: modelData.name; font.family: modelData.family || "sans-serif"
                     font.pixelSize: 25; fontSizeMode: Text.Fit; minimumPixelSize: 18
-                    color: picker.inkColor; horizontalAlignment: Text.AlignHCenter
+                    color: parent.selected ? "white" : picker.inkColor; horizontalAlignment: Text.AlignHCenter
                 }
                 Text {
                     x: 8; y: parent.height - 30; width: parent.width - 16
                     text: modelData.ready ? (picker.selectedName === modelData.name ? "使用中" : "已安装") : modelData.statusText
-                    font.pixelSize: 17; color: picker.inkColor; horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: 17; color: parent.selected ? "white" : picker.inkColor; horizontalAlignment: Text.AlignHCenter
                 }
                 MouseArea { anchors.fill: parent; enabled: modelData.ready; onClicked: picker.chosen(modelData.name) }
             }

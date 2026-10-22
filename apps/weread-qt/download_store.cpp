@@ -1,4 +1,5 @@
 #include "download_store.h"
+#include "local_download_state.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -27,6 +28,20 @@ DownloadStore::DownloadStore(QObject *parent)
 
 bool DownloadStore::running() const {
     return m_process.state() != QProcess::NotRunning;
+}
+
+QString DownloadStore::bookId() const {
+    return m_bookId;
+}
+
+bool DownloadStore::hasCompleteDownload(const QString &bookId) const {
+    if (bookId.trimmed().isEmpty()) return false;
+    QFile file(QDir(dataDir()).filePath(QStringLiteral("book-status.json")));
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    if (!document.isObject()) return false;
+    const QVariantMap row = document.object().value(bookId).toObject().toVariantMap();
+    return !completedLocalEpub(bookDir(bookId), row).isEmpty();
 }
 
 QString DownloadStore::state() const {
@@ -76,7 +91,7 @@ void DownloadStore::downloadBooks(const QVariantList &books) {
     for (const QVariant &item : books) {
         const QVariantMap row = item.toMap();
         const QString bookId = row.value(QStringLiteral("bookId")).toString().trimmed();
-        if (bookId.isEmpty() || !findFullEpub(bookId).isEmpty()) {
+        if (bookId.isEmpty() || hasCompleteDownload(bookId)) {
             continue;
         }
 
@@ -168,6 +183,7 @@ void DownloadStore::deleteDownload(const QString &bookId, const QString &title) 
         m_lastError = QStringLiteral("无法删除本地缓存");
     }
     emit changed();
+    if (removed) emit downloadRemoved(trimmed);
 }
 
 void DownloadStore::clearReaderCache() {
@@ -228,14 +244,14 @@ void DownloadStore::startDownloadProcess(const QString &bookId, const QString &t
     m_stdoutBuffer.clear();
     m_stderrBuffer.clear();
 
-    if (openingChapter && !findFullEpub(bookId).isEmpty()) {
+    if (openingChapter && hasCompleteDownload(bookId)) {
         clearExpandedCache(bookId);
         setState(QStringLiteral("done"), QStringLiteral("已下载"));
         emit openingChapterReady(m_bookId, m_title);
         return;
     }
 
-    if (!force && !findFullEpub(bookId).isEmpty()) {
+    if (!force && hasCompleteDownload(bookId)) {
         clearExpandedCache(bookId);
         setState(QStringLiteral("done"), QStringLiteral("已下载"));
         if (openingChapter) {
@@ -267,6 +283,8 @@ void DownloadStore::startDownloadProcess(const QString &bookId, const QString &t
     m_process.setProgram(luajit);
     m_process.setArguments(QStringList() << helper << bookId << m_title);
 
+    m_completedChapters = 0;
+    m_totalChapters = 0;
     setState(QStringLiteral("starting"), openingChapter ? QStringLiteral("正在下载开头章节...") : (force ? QStringLiteral("正在修复插图...") : QStringLiteral("开始下载...")));
     m_process.start();
     if (!m_process.waitForStarted(3000)) {
@@ -369,7 +387,7 @@ void DownloadStore::restoreQueuedDownloads() {
         const QVariantMap existing = item.toMap();
         if (existing.value(QStringLiteral("state")).toString() == QStringLiteral("queued")) {
             const QString bookId = existing.value(QStringLiteral("bookId")).toString().trimmed();
-            if (bookId.isEmpty() || !findFullEpub(bookId).isEmpty()) {
+            if (bookId.isEmpty() || hasCompleteDownload(bookId)) {
                 continue;
             }
             QVariantMap row;
@@ -405,6 +423,9 @@ void DownloadStore::recordDownloadRow(const QString &bookId, const QString &titl
     row.insert(QStringLiteral("title"), title.isEmpty() ? bookId : title);
     row.insert(QStringLiteral("state"), state);
     row.insert(QStringLiteral("progressText"), progress);
+    const bool activeBook = bookId == m_bookId && state != QStringLiteral("queued");
+    row.insert(QStringLiteral("completedChapters"), activeBook ? m_completedChapters : 0);
+    row.insert(QStringLiteral("totalChapters"), activeBook ? m_totalChapters : 0);
     row.insert(QStringLiteral("lastError"), error);
     row.insert(QStringLiteral("openingChapter"), openingChapter);
     row.insert(QStringLiteral("updatedAt"), QDateTime::currentSecsSinceEpoch());
@@ -526,7 +547,16 @@ void DownloadStore::processOutputLine(const QString &line) {
     if (line.isEmpty()) {
         return;
     }
-        if (line.startsWith(QStringLiteral("state=error"))) {
+        if (line == QStringLiteral("state=metadata")) {
+            setState(QStringLiteral("starting"), QStringLiteral("正在获取书籍名称..."));
+        } else if (line.startsWith(QStringLiteral("title="))) {
+            const QString resolvedTitle = line.mid(6).trimmed();
+            if (!resolvedTitle.isEmpty()) {
+                m_title = resolvedTitle;
+                recordDownload(m_state, m_progressText, m_lastError);
+                emit changed();
+            }
+        } else if (line.startsWith(QStringLiteral("state=error"))) {
             const QRegularExpressionMatch messageMatch = QRegularExpression(QStringLiteral("message=(.*)")).match(line);
             const QString helperErrorMessage = messageMatch.hasMatch()
                 ? messageMatch.captured(1).trimmed()
@@ -543,6 +573,8 @@ void DownloadStore::processOutputLine(const QString &line) {
             const QRegularExpressionMatch progress = QRegularExpression(QStringLiteral("index=(\\d+)/(\\d+)")).match(line);
             const QRegularExpressionMatch failed = QRegularExpression(QStringLiteral("failed=(\\d+)")).match(line);
             if (progress.hasMatch()) {
+                m_totalChapters = qMax(0, progress.captured(2).toInt());
+                m_completedChapters = qBound(0, progress.captured(1).toInt(), m_totalChapters);
                 QString label = QStringLiteral("下载进度：%1 / %2 章").arg(progress.captured(1), progress.captured(2));
                 if (failed.hasMatch() && failed.captured(1).toInt() > 0) {
                     label += QStringLiteral("，失败 %1 章").arg(failed.captured(1));

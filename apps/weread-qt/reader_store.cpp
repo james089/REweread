@@ -1,6 +1,7 @@
 #include "reader_store.h"
 
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDirIterator>
 #include <QElapsedTimer>
@@ -314,6 +315,17 @@ ReaderStore::ReaderStore(QObject *parent)
       m_title(QStringLiteral("阅读")),
       m_bodyText(QStringLiteral("请选择一本已经下载的书。")),
       m_status(QStringLiteral("idle")) {
+    m_progressSaveTimer.setSingleShot(true);
+    m_progressSaveTimer.setInterval(800);
+    connect(&m_progressSaveTimer, &QTimer::timeout, this, &ReaderStore::flushPendingProgress);
+    if (QCoreApplication::instance()) {
+        connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                this, &ReaderStore::flushPendingProgress);
+    }
+}
+
+ReaderStore::~ReaderStore() {
+    flushPendingProgress();
 }
 
 QString ReaderStore::title() const {
@@ -455,8 +467,22 @@ bool ReaderStore::canReuseBook(const QString &bookId) const {
 }
 
 QVariantMap ReaderStore::loadPageWindow(const QString &bookId, const QString &layout, int savedOffset) const {
+    return loadLayoutCache(QStringLiteral("reader-window-v1.json"), bookId, layout, savedOffset);
+}
+
+QVariantMap ReaderStore::loadPageIndex(const QString &bookId, const QString &layout) const {
+    const auto index = loadLayoutCache(QStringLiteral("reader-page-index-v1.json"), bookId, layout, 0);
+    return index.value(QStringLiteral("complete")).toBool() ? index : QVariantMap{};
+}
+
+void ReaderStore::savePageIndex(const QString &bookId, const QString &layout, const QVariantMap &window) const {
+    if (!window.value(QStringLiteral("complete")).toBool()) return;
+    saveLayoutCache(QStringLiteral("reader-page-index-v1.json"), bookId, layout, window);
+}
+
+QVariantMap ReaderStore::loadLayoutCache(const QString &fileName, const QString &bookId, const QString &layout, int savedOffset) const {
     if (bookId != m_loadedBookId || m_loadedFingerprint.isEmpty() || savedOffset < 0) return {};
-    QFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-window-v1.json")));
+    QFile file(QDir(bookDir(bookId)).filePath(fileName));
     if (!file.open(QIODevice::ReadOnly) || file.size() > 4 * 1024 * 1024) return {};
     const auto root = QJsonDocument::fromJson(file.readAll()).object();
     if (root.value(QStringLiteral("source")).toString().toLatin1() != m_loadedFingerprint
@@ -479,6 +505,10 @@ QVariantMap ReaderStore::loadPageWindow(const QString &bookId, const QString &la
 }
 
 void ReaderStore::savePageWindow(const QString &bookId, const QString &layout, const QVariantMap &window) const {
+    saveLayoutCache(QStringLiteral("reader-window-v1.json"), bookId, layout, window);
+}
+
+void ReaderStore::saveLayoutCache(const QString &fileName, const QString &bookId, const QString &layout, const QVariantMap &window) const {
     if (bookId != m_loadedBookId || m_loadedFingerprint.isEmpty()) return;
     QJsonObject root;
     root.insert(QStringLiteral("source"), QString::fromLatin1(m_loadedFingerprint));
@@ -488,7 +518,7 @@ void ReaderStore::savePageWindow(const QString &bookId, const QString &layout, c
         QJsonDocument(QJsonObject::fromVariantMap(window)).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex()));
     const auto bytes = QJsonDocument(root).toJson(QJsonDocument::Compact);
     if (bytes.size() > 4 * 1024 * 1024) return;
-    QSaveFile file(QDir(bookDir(bookId)).filePath(QStringLiteral("reader-window-v1.json")));
+    QSaveFile file(QDir(bookDir(bookId)).filePath(fileName));
     if (!file.open(QIODevice::WriteOnly)) return;
     file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     if (file.write(bytes) != bytes.size()) { file.cancelWriting(); return; }
@@ -496,6 +526,7 @@ void ReaderStore::savePageWindow(const QString &bookId, const QString &layout, c
 }
 
 void ReaderStore::loadBook(const QString &bookId, const QString &title) {
+    flushPendingProgress();
     QElapsedTimer openClock;
     openClock.start();
     m_loadedBookId.clear();
@@ -1237,13 +1268,8 @@ int ReaderStore::savedTextOffset(const QString &bookId) const {
     return qMax(0, row.value(QStringLiteral("textOffset")).toInt());
 }
 
-void ReaderStore::saveProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset) {
-    if (bookId.isEmpty()) {
-        return;
-    }
-
-    QDir().mkpath(dataDir());
-    QVariantMap progress = loadProgressMap();
+void ReaderStore::queueProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset) {
+    if (bookId.isEmpty()) return;
     QVariantMap row;
     row.insert(QStringLiteral("bookId"), bookId);
     row.insert(QStringLiteral("pageIndex"), qMax(0, pageIndex));
@@ -1251,13 +1277,25 @@ void ReaderStore::saveProgress(const QString &bookId, int pageIndex, int pageCou
     row.insert(QStringLiteral("textOffset"), qMax(0, textOffset));
     row.insert(QStringLiteral("textLength"), qMax(1, m_bodyText.length()));
     row.insert(QStringLiteral("updatedAt"), QDateTime::currentSecsSinceEpoch());
-    progress.insert(safeName(bookId), row);
+    m_pendingProgress.insert(safeName(bookId), row);
+    m_progressSaveTimer.start();
+}
 
-    QFile file(progressFilePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        return;
-    }
-    file.write(QJsonDocument(QJsonObject::fromVariantMap(progress)).toJson(QJsonDocument::Compact));
+void ReaderStore::saveProgress(const QString &bookId, int pageIndex, int pageCount, int textOffset) {
+    queueProgress(bookId, pageIndex, pageCount, textOffset);
+    flushPendingProgress();
+}
+
+void ReaderStore::flushPendingProgress() {
+    m_progressSaveTimer.stop();
+    if (m_pendingProgress.isEmpty()) return;
+    const QVariantMap progress = loadProgressMap(); // Includes latest pending rows.
+    QDir().mkpath(dataDir());
+    QSaveFile file(progressFilePath());
+    if (!file.open(QIODevice::WriteOnly)) return;
+    const QByteArray bytes = QJsonDocument(QJsonObject::fromVariantMap(progress)).toJson(QJsonDocument::Compact);
+    if (file.write(bytes) != bytes.size() || !file.commit()) return;
+    m_pendingProgress.clear();
 }
 
 QString ReaderStore::dataDir() const {
@@ -1306,15 +1344,15 @@ QString ReaderStore::paragraphNotesFilePath() const {
 }
 
 QVariantMap ReaderStore::loadProgressMap() const {
+    QVariantMap progress;
     QFile file(progressFilePath());
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+        if (document.isObject()) progress = document.object().toVariantMap();
     }
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    if (!document.isObject()) {
-        return {};
-    }
-    return document.object().toVariantMap();
+    for (auto it = m_pendingProgress.cbegin(); it != m_pendingProgress.cend(); ++it)
+        progress.insert(it.key(), it.value());
+    return progress;
 }
 
 void ReaderStore::persistTextLengthForProgress(const QString &bookId) {

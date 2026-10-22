@@ -7,7 +7,7 @@ let ink=0,prefetch=0,scheduled=0,checks=0;
 const root={selfTestMode:'',currentBookId:'book',screenName:'detail',readerPaginationDirty:false,readerPaginationSignature:'font42',currentReaderTextStart:120,readerPaginationBuildSignature:()=> 'font42',sampleReadingClock(){},loadReaderInkForCurrentPage(){ink++;},ensureReaderPaginationWindowAhead(){prefetch++;}};
 const store={savedTextOffset:()=>120,canReuseBook(){checks++;return true;}};
 const timer={restart(){scheduled++;}};
-const context=vm.createContext({root,readerStore:store,deferredReaderOpenTimer:timer,console});
+const context=vm.createContext({root,downloadStore:{hasCompleteDownload:()=>true},readerStore:store,deferredReaderOpenTimer:timer,console});
 for(const name of ['resumeLoadedReader','openCachedReader']){vm.runInContext(method(name),context);root[name]=context[name];}
 root.openCachedReader('book','Title');assert.equal(root.screenName,'reader');assert.equal(ink,1);assert.equal(scheduled,0,'warm resume must not queue loading');assert.equal(checks,1);
 root.screenName='detail';root.openCachedReader('other','Other');assert.equal(root.screenName,'reader');assert.equal(root.readerOpening,true,'cold open must hide old book');assert.equal(scheduled,1);assert.equal(root.deferredReaderBookId,'other');
