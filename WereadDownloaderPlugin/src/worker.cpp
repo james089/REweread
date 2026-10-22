@@ -1,8 +1,10 @@
 #include "epub.h"
+#include "cache_cleanup.h"
 #include "import_registry.h"
 #include "native_address.h"
 #include "native_http.h"
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -125,6 +127,34 @@ LibrarySnapshot scan(const ImportRegistry &registry, bool inspectUnknown = true)
     result.complete = true;
     return result;
 }
+QByteArray coverImage(const QString &scope, const QString &id, const QString &url) {
+    const auto account = root + "/accounts/" + scope;
+    const auto cached = account + "/covers-v2/" + id + '-' + QString::fromLatin1(QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".png";
+    const QFileInfo info(cached);
+    if (info.isFile() && !info.isSymLink() && info.size() > 0 && info.size() <= 4 * 1024 * 1024 && info.canonicalFilePath().startsWith(account + '/')) {
+        QFile file(cached); if (file.open(QIODevice::ReadOnly)) return file.readAll();
+    }
+    // The existing public-only fetcher enforces HTTPS/CDN redirects and limits.
+    // No account cookie is passed to this independent image request.
+    QProcess process; QProcessEnvironment env;
+    env.insert("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"); env.insert("HOME", "/home/root");
+    env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
+    process.setProcessEnvironment(env); process.setStandardErrorFile(QProcess::nullDevice());
+    process.start("/home/root/xovi/exthome/appload/koreader/luajit", QStringList{installRoot + "/lua/fetch-cover.lua", url});
+    need(process.waitForStarted(5000), "cover_unavailable");
+    QByteArray bytes; QElapsedTimer elapsed; elapsed.start();
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForReadyRead(100); bytes += process.readAllStandardOutput();
+        if (canceled || elapsed.elapsed() > 65000 || bytes.size() > 4 * 1024 * 1024 + 128) { process.kill(); process.waitForFinished(1000); throw std::runtime_error("cover_unavailable"); }
+    }
+    bytes += process.readAllStandardOutput();
+    const QByteArray marker("WRDP-COVER\n"); const auto end = bytes.indexOf('\n', marker.size());
+    bool valid = false; const auto count = bytes.mid(marker.size(), end - marker.size()).toInt(&valid);
+    need(process.exitCode() == 0 && process.exitStatus() == QProcess::NormalExit && bytes.startsWith(marker) && end > 0 && valid && count > 0 && count <= 4 * 1024 * 1024 && bytes.size() == end + 1 + count, "cover_unavailable");
+    const auto image = bytes.mid(end + 1);
+    need(image.startsWith(QByteArray::fromHex("89504e470d0a1a0a")) || image.startsWith(QByteArray::fromHex("ffd8ff")), "cover_unavailable");
+    return image;
+}
 int request(QNetworkAccessManager &manager, QNetworkRequest request, NativeUploadBody *body = nullptr, bool *rejected = nullptr) {
     return nativeRequest(manager, request, body, rejected, &canceled);
 }
@@ -170,17 +200,26 @@ int main(int argc, char **argv) {
                 auto book = books.at(i).toObject();
                 auto state = registry.record(book.value("bookId").toString()).value("state").toString();
                 book["importState"] = state.isEmpty() ? "remote" : state;
+                book["hasDownloadCache"] = QFileInfo(root + "/accounts/" + row.value("accountScope").toString() + "/books/" + book.value("bookId").toString()).isDir();
                 books[i] = book;
             }
             row["books"] = books; emitRow(row); return 0;
         }
-        need(operation == "import" && argc == 3, "invalid_command");
+        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache") && argc == 3, "invalid_command");
         const auto id = QString::fromLocal8Bit(argv[2]);
         need(Epub::validBookId(id), "invalid_book_id");
         auto identity = helper("status");
         need(identity.value("state") == "authenticated", "login_required");
         registry.reconcile(scan(registry));
-        registry.reserve(id, identity.value("accountScope").toString());
+        if (operation == "clear-cache") {
+            need(registry.record(id).value("state") == "removed", "book_not_removed");
+            const auto scope = identity.value("accountScope").toString();
+            need(QRegularExpression("\\A[a-f0-9]{64}\\z").match(scope).hasMatch(), "invalid_account_scope");
+            need(!QFileInfo(root + "/accounts").isSymLink(), "invalid_cache_path");
+            clearDownloadCache(root + "/accounts/" + scope, id);
+            emitRow({{"state", "cache_cleared"}}); return 0;
+        }
+        if (operation == "import") registry.reserve(id, identity.value("accountScope").toString());
         QString path;
         try {
             need(QStorageInfo(root).bytesAvailable() >= 256 * 1024 * 1024, "insufficient_space");
@@ -194,6 +233,12 @@ int main(int argc, char **argv) {
             need(!cache.isEmpty() && !bookRoot.isEmpty() && bookRoot.startsWith(cache + '/')
                 && source.startsWith(bookRoot + '/') && !source.isEmpty(), "invalid_download_path");
             emitRow({{"state", "validating"}});
+            const auto coverUrl = downloaded.value("coverUrl").toString();
+            if (!Epub(source).hasCover() && !coverUrl.isEmpty()) {
+                Epub(source).stamp(id, source, coverImage(scope, id, coverUrl));
+                need(Epub(source).hasCover(), "cover_unavailable");
+            }
+            if (operation == "repair-cover") { emitRow({{"state", "cover_repaired"}, {"hasCover", Epub(source).hasCover()}}); return 0; }
             path = root + "/submission-" + id + ".epub";
             Epub(source).stamp(id, path);
             registry.reconcile(scan(registry)); // Catch concurrent external import.
@@ -234,9 +279,12 @@ int main(int argc, char **argv) {
             emitRow({{"state", registry.record(id).value("state")}});
             need(address.restore(), "address_restore_failed");
             QFile::remove(path);
-        } catch (const std::exception &) {
+        } catch (const std::exception &error) {
             if (registry.record(id).value("state") == "preparing") registry.failBeforeSubmission(id);
             if (!path.isEmpty()) QFile::remove(path);
+            if (QString::fromUtf8(error.what()) == "cover_unavailable" && registry.record(id).value("state") == "failed") {
+                emitRow({{"state", "error"}, {"code", "cover_unavailable"}, {"importState", "failed"}}); return 1;
+            }
             throw;
         }
         return 0;

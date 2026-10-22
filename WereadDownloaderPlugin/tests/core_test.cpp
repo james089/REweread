@@ -1,4 +1,5 @@
 #include "epub.h"
+#include "cache_cleanup.h"
 #include "import_registry.h"
 #include <QCoreApplication>
 #include <QFile>
@@ -31,6 +32,15 @@ int main(int argc, char **argv) {
         Epub(stamped).stamp("synthetic-book-1", twice);
         check(Epub(twice).sourceBookId() == "synthetic-book-1");
         rejects([&] { Epub(stamped).stamp("different-id", twice); });
+        check(!original.hasCover());
+        const auto covered = temporary.path() + "/covered.epub";
+        const auto png = QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=");
+        original.stamp("synthetic-book-1", covered, png);
+        check(Epub(covered).hasCover() && Epub(covered).sourceBookId() == "synthetic-book-1");
+        const auto coveredSize = QFileInfo(covered).size();
+        Epub(covered).stamp("synthetic-book-1", covered, png);
+        check(Epub(covered).hasCover() && QFileInfo(covered).size() == coveredSize);
+        rejects([&] { Epub(fixtures + "/valid.epub").stamp("synthetic", twice, "not an image"); });
         rejects([&] { original.stamp("../escape", twice); });
         for (const auto &name : {"traversal", "duplicate", "missing-resource", "bad-spine", "checksum", "ambiguous", "encrypted"}) {
             rejects([&] { Epub epub(fixtures + "/" + name + ".epub"); epub.sourceBookId(); });
@@ -94,6 +104,25 @@ int main(int argc, char **argv) {
             check(rebuilt.record("synthetic-book-1").value("state") == "imported");
             check(rebuilt.record("historical-book").isEmpty());
         }
+        const auto account = temporary.path() + "/cache-account";
+        check(QDir().mkpath(account + "/books/synthetic-clean"));
+        check(QDir().mkpath(account + "/books/synthetic-other"));
+        auto write = [&](const QString &name, const QByteArray &bytes) { QFile f(name); check(f.open(QIODevice::WriteOnly)); check(f.write(bytes) == bytes.size()); };
+        write(account + "/books/synthetic-clean/full.epub", "synthetic cache");
+        write(account + "/books/synthetic-other/full.epub", "preserve sibling");
+        write(account + "/book-status.json", R"({"synthetic-clean":{"downloadState":"full","fullFile":"old","title":"synthetic title"},"synthetic-other":{"downloadState":"full"}})");
+        clearDownloadCache(account, "synthetic-clean");
+        check(!QFileInfo::exists(account + "/books/synthetic-clean"));
+        check(QFileInfo::exists(account + "/books/synthetic-other/full.epub"));
+        QFile statusFile(account + "/book-status.json"); check(statusFile.open(QIODevice::ReadOnly));
+        const auto statusRows = QJsonDocument::fromJson(statusFile.readAll()).object();
+        check(statusRows.value("synthetic-clean").toObject().value("downloadState") == "remote");
+        check(statusRows.value("synthetic-clean").toObject().value("fullFile").toString().isEmpty());
+        check(statusRows.value("synthetic-other").toObject().value("downloadState") == "full");
+        rejects([&] { clearDownloadCache(account, "../escape"); });
+        check(QFile::link(account + "/books/synthetic-other", account + "/books/synthetic-clean"));
+        rejects([&] { clearDownloadCache(account, "synthetic-clean"); });
+        check(QFileInfo::exists(account + "/books/synthetic-other/full.epub"));
         QFile corrupt(root + "/imports.json"); check(corrupt.open(QIODevice::WriteOnly));
         corrupt.write("{broken"); corrupt.close();
         rejects([&] { ImportRegistry registry(root); });

@@ -86,6 +86,13 @@ Rectangle {
                 enabled: Downloader.canQueue && page.selectedIds.length > 0
                 onClicked: { Downloader.importBooks(page.selectedIds); page.multiSelect = false; page.selectedIds = [] }
             }
+            RoundedButton {
+                objectName: "exitMultiSelectButton"
+                visible: page.multiSelect
+                Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88
+                font.pixelSize: 26; text: "退出多选"
+                onClicked: page.multiSelect = false
+            }
             RoundedButton { visible: enabled; objectName: "cancelButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26; text: "取消"; enabled: Downloader.busy; onClicked: Downloader.cancel() }
         }
         Image {
@@ -221,14 +228,30 @@ Rectangle {
                             }
                         }
                     }
-                    RoundedButton {
-                        objectName: "bookImportButton"
-                        visible: !page.multiSelect && enabled
-                        Layout.preferredWidth: 164; Layout.preferredHeight: 104
-                        font.pixelSize: 24
-                        text: bookRow.book.importState === "queued" ? "排队中" : "导入"
-                        enabled: (page.canImport(bookRow.book.importState) || bookRow.book.importState === "queued") && Downloader.canQueue
-                        onClicked: { if (bookRow.book.importState === "queued") Downloader.cancelQueued(bookRow.book.bookId); else Downloader.importBooks([bookRow.book.bookId]) }
+                    RowLayout {
+                        spacing: 12
+                        visible: !page.multiSelect && (bookImportAction.enabled || clearCacheAction.visible)
+                        RoundedButton {
+                            id: bookImportAction
+                            objectName: "bookImportButton"
+                            visible: enabled
+                            Layout.minimumWidth: 164; Layout.preferredWidth: 164; Layout.maximumWidth: 164
+                            Layout.minimumHeight: 104; Layout.preferredHeight: 104; Layout.maximumHeight: 104
+                            font.pixelSize: 24
+                            text: bookRow.book.importState === "queued" ? "排队中" : "导入"
+                            enabled: (page.canImport(bookRow.book.importState) || bookRow.book.importState === "queued") && Downloader.canQueue
+                            onClicked: { if (bookRow.book.importState === "queued") Downloader.cancelQueued(bookRow.book.bookId); else Downloader.importBooks([bookRow.book.bookId]) }
+                        }
+                        RoundedButton {
+                            id: clearCacheAction
+                            objectName: "deleteCacheButton"
+                            visible: !page.multiSelect && enabled
+                            Layout.minimumWidth: 164; Layout.preferredWidth: 164; Layout.maximumWidth: 164
+                            Layout.minimumHeight: 104; Layout.preferredHeight: 104; Layout.maximumHeight: 104
+                            font.pixelSize: 24; text: "删除缓存"
+                            enabled: bookRow.book.importState === "removed" && bookRow.book.hasDownloadCache !== false && !Downloader.busy
+                            onClicked: Downloader.clearCache(bookRow.book.bookId)
+                        }
                     }
                 }
             }

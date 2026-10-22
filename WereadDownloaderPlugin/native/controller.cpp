@@ -131,6 +131,13 @@ void DownloaderController::importBooks(const QVariantList &ids) {
     }
     emit changed(); next();
 }
+void DownloaderController::clearCache(const QString &id) {
+    if (!m_opened || !m_loggedIn || busy() || !m_queue.isEmpty()) return;
+    for (const auto &row : m_books) {
+        const auto book = row.toMap();
+        if (book.value("bookId") == id && book.value("importState") == "removed" && book.value("hasDownloadCache", true).toBool()) { start("clear-cache", id); return; }
+    }
+}
 void DownloaderController::cancelQueued(const QString &id) {
     if (!m_queue.removeOne(id)) return;
     updateBook(id, m_queuedStates.take(id));
@@ -153,6 +160,7 @@ void DownloaderController::start(const QString &operation, const QString &id) {
     m_operation = operation; m_currentId = id; m_error = false; m_final = false; m_loginRequired = false; m_refreshNeeded = false; m_buffer.clear();
     m_status = operation == "login" ? QStringLiteral("正在创建登录二维码…")
         : operation == "shelf" ? QStringLiteral("正在同步书库和导入状态…")
+        : operation == "clear-cache" ? QStringLiteral("正在清理《%1》缓存…").arg(currentTitle())
         : operation == "import" ? QStringLiteral("正在下载《%1》…").arg(currentTitle()) : QStringLiteral("正在检查独立账号…");
     if (operation == "import") { m_covers.pause(); bookState("preparing"); }
     QProcessEnvironment env;
@@ -213,6 +221,13 @@ void DownloaderController::readOutput() {
             bookState(state);
             m_status = state == "validating" ? QStringLiteral("正在校验《%1》…").arg(currentTitle())
                 : state == "importing" ? QStringLiteral("正在导入《%1》…").arg(currentTitle()) : QStringLiteral("正在下载《%1》…").arg(currentTitle());
+        } else if (state == "cache_cleared" && m_operation == "clear-cache") {
+            for (int i = 0; i < m_books.size(); ++i) {
+                auto book = m_books[i].toMap();
+                if (book.value("bookId") == m_currentId) { book["hasDownloadCache"] = false; m_books[i] = book; }
+            }
+            bookState("removed"); m_final = true;
+            m_status = QStringLiteral("下载缓存已删除，再次导入将重新下载正文");
         } else if (state == "needs_importer") {
             if (enableImporter()) QTimer::singleShot(1000, this, [this] {
                 if (busy()) m_process.write("go\n");
@@ -235,6 +250,7 @@ void DownloaderController::readOutput() {
             if (row.value("importState") == "failed") { bookState("failed"); m_final = true; }
             m_status = row.value("code") == "native_rejected"
                 ? QStringLiteral("系统拒绝了上传，EPUB 缓存已保留，可重新导入")
+                : row.value("code") == "cover_unavailable" ? QStringLiteral("封面获取失败，正文缓存已保留，可重试")
                 : m_operation == "shelf" && m_loggedIn
                 ? QStringLiteral("已登录，但书架加载失败。请检查网络后点击刷新")
                 : m_operation == "login" ? QStringLiteral("登录未完成，请检查网络后重新扫码登录")

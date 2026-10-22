@@ -51,6 +51,7 @@ public:
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void importBooks(const QVariantList &ids);
     Q_INVOKABLE void cancelQueued(const QString &id);
+    Q_INVOKABLE void clearCache(const QString &id);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void attachSettings(QObject *settings);
     Q_INVOKABLE void placeBelowAppLoad(QQuickItem *item);

@@ -255,3 +255,33 @@ Download optimization and single/multi-select deployment (2026-10-22):
   User performs visual acceptance; no actual user books were submitted for QA.
 - Guarded install 20261022173043 completed with fresh host/sidebar readiness;
   installation marker verified, temporary wake lock released.
+
+2026-10-22 EPUB covers and removed-book cache cleanup:
+- An affected cached EPUB lacked both cover metadata and an image despite a
+  valid shelf thumbnail cache. Original DownloadManager ignores a failed cover
+  request. Worker now checks the packaged EPUB, falls back to its cached PNG or
+  the bounded public-only cover fetcher, and embeds cover metadata, image and
+  first spine page before submission. Missing cover failures are retryable and
+  keep chapter data. Existing covers are retained; repeated repair is idempotent.
+- Epub.stamp accepts an optional cover, preserves existing packed chapter/assets,
+  guards image/expanded sizes, and validates the finished archive. repair-cover
+  repairs only the cached EPUB; it does not modify or duplicate a native book.
+  Existing native copies must be removed through the system and reimported to
+  receive the corrected cover.
+- Multi-select has an explicit “退出多选” toolbar action.
+- Removed books with cached downloads show a “删除缓存” action with the same
+  fixed 164×104px size as import, placed side by side. Minimum/preferred/maximum
+  layout dimensions are locked for import, queued and cache actions. Worker rechecks native removed
+  state before deleting only that account/book download directory and resetting
+  its status. Credentials, shelf/cover thumbnails and other books are retained;
+  symlink/path escapes are rejected. Success hides the cache action, persists
+  no complete-file shortcut, and permits a fresh chapter download on import.
+- Core tests cover cover insertion/idempotence and targeted cache removal,
+  sibling preservation and symlink rejection. Host/device Qt UI tests cover
+  explicit selection exit and equal-width cache action. Full Linux validations,
+  source/shell checks and official SDK build passed. No real cache was deleted
+  or native library book replaced for QA.
+
+- Install 20261022180347 confirmed fresh host/sidebar readiness. Import/queued/cache
+  actions now use fixed 164×104px dimensions side by side; focused host UI size
+  assertions and SDK build passed. Temporary install wake lock released.

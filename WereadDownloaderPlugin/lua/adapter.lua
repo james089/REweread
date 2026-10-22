@@ -189,7 +189,7 @@ local function execute()
         local status = statuses:get(id)
         assert(status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0)
         assert(type(status.fullFile) == "string" and status.fullFile ~= "" and status.imageAssets == true)
-        emit({state = "downloaded", path = status.fullFile, accountScope = scope})
+        emit({state = "downloaded", path = status.fullFile, accountScope = scope, coverUrl = book.cover or ""})
     else
         error("unsupported operation")
     end

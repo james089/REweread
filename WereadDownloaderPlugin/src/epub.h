@@ -9,7 +9,8 @@ class Epub {
 public:
     explicit Epub(const QString &path);
     QString sourceBookId() const;
-    void stamp(const QString &bookId, const QString &outputPath);
+    bool hasCover() const;
+    void stamp(const QString &bookId, const QString &outputPath, const QByteArray &cover = {});
     static bool validBookId(const QString &id);
 private:
     struct Entry {

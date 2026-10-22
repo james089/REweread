@@ -53,9 +53,14 @@ shelf|cached-shelf)
   printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"queue one","importState":"remote"},{"bookId":"synthetic-2","title":"queue two","importState":"remote"},{"bookId":"synthetic-3","title":"queue three","importState":"remote"}]}'
   exit 0
  fi
+ if [ -f "$script_root/cache-fixture" ]; then
+  printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"synthetic removed","author":"synthetic author","importState":"removed","hasDownloadCache":true},{"bookId":"synthetic-2","title":"synthetic imported","author":"synthetic author","importState":"imported"}]}'
+  exit 0
+ fi
  if [ -f "$script_root/network-failed" ]; then rm "$script_root/network-failed"; printf '%s\n' '{"state":"error","code":"helper_failed"}'; exit 1; fi
  if [ -f "$script_root/expired" ]; then rm "$script_root/expired"; printf '%s\n' '{"state":"error","code":"login_required"}'; exit 1; fi
  printf '%s\n' '{"state":"shelf","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","books":[{"bookId":"synthetic-1","title":"合成测试书：正文与插图","author":"测试作者","cover":"https://res.weread.qq.com/synthetic-cover.png","localCover":"","importState":"remote"},{"bookId":"synthetic-2","title":"已导入的合成测试书","author":"测试作者","localCover":"","importState":"imported"}]}' ;;
+clear-cache) printf '%s\n' '{"state":"cache_cleared"}' ;;
 import)
  printf '%s\n' "$2" >> "$script_root/imports"
  printf '%s\n' '{"state":"progress","done":5,"total":10}'
@@ -220,7 +225,7 @@ ColumnLayout {
         swipe(QPoint(0,100)); check(item->property("pageIndex").toInt() == 0);
         swipe(QPoint(-180,0)); check(item->property("pageIndex").toInt() == 1);
         swipe(QPoint(180,0)); check(item->property("pageIndex").toInt() == 0);
-        check(QMetaObject::invokeMethod(visualChild(item, "returnButton"), "clicked")); QCoreApplication::processEvents();
+        check(QMetaObject::invokeMethod(visualChild(item, "exitMultiSelectButton"), "clicked")); QCoreApplication::processEvents();
         check(controller->opened() && !item->property("multiSelect").toBool());
         check(item->property("selectedIds").value<QJSValue>().toVariant().toList().isEmpty());
         check(!visualChild(item, "bookSelection")->isVisible() && !visualChild(item, "importButton")->isVisible());
@@ -228,6 +233,18 @@ ColumnLayout {
         auto screenshot = window.grabWindow();
         if (!screenshot.isNull()) check(screenshot.save(QString::fromLocal8Bit(argv[2])));
         else std::cout << "headless platform supplied no screenshot; visual QA remains separate\n";
+        phase = "removed book cache action";
+        QFile cacheFixture(temporary.path() + "/cache-fixture"); check(cacheFixture.open(QIODevice::WriteOnly)); cacheFixture.close();
+        controller->refresh(); until([] { return !controller->busy(); });
+        auto *cacheButton = visualChild(item, "deleteCacheButton");
+        until([&] { return cacheButton && cacheButton->isVisible() && cacheButton->width() > 0; });
+        check(cacheButton->width() == 164 && cacheButton->height() == 104);
+        check(visualChild(item, "bookImportButton")->width() == 164 && visualChild(item, "bookImportButton")->height() == 104);
+        check(QMetaObject::invokeMethod(cacheButton, "clicked")); until([] { return !controller->busy(); });
+        check(!controller->books()[0].toMap().value("hasDownloadCache").toBool());
+        check(controller->books()[0].toMap().value("importState") == "removed");
+        check(!cacheButton->isVisible());
+        check(QFile::remove(cacheFixture.fileName())); controller->refresh(); until([] { return !controller->busy(); });
         phase = "stable rows during download";
         int resets = 0; bool progressTitle = false;
         auto resetConnection = QObject::connect(controller, &DownloaderController::booksChanged, [&] { ++resets; });

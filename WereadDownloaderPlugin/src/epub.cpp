@@ -191,8 +191,25 @@ QString Epub::sourceBookId() const {
     need(count == 1 && markers == 1 && validBookId(id), "ambiguous EPUB source identity");
     return id;
 }
-void Epub::stamp(const QString &bookId, const QString &outputPath) {
+bool Epub::hasCover() const {
+    auto doc = xml(read(packagePath()));
+    QString coverId;
+    const auto metas = doc.elementsByTagNameNS(opf, QStringLiteral("meta"));
+    for (int i = 0; i < metas.size(); ++i) {
+        const auto e = metas.at(i).toElement();
+        if (e.attribute("name") == "cover") coverId = e.attribute("content");
+    }
+    const auto items = doc.elementsByTagNameNS(opf, QStringLiteral("item"));
+    for (int i = 0; i < items.size(); ++i) {
+        const auto e = items.at(i).toElement();
+        if (e.attribute("media-type").startsWith("image/") &&
+            ((!coverId.isEmpty() && e.attribute("id") == coverId) || e.attribute("properties").split(' ').contains("cover-image"))) return true;
+    }
+    return false;
+}
+void Epub::stamp(const QString &bookId, const QString &outputPath, const QByteArray &cover) {
     need(validBookId(bookId), "invalid source book id");
+    auto entries = m_entries;
     const auto old = sourceBookId();
     need(old.isEmpty() || old == bookId, "EPUB source identity conflict");
     const auto path = packagePath();
@@ -209,10 +226,49 @@ void Epub::stamp(const QString &bookId, const QString &outputPath) {
         marker.setAttribute(QStringLiteral("content"), QStringLiteral("1"));
         metadata.appendChild(marker);
     }
+    if (!cover.isEmpty() && !hasCover()) {
+        const bool png = cover.startsWith(QByteArray::fromHex("89504e470d0a1a0a"));
+        need(cover.size() <= 4 * 1024 * 1024 && (png || cover.startsWith(QByteArray::fromHex("ffd8ff"))), "invalid cover image");
+        auto manifests = doc.elementsByTagNameNS(opf, "manifest");
+        auto spines = doc.elementsByTagNameNS(opf, "spine");
+        need(manifests.size() == 1 && spines.size() == 1, "invalid cover package");
+        auto manifest = manifests.at(0).toElement(); auto spine = spines.at(0).toElement();
+        const auto base = path.left(path.lastIndexOf('/') + 1);
+        QSet<QString> ids; QSet<QByteArray> names;
+        const auto items = doc.elementsByTagNameNS(opf, "item");
+        for (int i = 0; i < items.size(); ++i) ids.insert(items.at(i).toElement().attribute("id"));
+        for (const auto &entry : entries) names.insert(entry.name);
+        QString stem, imageHref, pageHref;
+        for (int n = 1; ; ++n) {
+            stem = "wrdp-cover-" + QString::number(n);
+            imageHref = "images/" + stem + (png ? ".png" : ".jpg"); pageHref = "text/" + stem + ".xhtml";
+            if (!ids.contains(stem) && !ids.contains(stem + "-image") && !names.contains(base + imageHref.toUtf8()) && !names.contains(base + pageHref.toUtf8())) break;
+        }
+        auto append = [&](const QByteArray &name, const QByteArray &bytes) {
+            entries.append({name, bytes, 0, quint32(crc32(0, reinterpret_cast<const Bytef *>(bytes.constData()), uInt(bytes.size()))), quint32(bytes.size())});
+        };
+        append(base + imageHref.toUtf8(), cover);
+        append(base + pageHref.toUtf8(), QByteArray("<?xml version=\"1.0\" encoding=\"UTF-8\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Cover</title><style>html,body{margin:0;width:100%;height:100%;}img{display:block;width:100%;height:100%;object-fit:contain;}</style></head><body><img alt=\"Cover\" src=\"../") + imageHref.toUtf8() + "\"/></body></html>");
+        auto addItem = [&](const QString &id, const QString &href, const QString &mime) {
+            auto e = doc.createElementNS(opf, "item"); e.setAttribute("id", id); e.setAttribute("href", href); e.setAttribute("media-type", mime); manifest.appendChild(e); return e;
+        };
+        auto image = addItem(stem + "-image", imageHref, png ? "image/png" : "image/jpeg");
+        if (doc.documentElement().attribute("version").startsWith('3')) image.setAttribute("properties", "cover-image");
+        addItem(stem, pageHref, "application/xhtml+xml");
+        auto reference = doc.createElementNS(opf, "itemref"); reference.setAttribute("idref", stem); spine.insertBefore(reference, spine.firstChild());
+        auto meta = doc.createElementNS(opf, "meta"); meta.setAttribute("name", "cover"); meta.setAttribute("content", stem + "-image"); metadata.appendChild(meta);
+        auto guides = doc.elementsByTagNameNS(opf, "guide");
+        auto guide = guides.isEmpty() ? doc.createElementNS(opf, "guide") : guides.at(0).toElement();
+        if (guides.isEmpty()) doc.documentElement().appendChild(guide);
+        auto guideRef = doc.createElementNS(opf, "reference"); guideRef.setAttribute("type", "cover"); guideRef.setAttribute("title", "Cover"); guideRef.setAttribute("href", pageHref); guide.appendChild(guideRef);
+    }
     const auto replacement = doc.toByteArray(-1);
+    quint64 expanded = 0;
+    for (const auto &entry : entries) expanded += entry.name == path ? quint64(replacement.size()) : entry.size;
+    need(expanded <= limit && entries.size() < 10000, "EPUB expansion limit");
     QByteArray out, directory;
     // Preserve resource names and compressed bytes; only the OPF is rewritten.
-    for (auto entry : m_entries) {
+    for (auto entry : entries) {
         if (entry.name == path) {
             entry.packed = replacement;
             entry.method = 0;
@@ -233,12 +289,14 @@ void Epub::stamp(const QString &bookId, const QString &outputPath) {
     }
     auto offset = quint32(out.size()); out += directory;
     put32(out, 0x06054b50); put16(out, 0); put16(out, 0);
-    put16(out, quint16(m_entries.size())); put16(out, quint16(m_entries.size()));
+    put16(out, quint16(entries.size())); put16(out, quint16(entries.size()));
     put32(out, quint32(directory.size())); put32(out, offset); put16(out, 0);
     need(out.size() <= int(limit) && !QFileInfo(outputPath).isSymLink(), "invalid EPUB output");
     QSaveFile file(outputPath); file.setDirectWriteFallback(false);
     need(file.open(QIODevice::WriteOnly) && file.setPermissions(QFile::ReadOwner | QFile::WriteOwner)
         && file.write(out) == out.size() && file.commit(), "cannot save EPUB");
-    need(Epub(outputPath).sourceBookId() == bookId, "source identity readback failed");
+    const Epub verified(outputPath);
+    need(verified.sourceBookId() == bookId, "source identity readback failed");
+    if (!cover.isEmpty()) need(verified.hasCover(), "cover readback failed");
 }
 }
