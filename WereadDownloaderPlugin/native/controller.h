@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <QDate>
 #include <QJsonObject>
 #include <QPointer>
 #include <QProcess>
@@ -14,6 +15,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QFileSystemWatcher>
+#include <QTimeZone>
 
 class LoginImage : public QQuickImageProvider {
 public:
@@ -39,6 +41,16 @@ class DownloaderController : public QObject {
     Q_PROPERTY(QVariantList readingStats READ readingStats NOTIFY readingStatsChanged)
     Q_PROPERTY(QStringList readingDates READ readingDates NOTIFY readingStatsChanged)
     Q_PROPERTY(QString readingDate READ readingDate WRITE setReadingDate NOTIFY readingStatsChanged)
+    Q_PROPERTY(QString readingTimeZone READ readingTimeZone WRITE setReadingTimeZone NOTIFY readingTimeZoneChanged)
+    Q_PROPERTY(QStringList readingTimeZones READ readingTimeZones CONSTANT)
+    Q_PROPERTY(QStringList readingTimeZoneLabels READ readingTimeZoneLabels CONSTANT)
+    Q_PROPERTY(QString readingClock READ readingClock NOTIFY readingClockChanged)
+    Q_PROPERTY(QVariantList readingWeekStats READ readingWeekStats NOTIFY readingStatsChanged)
+    Q_PROPERTY(QString readingWeekLabel READ readingWeekLabel NOTIFY readingStatsChanged)
+    Q_PROPERTY(int readingWeekTotalSeconds READ readingWeekTotalSeconds NOTIFY readingStatsChanged)
+    Q_PROPERTY(int readingWeekMaximumSeconds READ readingWeekMaximumSeconds NOTIFY readingStatsChanged)
+    Q_PROPERTY(QString readingWeekPeakLabel READ readingWeekPeakLabel NOTIFY readingStatsChanged)
+    Q_PROPERTY(int readingDateTotalSeconds READ readingDateTotalSeconds NOTIFY readingStatsChanged)
 public:
     explicit DownloaderController(LoginImage *image, QObject *parent = nullptr,
         const QString &workerProgram = QStringLiteral("/home/root/weread-downloader/weread-downloader-worker"),
@@ -59,6 +71,19 @@ public:
     QStringList readingDates() const;
     QString readingDate() const { return m_readingDate; }
     void setReadingDate(const QString &date);
+    QString readingTimeZone() const { return m_readingTimeZoneId; }
+    QStringList readingTimeZones() const { return m_readingTimeZones; }
+    QStringList readingTimeZoneLabels() const { return m_readingTimeZoneLabels; }
+    QString readingClock() const;
+    void setReadingTimeZone(const QString &zoneId);
+    QVariantList readingWeekStats() const;
+    QString readingWeekLabel() const;
+    int readingWeekTotalSeconds() const;
+    int readingWeekMaximumSeconds() const;
+    QString readingWeekPeakLabel() const;
+    int readingDateTotalSeconds() const;
+    Q_INVOKABLE void shiftReadingWeek(int weeks);
+    Q_INVOKABLE void shiftReadingDate(int days);
     Q_INVOKABLE QString coverSource(const QString &id, const QString &url);
     Q_INVOKABLE void openPage();
     Q_INVOKABLE void closePage();
@@ -90,6 +115,8 @@ signals:
     void restoreRequested(const QString &uuid, int page, const QString &id);
     void recentReadRequested(const QString &uuid);
     void readingStatsChanged();
+    void readingTimeZoneChanged();
+    void readingClockChanged();
     void nativeBooksChanged();
 private:
     void start(const QString &operation, const QString &id = {});
@@ -104,6 +131,7 @@ private:
     void updateBook(const QString &id, const QString &state, int progress = -1);
     void clearQueue();
     void checkpointReadingTime();
+    bool saveReadingTimeZone() const;
     void updateReadingTimer();
     void reloadNativeBooks();
     void processExitQueue();
@@ -127,6 +155,10 @@ private:
     QStringList m_exitQueue;
     QSet<QString> m_exitErrors;
     QString m_readingUuid,m_exitUuid,m_readingOpeningSignature;
+    QString m_readingTimeZoneId=QStringLiteral("UTC");
+    QStringList m_readingTimeZones;
+    QStringList m_readingTimeZoneLabels;
+    QDate m_readingWeekStart;
     QJsonObject m_exitJob;
     QJsonObject m_exitTimings;
     QByteArray m_exitBuffer;
@@ -153,6 +185,7 @@ private:
     const QString m_dataRoot;
     WereadDownloader::ReadingTimeStore m_readingTime;
     QTimer m_readingTimer;
+    QTimer m_readingClockTimer;
     QElapsedTimer m_readingClock;
     bool m_deviceSleeping=false,m_readingSuspended=true,m_readingAppActive=true,m_readingLocked=false;
 };

@@ -5,6 +5,8 @@ local ffi=require('ffi')
 ffi.cdef[[char *realpath(const char*,char*);long readlink(const char*,char*,unsigned long);]]
 local M={}
 local function need(v,code)if not v then error(code,0)end;return v end
+-- Controller/worker set TZ from the user's persisted IANA timezone choice.
+local function readingDay(t)return os.date('%Y-%m-%d',t or os.time())end
 local function load(path)
  need(ffi.C.readlink(path,ffi.new('char[4096]'),4096)<0,'time_cache_unavailable')
  local b=ffi.new('char[4096]');if ffi.C.realpath(path,b)==nil then return {books={}}end
@@ -44,12 +46,12 @@ function M.upload(progress,id,account,uuid,initialPosition)
  need(confirmedDated<=row.confirmedSeconds and row.confirmedSeconds-confirmedDated<=total-dated,'time_cache_unavailable')
  -- Historical attribution is unverified. Keep previous/undated readings locally;
  -- never silently submit them as activity on the current day.
- local today=os.date('%Y-%m-%d')
+ local today=readingDay()
  local eligible=(days[today] or 0)-(row.confirmedDays[today] or 0)
  local uploaded=0;local started=os.time()
  for _=1,60 do
   local delta=math.min(60,eligible)
-  if delta<=0 or os.time()-started>90 or os.date('%Y-%m-%d')~=today then break end
+  if delta<=0 or os.time()-started>90 or readingDay()~=today then break end
   local before,html
   if initialPosition then before,html=initialPosition.record,initialPosition.html;initialPosition=nil
   else before,html=progress:fetch(id) end
@@ -59,7 +61,7 @@ function M.upload(progress,id,account,uuid,initialPosition)
   local payload=W.make_read_payload({book_id=id,chapter_uid=before.chapterUid,chapter_idx=before.chapterIdx,
    chapter_offset=before.chapterOffset,progress=before.progress,summary=before.summary,
    psvts=state.psvts,pclts=state.pclts,token=state.token,elapsed_seconds=delta})
-  if os.date('%Y-%m-%d')~=today then break end
+  if readingDay()~=today then break end
   row.pending={date=today,seconds=delta,localThrough=row.confirmedSeconds+delta,cloudBefore=before.readingTime,createdAt=os.time()}
   journal.books[id]=row;save(path,journal)
   local ok,response=pcall(progress.client.report_read,progress.client,payload,W.reader_url(id))
@@ -96,7 +98,7 @@ function M.uploadCombined(progress,id,account,uuid,position,send)
  local row=journal.books[id] or {confirmedSeconds=0}
  need(seconds(row.confirmedSeconds),'time_cache_unavailable')
  need(not row.pending,'time_upload_uncertain')
- local total=row.confirmedSeconds;local eligible=0;local today=os.date('%Y-%m-%d')
+ local total=row.confirmedSeconds;local eligible=0;local today=readingDay()
  if localRow then
   need(seconds(localRow.seconds) and localRow.uuid==uuid,'time_cache_unavailable')
   total=localRow.seconds;need(total>=row.confirmedSeconds,'time_cache_unavailable')
@@ -117,12 +119,12 @@ function M.uploadCombined(progress,id,account,uuid,position,send)
  local uploaded=0;local started=os.time();local sent=false
  for _=1,60 do
   local delta=math.min(60,eligible)
-  if delta<=0 or os.time()-started>90 or os.date('%Y-%m-%d')~=today then break end
+  if delta<=0 or os.time()-started>90 or readingDay()~=today then break end
   need(seconds(position.record.readingTime),'time_cloud_unavailable')
   row.pending={date=today,seconds=delta,localThrough=row.confirmedSeconds+delta,
    cloudBefore=position.record.readingTime,createdAt=os.time()}
   journal.books[id]=row;save(path,journal)
-  if os.date('%Y-%m-%d')~=today then row.pending=nil;save(path,journal);break end
+  if readingDay()~=today then row.pending=nil;save(path,journal);break end
   local ok,response=pcall(send,delta)
   if not ok then error('time_upload_uncertain',0) end
   if not require('read_sync_protocol').response_succeeded(response)then

@@ -6,6 +6,7 @@
 #include "native_address.h"
 #include "native_http.h"
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
@@ -22,6 +23,7 @@
 #include <QRegularExpression>
 #include <QStorageInfo>
 #include <QThread>
+#include <QTimeZone>
 #include <QTimer>
 #include <cstdio>
 #include <csignal>
@@ -41,6 +43,15 @@ void onSignal(int) { canceled = 1; }
 const QString root = QStringLiteral("/home/root/.local/share/weread-downloader");
 const QString installRoot = QStringLiteral("/home/root/weread-downloader");
 const QString libraryRoot = QStringLiteral("/home/root/.local/share/remarkable/xochitl");
+QString configuredTimeZone() {
+    const auto id=qgetenv("WEREAD_TIME_ZONE");
+    const QTimeZone zone(id);
+    return !id.isEmpty() && zone.isValid()?QString::fromUtf8(id):QStringLiteral("UTC");
+}
+QString currentReadingDay() {
+    const QTimeZone zone(configuredTimeZone().toUtf8());
+    return QDateTime::currentDateTimeUtc().toTimeZone(zone).date().toString(Qt::ISODate);
+}
 void need(bool value, const char *code) { if (!value) throw std::runtime_error(code); }
 void emitRow(const QJsonObject &row) {
     const auto b = QJsonDocument(row).toJson(QJsonDocument::Compact) + '\n';
@@ -64,6 +75,7 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
     env.insert("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
     env.insert("HOME", "/home/root");
     env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
+    env.insert("WEREAD_TIME_ZONE",configuredTimeZone());env.insert("TZ",configuredTimeZone());
     env.insert("RM_WEREAD_APP_DIR", "/home/root/weread-downloader/helper");
     env.insert("KO_DIR", "/home/root/xovi/exthome/appload/koreader");
     env.insert("RM_WEREAD_LOGIN_TIMEOUT", "180");
@@ -317,7 +329,7 @@ int main(int argc, char **argv) {
                 const auto localPath=account+"/local-reading-time-v1.json",sentPath=account+"/uploaded-reading-time-v1.json";
                 const auto local=QFileInfo::exists(localPath)?readJson(localPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
                 const auto sent=QFileInfo::exists(sentPath)?readJson(sentPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
-                const auto date=QDate::currentDate().toString(Qt::ISODate);
+                const auto date=currentReadingDay();
                 const auto pending=local.value("days").toObject().value(date).toDouble()-sent.value("confirmedDays").toObject().value(date).toDouble();
                 bool timeOk=!sent.value("pending").isObject();
                 if(pending>0 && timeOk)timeOk=helper("upload-time",id,expectedScope).value("state")=="time_uploaded";

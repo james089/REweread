@@ -14,6 +14,9 @@
 namespace WereadDownloader {
 class ReadingTimeStore {
 public:
+    static QString dayInTimeZone(qint64 timestampMs, const QTimeZone &zone) {
+        return QDateTime::fromMSecsSinceEpoch(timestampMs, zone).date().toString(Qt::ISODate);
+    }
     explicit ReadingTimeStore(QString root):m_root(std::move(root)){}
     ~ReadingTimeStore(){save();}
     bool open(const QString &scope,const QString &id,const QString &uuid,const QString &title) {
@@ -44,6 +47,7 @@ public:
         return true;
     }
     bool close(){m_paused=true;if(!save())return false;m_id.clear();m_path.clear();m_books={};return true;}
+    void setTimeZone(const QTimeZone &zone){if(zone.isValid())m_timeZone=zone;}
     void paused(bool value){m_paused=value;}
     void activity(){m_idleMs=0;}
     bool active()const{return !m_id.isEmpty() && !m_paused && m_idleMs<300000;}
@@ -60,9 +64,9 @@ public:
         auto days=row.value("days").toObject();
         qint64 cursor=endMs-ms,remaining=accepted,added=0;
         while(remaining>0) {
-            const auto start=QDateTime::fromMSecsSinceEpoch(cursor);
-            const auto next=QDateTime(start.date().addDays(1),QTime(0,0),start.timeZone());
-            const auto part=qMin(remaining,next.toMSecsSinceEpoch()-cursor);
+            const auto start=QDateTime::fromMSecsSinceEpoch(cursor,m_timeZone);
+            const auto nextLocalMidnightUtcMs=QDateTime(start.date().addDays(1),QTime(0,0),m_timeZone).toMSecsSinceEpoch();
+            const auto part=qMin(remaining,nextLocalMidnightUtcMs-cursor);
             if(part<=0)return;
             m_remainder+=part;const auto seconds=m_remainder/1000;m_remainder%=1000;
             if(seconds) {
@@ -86,6 +90,7 @@ public:
     }
 private:
     QString m_root,m_path,m_id,m_uuid,m_title;QJsonObject m_books;
+    QTimeZone m_timeZone=QTimeZone::utc();
     qint64 m_idleMs=0,m_remainder=0;bool m_paused=false,m_dirty=false;
 };
 }

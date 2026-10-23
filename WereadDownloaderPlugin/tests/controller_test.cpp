@@ -203,10 +203,10 @@ ColumnLayout {
         QQuickWindow window; window.resize(954, 1696);
         item->setParentItem(window.contentItem()); item->setWidth(954); item->setHeight(1696);
         window.show();
-        until([&] { auto *button = item->findChild<QQuickItem *>("refreshButton"); return button && button->width() >= 200 && button->height() >= 88; });
+        until([&] { auto *button = item->findChild<QQuickItem *>("refreshButton"); return button && button->width() >= 200 && button->height() >= 72; });
         for (const auto *name : {"refreshButton"}) {
             auto *button = item->findChild<QQuickItem *>(name); check(button);
-            check(button->width() >= 200 && button->height() >= 88);
+            check(button->width() >= 200 && button->height() >= 72);
         }
 
         check(!visualChild(item, "loginButton"));
@@ -217,13 +217,30 @@ ColumnLayout {
         auto *coverImage = visualChild(item, "bookCoverImage"); check(coverImage);
         until([&] { return coverImage->property("status").toInt() == 1; });
         phase="reading statistics tab";
+        const auto testZone=controller->readingTimeZones().value(1);
+        check(controller->readingTimeZones().size()==27 && controller->readingTimeZoneLabels().size()==27);
+        check(controller->readingTimeZoneLabels().contains(QStringLiteral("美国 · 檀香山 (UTC-10:00)")));
+        check(controller->readingTimeZoneLabels().contains(QStringLiteral("美国 · 凤凰城 (UTC-07:00)")));
+        check(controller->readingTimeZoneLabels().contains(QStringLiteral("美国 · 丹佛 (UTC-06:00)")));
+        check(controller->readingTimeZoneLabels().contains(QStringLiteral("美国 · 芝加哥 (UTC-05:00)")));
+        check(controller->readingTimeZoneLabels().contains(QStringLiteral("美国 · 纽约 (UTC-04:00)")));
+        for(const auto &zone:controller->readingTimeZones())check(QTimeZone(zone.toUtf8()).isValid());
+        check(controller->readingTimeZone()=="UTC" && !testZone.isEmpty());
+        controller->setReadingTimeZone(testZone);check(controller->readingTimeZone()==testZone);
+        check(controller->readingClock().size()==16);
+        controller->setReadingTimeZone("UTC");
+        check(visualChild(item,"readingTimeZoneSelector"));
+        check(visualChild(item,"readingClockLabel"));
         const auto timeDir=coverRoot+"/accounts/"+QString(64,'a');
-        {QFile stats(timeDir+"/local-reading-time-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(QJsonDocument(QJsonObject{{"version",1},{"books",QJsonObject{{"synthetic-2",QJsonObject{{"seconds",150},{"lastRead",100},{"title","Synthetic timed book"},{"uuid","12345678-1234-1234-1234-123456789abc"},{"days",QJsonObject{{QDate::currentDate().toString(Qt::ISODate),125},{"2000-01-01",20}}}}}}}}).toJson());}
+        const auto readingToday=QDateTime::currentDateTimeUtc().date().toString(Qt::ISODate);
+        {QFile stats(timeDir+"/local-reading-time-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(QJsonDocument(QJsonObject{{"version",1},{"books",QJsonObject{{"synthetic-2",QJsonObject{{"seconds",150},{"lastRead",100},{"title","Synthetic timed book"},{"uuid","12345678-1234-1234-1234-123456789abc"},{"days",QJsonObject{{readingToday,125},{"2000-01-01",20}}}}}}}}).toJson());}
         {QFile stats(timeDir+"/reading-progress-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(R"({"version":1,"books":{"synthetic-2":{"record":{"readingTime":3600,"updateTime":100}}}})");}
         QMetaObject::invokeMethod(controller,"readingStatsChanged");
         check(QMetaObject::invokeMethod(visualChild(item,"readingTimeTabButton"),"clicked"));
         until([&]{return item->property("activeTab").toInt()==1 && visualChild(item,"readingTimeList")->isVisible();});
         check(controller->readingStats().size()==1);
+        check(controller->readingWeekStats().size()==7 && controller->readingWeekTotalSeconds()==125);
+        check(controller->readingWeekMaximumSeconds()==125 && controller->readingWeekPeakLabel()!="暂无阅读");
         check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==150);
         check(controller->readingStats()[0].toMap().value("uploadableSeconds").toInt()==125);
         check(controller->readingStats()[0].toMap().value("heldSeconds").toInt()==25);
@@ -232,9 +249,16 @@ ColumnLayout {
         controller->setReadingDate("undated");check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==5);
         controller->setReadingDate("");
         check(QMetaObject::invokeMethod(visualChild(item,"nextReadingDate"),"clicked"));
-        check(controller->readingDate()==QDate::currentDate().toString(Qt::ISODate));
-        check(QMetaObject::invokeMethod(visualChild(item,"previousReadingDate"),"clicked"));check(controller->readingDate().isEmpty());
+        check(controller->readingDate()==QDate::fromString(readingToday,Qt::ISODate).addDays(1).toString(Qt::ISODate));
+        check(QMetaObject::invokeMethod(visualChild(item,"previousReadingDate"),"clicked"));check(controller->readingDate()==readingToday);
+        const auto currentWeek=controller->readingWeekLabel();controller->shiftReadingWeek(-1);check(controller->readingWeekLabel()!=currentWeek);
+        controller->shiftReadingWeek(1);
         auto *timeUpload=visualChild(item,"uploadReadingTimeButton");check(timeUpload && timeUpload->isVisible());
+        check(qAbs(timeUpload->height()-58)<1);
+        for(const auto *name:{"previousReadingWeek","nextReadingWeek","previousReadingDate","nextReadingDate"}) {
+            auto *button=visualChild(item,name);check(button && qAbs(button->height()-58)<1);
+        }
+        auto *zoneSelector=visualChild(item,"readingTimeZoneSelector");check(zoneSelector && qAbs(zoneSelector->height()-58)<1);
         auto timeBeforeScreenshot=window.grabWindow();if(!timeBeforeScreenshot.isNull())check(timeBeforeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.before.png"));
         const auto beforeTimeShelf=callCount("shelf");
         check(QMetaObject::invokeMethod(timeUpload,"clicked"));
@@ -256,7 +280,7 @@ ColumnLayout {
         auto *toolbarImportButton = visualChild(item, "importButton");
         check(item->property("multiSelect").toBool() && selection->isVisible() && toolbarImportButton->isVisible() && !importButton->isVisible());
         check(selection->width() >= 88 && selection->height() >= 112);
-        check(importButton && importButton->width() >= 144 && importButton->height() >= 88);
+        check(importButton && importButton->width() >= 144 && importButton->height() >= 72);
         auto *status = visualChild(item, "bookImportStatus");
         check(status && status->opacity() == 0.5);
         auto *greenCheck = visualChild(item, "bookImportedCheck");

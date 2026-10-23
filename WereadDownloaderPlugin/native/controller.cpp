@@ -2,6 +2,7 @@
 #include "../src/exit_sync_state.h"
 #include "qrcodegen.hpp"
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QDebug>
 #include <QFile>
@@ -27,6 +28,10 @@ bool peerActive() {
     return false;
 }
 bool importable(const QString &state) { return state == "remote" || state == "failed" || state == "removed"; }
+QString dayInZone(const QString &zoneId, qint64 timestampMs=QDateTime::currentMSecsSinceEpoch()) {
+    const QTimeZone zone(zoneId.toUtf8());
+    return WereadDownloader::ReadingTimeStore::dayInTimeZone(timestampMs, !zoneId.isEmpty() && zone.isValid()?zone:QTimeZone::utc());
+}
 QJsonObject privateObject(const QString &path) {
     QFile file(path);
     if(QFileInfo(file).isSymLink() || !file.open(QIODevice::ReadOnly) || file.size()>8*1024*1024)return {};
@@ -52,6 +57,39 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     : QObject(parent), m_covers(this, coverRoot), m_image(image), m_workerProgram(workerProgram),
       m_dataRoot(coverRoot),m_readingTime(coverRoot) {
     m_status = QStringLiteral("微信读书下载");
+    static const QStringList cities={
+        QStringLiteral("美国 · 贝克岛"),QStringLiteral("美属萨摩亚 · 帕果帕果"),QStringLiteral("美国 · 檀香山"),
+        QStringLiteral("美国 · 阿达克"),QStringLiteral("美国 · 安克雷奇"),QStringLiteral("美国 · 凤凰城"),
+        QStringLiteral("美国 · 丹佛"),QStringLiteral("美国 · 芝加哥"),QStringLiteral("美国 · 纽约"),
+        QStringLiteral("阿根廷 · 布宜诺斯艾利斯"),QStringLiteral("巴西 · 费尔南多·迪诺罗尼亚"),QStringLiteral("佛得角 · 普拉亚"),
+        QStringLiteral("加纳 · 阿克拉"),QStringLiteral("阿尔及利亚 · 阿尔及尔"),QStringLiteral("南非 · 约翰内斯堡"),
+        QStringLiteral("沙特阿拉伯 · 利雅得"),QStringLiteral("阿联酋 · 迪拜"),QStringLiteral("巴基斯坦 · 卡拉奇"),
+        QStringLiteral("孟加拉国 · 达卡"),QStringLiteral("泰国 · 曼谷"),QStringLiteral("中国 · 上海"),
+        QStringLiteral("日本 · 东京"),QStringLiteral("澳大利亚 · 布里斯班"),QStringLiteral("新喀里多尼亚 · 努美阿"),
+        QStringLiteral("斐济 · 苏瓦"),QStringLiteral("汤加 · 努库阿洛法"),QStringLiteral("基里巴斯 · 基里蒂马蒂")
+    };
+    m_readingTimeZones.clear();m_readingTimeZoneLabels.clear();
+    for(int offset=-12;offset<=14;++offset) {
+        const auto zone=QTimeZone::fromSecondsAheadOfUtc(offset*3600);
+        if(!zone.isValid())continue;
+        const auto id=QString::fromUtf8(zone.id());
+        const auto hours=qAbs(offset);
+        const auto label=QStringLiteral("%1 (UTC%2%3%4)").arg(cities.at(offset+12),offset<0?QStringLiteral("-"):QStringLiteral("+"))
+            .arg(hours,2,10,QChar('0')).arg(QStringLiteral(":00"));
+        m_readingTimeZones.append(id);m_readingTimeZoneLabels.append(label);
+    }
+    const auto timeSettings=privateObject(m_dataRoot+"/reading-time-settings-v1.json");
+    const auto savedZone=timeSettings.value("timeZone").toString();
+    if(!savedZone.isEmpty() && m_readingTimeZones.contains(savedZone))m_readingTimeZoneId=savedZone;
+    else if(!savedZone.isEmpty() && QTimeZone(savedZone.toUtf8()).isValid()) {
+        const auto oldOffset=QTimeZone(savedZone.toUtf8()).offsetFromUtc(QDateTime::currentDateTimeUtc());
+        const auto roundedOffset=qBound(-12,qRound(oldOffset/3600.0),14);
+        m_readingTimeZoneId=QString::fromUtf8(QTimeZone::fromSecondsAheadOfUtc(roundedOffset*3600).id());
+    }
+    m_readingTime.setTimeZone(QTimeZone(m_readingTimeZoneId.toUtf8()));
+    const auto localToday=QDate::fromString(dayInZone(m_readingTimeZoneId),Qt::ISODate);
+    m_readingDate=localToday.toString(Qt::ISODate);
+    m_readingWeekStart=localToday.addDays(1-localToday.dayOfWeek());
     m_exitClock.start();reloadNativeBooks();
     if(QFileInfo(m_dataRoot).isDir())m_nativeBookWatcher.addPath(m_dataRoot);
     connect(&m_nativeBookWatcher,&QFileSystemWatcher::directoryChanged,this,[this]{reloadNativeBooks();});
@@ -62,6 +100,9 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     });
     m_readingTimer.setInterval(5000);
     connect(&m_readingTimer,&QTimer::timeout,this,&DownloaderController::checkpointReadingTime);
+    m_readingClockTimer.setInterval(30000);
+    connect(&m_readingClockTimer,&QTimer::timeout,this,&DownloaderController::readingClockChanged);
+    m_readingClockTimer.start();
     connect(&m_progressProcess, &QProcess::readyReadStandardOutput, this, &DownloaderController::readProgress);
     connect(&m_progressProcess, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this](int,QProcess::ExitStatus){readProgress();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);});
     m_covers.ready = [this] { ++m_coverRevision; emit coversChanged(); };
@@ -118,6 +159,7 @@ void DownloaderController::processExitQueue(){
     m_exitUuid=uuid;m_exitJob=job;m_exitBuffer.clear();m_exitTimings={};m_exitSuccess=false;m_exitCanceled=false;m_exitWorkerClock.start();
     QProcessEnvironment env;env.insert("PATH","/usr/bin:/bin:/usr/sbin:/sbin");env.insert("HOME","/home/root");
     env.insert("LANG","C.UTF-8");env.insert("LC_ALL","C.UTF-8");
+    env.insert("WEREAD_TIME_ZONE",m_readingTimeZoneId);env.insert("TZ",m_readingTimeZoneId);
     m_autoSyncProcess.setProcessEnvironment(env);m_autoSyncProcess.setStandardErrorFile(QProcess::nullDevice());
     qInfo("WereadDownloaderPlugin: exit-sync started");
     m_autoSyncProcess.start(m_workerProgram,QStringList{"exit-sync",job.value("bookId").toString(),job.value("accountScope").toString(),uuid,QString::number(job.value("expectedPage").toInt(-1)),job.value("openingSignature").toString()});
@@ -222,7 +264,7 @@ void DownloaderController::setReadingSuspended(bool value){checkpointReadingTime
 void DownloaderController::setReadingApplicationActive(bool value){checkpointReadingTime();m_readingAppActive=value;updateReadingTimer();if(value)QTimer::singleShot(0,this,&DownloaderController::processExitQueue);}
 void DownloaderController::setReadingLocked(bool value){checkpointReadingTime();if(m_readingLocked && !value)m_readingTime.activity();m_readingLocked=value;updateReadingTimer();if(!value)QTimer::singleShot(0,this,&DownloaderController::processExitQueue);}
 QStringList DownloaderController::readingDates() const {
-    QSet<QString> dates{QDate::currentDate().toString(Qt::ISODate)};bool undated=false;
+    QSet<QString> dates{dayInZone(m_readingTimeZoneId)};bool undated=false;
     const auto books=privateObject(m_dataRoot+"/accounts/"+m_scope+"/local-reading-time-v1.json").value("books").toObject();
     for(const auto &v:books) {
         const auto row=v.toObject();const auto days=row.value("days").toObject();double dated=0;
@@ -233,8 +275,92 @@ QStringList DownloaderController::readingDates() const {
     result.prepend("");if(undated)result.append("undated");return result;
 }
 void DownloaderController::setReadingDate(const QString &date) {
-    if(date==m_readingDate || !readingDates().contains(date))return;
-    m_readingDate=date;emit readingStatsChanged();
+    if(date==m_readingDate)return;
+    const auto parsed=QDate::fromString(date,Qt::ISODate);
+    if(!date.isEmpty() && date!="undated" && (!parsed.isValid() || parsed.toString(Qt::ISODate)!=date))return;
+    m_readingDate=date;
+    if(parsed.isValid())m_readingWeekStart=parsed.addDays(1-parsed.dayOfWeek());
+    emit readingStatsChanged();
+}
+QVariantList DownloaderController::readingWeekStats() const {
+    static const QStringList weekdays{QStringLiteral("周一"),QStringLiteral("周二"),QStringLiteral("周三"),QStringLiteral("周四"),QStringLiteral("周五"),QStringLiteral("周六"),QStringLiteral("周日")};
+    const auto books=privateObject(m_dataRoot+"/accounts/"+m_scope+"/local-reading-time-v1.json").value("books").toObject();
+    int totals[7]={0,0,0,0,0,0,0};
+    for(const auto &value:books) {
+        const auto days=value.toObject().value("days").toObject();
+        for(auto d=days.begin();d!=days.end();++d) {
+            const auto date=QDate::fromString(d.key(),Qt::ISODate);
+            if(!date.isValid() || date.toString(Qt::ISODate)!=d.key() || date<m_readingWeekStart || date>=m_readingWeekStart.addDays(7))continue;
+            const auto index=date.dayOfWeek()-1;
+            totals[index]+=qMax(0,d.value().toInt());
+        }
+    }
+    QVariantList result;
+    for(int i=0;i<7;++i) {
+        const auto date=m_readingWeekStart.addDays(i);
+        result.append(QVariantMap{{"date",date.toString(Qt::ISODate)},{"day",weekdays.at(i)},
+            {"shortDate",date.toString(QStringLiteral("MM/dd"))},{"seconds",totals[i]}});
+    }
+    return result;
+}
+QString DownloaderController::readingWeekLabel() const {
+    if(!m_readingWeekStart.isValid())return {};
+    return m_readingWeekStart.toString(QStringLiteral("yyyy/MM/dd"))+QStringLiteral(" – ")+m_readingWeekStart.addDays(6).toString(QStringLiteral("MM/dd"));
+}
+int DownloaderController::readingWeekTotalSeconds() const {
+    int total=0;for(const auto &row:readingWeekStats())total+=row.toMap().value("seconds").toInt();return total;
+}
+int DownloaderController::readingWeekMaximumSeconds() const {
+    int maximum=0;for(const auto &row:readingWeekStats())maximum=qMax(maximum,row.toMap().value("seconds").toInt());return maximum;
+}
+QString DownloaderController::readingWeekPeakLabel() const {
+    int maximum=0;QString label;
+    for(const auto &row:readingWeekStats()) {const auto value=row.toMap();const auto seconds=value.value("seconds").toInt();if(seconds>maximum){maximum=seconds;label=value.value("day").toString()+QStringLiteral(" · ")+value.value("shortDate").toString();}}
+    return maximum>0?label:QStringLiteral("暂无阅读");
+}
+int DownloaderController::readingDateTotalSeconds() const {
+    int total=0;for(const auto &row:readingStats())total+=row.toMap().value("localSeconds").toInt();return total;
+}
+QString DownloaderController::readingClock() const {
+    return QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone(m_readingTimeZoneId.toUtf8()))
+        .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
+void DownloaderController::shiftReadingWeek(int weeks) {
+    if(weeks==0 || !m_readingWeekStart.isValid())return;
+    m_readingWeekStart=m_readingWeekStart.addDays(weeks*7);
+    const auto selected=QDate::fromString(m_readingDate,Qt::ISODate);
+    if(selected.isValid())m_readingDate=selected.addDays(weeks*7).toString(Qt::ISODate);
+    emit readingStatsChanged();
+}
+void DownloaderController::shiftReadingDate(int days) {
+    if(days==0)return;
+    auto selected=QDate::fromString(m_readingDate,Qt::ISODate);
+    if(!selected.isValid())selected=QDate::fromString(dayInZone(m_readingTimeZoneId),Qt::ISODate);
+    selected=selected.addDays(days);m_readingDate=selected.toString(Qt::ISODate);
+    m_readingWeekStart=selected.addDays(1-selected.dayOfWeek());
+    emit readingStatsChanged();
+}
+void DownloaderController::setReadingTimeZone(const QString &zoneId) {
+    if(zoneId==m_readingTimeZoneId || !m_readingTimeZones.contains(zoneId) || !QTimeZone(zoneId.toUtf8()).isValid())return;
+    const auto previous=m_readingTimeZoneId;
+    m_readingTimeZoneId=zoneId;
+    if(!saveReadingTimeZone()) {
+        m_readingTimeZoneId=previous;
+        m_status=QStringLiteral("时区设置保存失败");emit changed();return;
+    }
+    m_readingTime.setTimeZone(QTimeZone(zoneId.toUtf8()));
+    const auto localToday=QDate::fromString(dayInZone(m_readingTimeZoneId),Qt::ISODate);
+    m_readingDate=localToday.toString(Qt::ISODate);m_readingWeekStart=localToday.addDays(1-localToday.dayOfWeek());
+    emit readingTimeZoneChanged();emit readingClockChanged();emit readingStatsChanged();
+}
+bool DownloaderController::saveReadingTimeZone() const {
+    const auto path=m_dataRoot+"/reading-time-settings-v1.json";
+    if(QFileInfo(path).isSymLink() || QFileInfo(m_dataRoot).isSymLink())return false;
+    QSaveFile file(path);file.setDirectWriteFallback(false);
+    if(!file.open(QIODevice::WriteOnly) || !file.setPermissions(QFile::ReadOwner|QFile::WriteOwner))return false;
+    const auto bytes=QJsonDocument(QJsonObject{{"version",1},{"timeZone",m_readingTimeZoneId}}).toJson(QJsonDocument::Compact);
+    if(file.write(bytes)!=bytes.size() || !file.commit())return false;
+    return true;
 }
 QVariantList DownloaderController::readingStats() const {
     if(m_scope.isEmpty())return {};
@@ -255,7 +381,7 @@ QVariantList DownloaderController::readingStats() const {
         const auto days=l.value("days").toObject();double dated=0;
         for(const auto &day:days)dated+=day.toDouble();
         const auto legacy=qMax(0.0,seconds-dated);
-        const auto today=QDate::currentDate().toString(Qt::ISODate);
+        const auto today=dayInZone(m_readingTimeZoneId);
         const auto confirmedDays=upload.value("confirmedDays").toObject();
         row["canUploadDate"]=m_readingDate.isEmpty() || m_readingDate==today;
         row["uploadableSeconds"]=qMax(0.0,days.value(today).toDouble()-confirmedDays.value(today).toDouble());
@@ -470,6 +596,7 @@ void DownloaderController::start(const QString &operation, const QString &id) {
     QProcessEnvironment env;
     env.insert("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"); env.insert("HOME", "/home/root");
     env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
+    env.insert("WEREAD_TIME_ZONE",m_readingTimeZoneId);env.insert("TZ",m_readingTimeZoneId);
     m_process.setProcessEnvironment(env);
     m_process.setStandardErrorFile(QProcess::nullDevice());
     m_process.setProgram(m_workerProgram);

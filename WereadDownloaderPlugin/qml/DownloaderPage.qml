@@ -86,10 +86,10 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
             visible: Downloader.loggedIn
-            RoundedButton { visible: Downloader.loggedIn; objectName: "refreshButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26; text: "刷新"; enabled: !Downloader.busy; onClicked: { page.selectedIds = []; Downloader.refresh() } }
+            RoundedButton { visible: Downloader.loggedIn; objectName: "refreshButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumHeight: 72; Layout.preferredHeight: 72; Layout.maximumHeight: 72; font.pixelSize: 26; text: "刷新"; enabled: !Downloader.busy; onClicked: { page.selectedIds = []; Downloader.refresh() } }
             RoundedButton {
                 visible: Downloader.loggedIn && page.multiSelect && page.activeTab === 0
-                objectName: "importButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26
+                objectName: "importButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumHeight: 72; Layout.preferredHeight: 72; Layout.maximumHeight: 72; font.pixelSize: 26
                 text: "导入（" + page.selectedIds.length + "）"
                 enabled: Downloader.canQueue && page.selectedIds.length > 0
                 onClicked: { Downloader.importBooks(page.selectedIds); page.multiSelect = false; page.selectedIds = [] }
@@ -97,11 +97,11 @@ Rectangle {
             RoundedButton {
                 objectName: "exitMultiSelectButton"
                 visible: page.multiSelect
-                Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88
+                Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumHeight: 72; Layout.preferredHeight: 72; Layout.maximumHeight: 72
                 font.pixelSize: 26; text: "退出多选"
                 onClicked: page.multiSelect = false
             }
-            RoundedButton { visible: enabled; objectName: "cancelButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26; text: "取消"; enabled: Downloader.busy; onClicked: Downloader.cancel() }
+            RoundedButton { visible: enabled; objectName: "cancelButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumHeight: 72; Layout.preferredHeight: 72; Layout.maximumHeight: 72; font.pixelSize: 26; text: "取消"; enabled: Downloader.busy; onClicked: Downloader.cancel() }
         }
         Image {
             Layout.preferredWidth: Math.min(450, page.width - 80)
@@ -321,24 +321,129 @@ Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#555555"
-                text: "按设备日期分日统计；退出、休眠和静置5分钟暂停。云端显示累计值。仅上传当日新增时长；历史及无日期记录保留，暂不补传。"
+                text: "按所选时区分日；退出、休眠和静置5分钟暂停。更改时区只影响之后的记录。"
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 16
+                Label { text: "统计时区"; font.pixelSize: 22; color: "black" }
+                ComboBox {
+                    objectName: "readingTimeZoneSelector"
+                    id: readingTimeZoneSelector
+                    Layout.fillWidth: true; Layout.preferredWidth: 760; Layout.maximumWidth: 760
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    model: Downloader.readingTimeZoneLabels
+                    currentIndex: Math.max(0, Downloader.readingTimeZones.indexOf(Downloader.readingTimeZone))
+                    font.pixelSize: 24
+                    popup.width: readingTimeZoneSelector.width
+                    delegate: ItemDelegate {
+                        width: readingTimeZoneSelector.width
+                        height: 58
+                        contentItem: Text {
+                            text: modelData
+                            font: readingTimeZoneSelector.font
+                            color: "black"
+                            leftPadding: 16
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideNone
+                            wrapMode: Text.NoWrap
+                        }
+                    }
+                    onActivated: function(index) { Downloader.readingTimeZone = Downloader.readingTimeZones[index] }
+                }
+                Label { objectName: "readingClockLabel"; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; text: Downloader.readingClock; font.pixelSize: 20; color: "#444444" }
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 16
                 RoundedButton {
-                    objectName: "previousReadingDate"; text: "上一项"; font.pixelSize: 22
-                    enabled: Downloader.readingDates.indexOf(Downloader.readingDate) > 0
-                    onClicked: { var dates=Downloader.readingDates; Downloader.readingDate=dates[dates.indexOf(Downloader.readingDate)-1] }
+                    objectName: "previousReadingWeek"; text: "‹ 上周"; font.pixelSize: 22
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    onClicked: Downloader.shiftReadingWeek(-1)
                 }
-                Label {
-                    Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 24
-                    text: Downloader.readingDate === "" ? "全部日期" : (Downloader.readingDate === "undated" ? "无日期的历史记录" : Downloader.readingDate)
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 2
+                    Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 24; font.bold: true; text: Downloader.readingWeekLabel }
+                    Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 18; color: "#555555"; text: "本周 " + page.duration(Downloader.readingWeekTotalSeconds) + " · 最多 " + Downloader.readingWeekPeakLabel }
                 }
                 RoundedButton {
-                    objectName: "nextReadingDate"; text: "下一项"; font.pixelSize: 22
-                    enabled: Downloader.readingDates.indexOf(Downloader.readingDate) < Downloader.readingDates.length-1
-                    onClicked: { var dates=Downloader.readingDates; Downloader.readingDate=dates[dates.indexOf(Downloader.readingDate)+1] }
+                    objectName: "nextReadingWeek"; text: "下周 ›"; font.pixelSize: 22
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    onClicked: Downloader.shiftReadingWeek(1)
                 }
+            }
+            Rectangle {
+                Layout.fillWidth: true; Layout.preferredHeight: 220; radius: 12
+                color: "white"; border.color: "#aaaaaa"
+                RowLayout {
+                    anchors.fill: parent; anchors.margins: 10; spacing: 6
+                    Repeater {
+                        model: Downloader.readingWeekStats
+                        delegate: Item {
+                            required property var modelData
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            Rectangle {
+                                anchors.fill: parent; anchors.margins: 2; radius: 10
+                                color: Downloader.readingDate === modelData.date ? "#eeeeee" : "white"
+                                border.width: Downloader.readingDate === modelData.date ? 2 : 1
+                                border.color: Downloader.readingDate === modelData.date ? "black" : "#dddddd"
+                            }
+                            ColumnLayout {
+                                anchors.fill: parent; anchors.margins: 6; spacing: 2
+                                Label {
+                                    Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
+                                    font.pixelSize: 16; color: "#444444"
+                                    text: modelData.seconds > 0 ? page.duration(modelData.seconds) : "—"
+                                }
+                                Item {
+                                    Layout.fillWidth: true; Layout.fillHeight: true
+                                    Rectangle {
+                                        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom
+                                        width: Math.max(14, parent.width * 0.46)
+                                        height: modelData.seconds <= 0 || Downloader.readingWeekMaximumSeconds <= 0 ? 4
+                                            : Math.max(8, (parent.height - 8) * modelData.seconds / Downloader.readingWeekMaximumSeconds)
+                                        color: Downloader.readingDate === modelData.date ? "black" : "#777777"
+                                        radius: 4
+                                    }
+                                }
+                                Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 20; font.bold: Downloader.readingDate === modelData.date; text: modelData.day }
+                                Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 16; color: "#555555"; text: modelData.shortDate }
+                            }
+                            TapHandler { onTapped: Downloader.readingDate = modelData.date }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 12
+                RoundedButton {
+                    objectName: "previousReadingDate"; text: "‹ 前一天"; font.pixelSize: 22
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    onClicked: Downloader.shiftReadingDate(-1)
+                }
+                Label {
+                    Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 22; font.bold: true
+                    text: Downloader.readingDate === "" ? "全部日期" : (Downloader.readingDate === "undated" ? "无日期历史" : Downloader.readingDate)
+                }
+                RoundedButton {
+                    objectName: "nextReadingDate"; text: "后一天 ›"; font.pixelSize: 22
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    onClicked: Downloader.shiftReadingDate(1)
+                }
+                RoundedButton {
+                    objectName: "allReadingDates"; text: "全部"; font.pixelSize: 20
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    visible: Downloader.readingDate !== ""
+                    onClicked: Downloader.readingDate = ""
+                }
+                RoundedButton {
+                    objectName: "undatedReadingDates"; text: "历史"; font.pixelSize: 20
+                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
+                    visible: Downloader.readingDates.indexOf("undated") >= 0 && Downloader.readingDate !== "undated"
+                    onClicked: Downloader.readingDate = "undated"
+                }
+            }
+            Label {
+                Layout.fillWidth: true; font.pixelSize: 22; font.bold: true; color: "black"
+                text: (Downloader.readingDate === "" ? "累计" : "当日") + "阅读 " + page.duration(Downloader.readingDateTotalSeconds)
             }
             ListView {
                 objectName: "readingTimeList"
@@ -362,7 +467,7 @@ Rectangle {
                             visible: modelData.uploadableSeconds > 0 && !modelData.timeUncertain && modelData.canUploadDate
                             enabled: !Downloader.busy
                             Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
-                            Layout.minimumHeight: 56; Layout.preferredHeight: 56; Layout.maximumHeight: 56
+                            Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
                             onClicked: Downloader.uploadReadingTime(modelData.bookId)
                         }
                     }
