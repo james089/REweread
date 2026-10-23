@@ -1,6 +1,7 @@
 #include "controller.h"
 #include <QElapsedTimer>
 #include <QFile>
+#include <QJsonDocument>
 #include <QDir>
 #include <QCryptographicHash>
 #include <QGuiApplication>
@@ -40,7 +41,13 @@ int main(int argc, char **argv) {
         file.write(R"SH(#!/bin/sh
 script_root=${0%/*}
 printf '%s\n' "$1" >> "$script_root/calls"
+if [ "$1" = reading-progress ] && [ -f "$script_root/slow-progress" ]; then exec /bin/sleep 5; fi
 case "$1" in
+exit-sync)
+ printf '%s\n' "$*" >> "$script_root/exit-args"
+ /bin/sleep 0.3
+ if [ -f "$script_root/exit-rejected" ]; then printf '%s\n' '{"state":"error","code":"login_required"}'; exit 1; fi
+ printf '%s\n' '{"state":"progress_synced","bookId":"'"$2"'","accountScope":"'"$3"'","uuid":"'"$4"'","recentMarked":false,"timeUploaded":true}' ;;
 status) if [ -f "$script_root/authenticated" ]; then printf '%s\n' '{"state":"authenticated","accountName":"synthetic account"}'; else printf '%s\n' '{"state":"login_required"}'; fi ;;
 logout) rm -f "$script_root/authenticated"; printf '%s\n' '{"state":"logged_out"}' ;;
 login)
@@ -75,6 +82,9 @@ restore-progress)
  rm -f "$script_root/restore-fixture"
  printf '%s\n' '{"state":"progress_restored","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":67.5,"cloudProgress":67.8,"restorePending":false}' ;;
 clear-cache) printf '%s\n' '{"state":"cache_cleared"}' ;;
+upload-time)
+ printf '%s\n' '{"version":1,"books":{"synthetic-2":{"confirmedSeconds":125,"confirmedDays":{"'"$(date +%Y-%m-%d)"'":125}}}}' > "$script_root/covers/accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/uploaded-reading-time-v1.json"
+ printf '%s\n' '{"state":"time_uploaded","bookId":"synthetic-2","remainingSeconds":0}' ;;
 import)
  printf '%s\n' "$2" >> "$script_root/imports"
  printf '%s\n' '{"state":"progress","done":5,"total":10}'
@@ -100,6 +110,14 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         const auto cachedCover = coverDirectory + "/synthetic-1-" + QString::fromLatin1(QCryptographicHash::hash(coverUrl.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".png";
         QImage cover(4, 6, QImage::Format_RGB32); cover.fill(Qt::black); check(cover.save(cachedCover));
         controller = new DownloaderController(image, &engine, program, coverRoot);
+        phase="imported-only offline reading clock";
+        {QFile registry(coverRoot+"/imports.json");check(registry.open(QIODevice::WriteOnly));registry.write(R"({"books":{"synthetic-2":{"state":"imported","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","uuid":"12345678-1234-1234-1234-123456789abc"}}})");}
+        controller->readingStarted("{12345678-1234-1234-1234-123456789ABC}");
+        QTest::qWait(1100);controller->setReadingApplicationActive(false);controller->readingStopped();
+        {QFile ledger(coverRoot+"/accounts/"+QString(64,'a')+"/local-reading-time-v1.json");check(ledger.open(QIODevice::ReadOnly));
+         const auto data=QJsonDocument::fromJson(ledger.readAll()).object().value("books").toObject();check(data.size()==1 && data.value("synthetic-2").toObject().value("seconds").toInt()>=1);}
+        controller->readingStarted("not-an-imported-document");controller->readingStopped();
+        phase="setup";
         int recentRequests=0;
         QObject::connect(controller,&DownloaderController::recentReadRequested,[&](const QString &uuid){
             check(uuid=="12345678-1234-1234-1234-123456789abc");++recentRequests;
@@ -198,6 +216,33 @@ ColumnLayout {
         until([&] { return visualChild(item, "bookSelection") != nullptr; });
         auto *coverImage = visualChild(item, "bookCoverImage"); check(coverImage);
         until([&] { return coverImage->property("status").toInt() == 1; });
+        phase="reading statistics tab";
+        const auto timeDir=coverRoot+"/accounts/"+QString(64,'a');
+        {QFile stats(timeDir+"/local-reading-time-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(QJsonDocument(QJsonObject{{"version",1},{"books",QJsonObject{{"synthetic-2",QJsonObject{{"seconds",150},{"lastRead",100},{"title","Synthetic timed book"},{"uuid","12345678-1234-1234-1234-123456789abc"},{"days",QJsonObject{{QDate::currentDate().toString(Qt::ISODate),125},{"2000-01-01",20}}}}}}}}).toJson());}
+        {QFile stats(timeDir+"/reading-progress-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(R"({"version":1,"books":{"synthetic-2":{"record":{"readingTime":3600,"updateTime":100}}}})");}
+        QMetaObject::invokeMethod(controller,"readingStatsChanged");
+        check(QMetaObject::invokeMethod(visualChild(item,"readingTimeTabButton"),"clicked"));
+        until([&]{return item->property("activeTab").toInt()==1 && visualChild(item,"readingTimeList")->isVisible();});
+        check(controller->readingStats().size()==1);
+        check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==150);
+        check(controller->readingStats()[0].toMap().value("uploadableSeconds").toInt()==125);
+        check(controller->readingStats()[0].toMap().value("heldSeconds").toInt()==25);
+        controller->setReadingDate("2000-01-01");check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==20);
+        check(!controller->readingStats()[0].toMap().value("canUploadDate").toBool());
+        controller->setReadingDate("undated");check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==5);
+        controller->setReadingDate("");
+        check(QMetaObject::invokeMethod(visualChild(item,"nextReadingDate"),"clicked"));
+        check(controller->readingDate()==QDate::currentDate().toString(Qt::ISODate));
+        check(QMetaObject::invokeMethod(visualChild(item,"previousReadingDate"),"clicked"));check(controller->readingDate().isEmpty());
+        auto *timeUpload=visualChild(item,"uploadReadingTimeButton");check(timeUpload && timeUpload->isVisible());
+        auto timeBeforeScreenshot=window.grabWindow();if(!timeBeforeScreenshot.isNull())check(timeBeforeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.before.png"));
+        const auto beforeTimeShelf=callCount("shelf");
+        check(QMetaObject::invokeMethod(timeUpload,"clicked"));
+        until([&]{return !controller->busy() && callCount("shelf")==beforeTimeShelf+1;});
+        check(callCount("upload-time")==1 && controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==25 && controller->readingStats()[0].toMap().value("uploadableSeconds").toInt()==0);
+        auto timeScreenshot=window.grabWindow();if(!timeScreenshot.isNull())check(timeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.png"));
+        check(QMetaObject::invokeMethod(visualChild(item,"shelfTabButton"),"clicked"));
+        phase="rendering";
         auto *selection = visualChild(item, "bookSelection");
         auto *importButton = visualChild(item, "bookImportButton");
         check(!item->property("multiSelect").toBool() && !selection->isVisible() && importButton->isVisible());
@@ -362,6 +407,56 @@ ColumnLayout {
         controller->refresh();
         until([&] { return returnedToLogin && controller->loggedIn() && !controller->busy() && controller->books().size() == 2; });
         controller->closePage();
+        phase="background exit upload and native book badges";
+        const QString nativeUuid="12345678-1234-1234-1234-123456789abc";
+        check(controller->nativeBookBadge("unknown").isEmpty());
+        controller->readingStarted(nativeUuid);controller->readingStopped();
+        check(controller->nativeBookBadge(nativeUuid)=="sync"); // Close is queued while inactive.
+        controller->readingStarted(nativeUuid); // Reopening drops that pending close.
+        check(controller->nativeBookBadge(nativeUuid)=="weread");
+        const auto loginBeforeAuto=callCount("login");const auto autoBefore=callCount("exit-sync");
+        controller->setReadingDeviceSleeping(true);controller->setReadingApplicationActive(true);controller->readingStopped(42);
+        QTest::qWait(1600);check(callCount("exit-sync")==autoBefore && controller->nativeBookBadge(nativeUuid)=="sync");
+        controller->setReadingDeviceSleeping(false);
+        until([&]{return controller->busy();});check(controller->nativeBookBadge(nativeUuid)=="sync");
+        until([&]{return !controller->busy() && controller->nativeBookBadge(nativeUuid)=="weread";});
+        check(callCount("exit-sync")==autoBefore+1 && callCount("login")==loginBeforeAuto && !controller->opened());
+        {QFile args(temporary.path()+"/exit-args");check(args.open(QIODevice::ReadOnly));check(args.readAll().contains(("exit-sync synthetic-2 "+QString(64,'a')+" "+nativeUuid+" 42").toUtf8()));}
+        controller->readingStopped();QTest::qWait(1600);check(callCount("exit-sync")==autoBefore+1); // Duplicate close is a no-op.
+        {QFile reject(temporary.path()+"/exit-rejected");check(reject.open(QIODevice::WriteOnly));}
+        controller->readingStarted(nativeUuid);controller->readingStopped();
+        until([&]{return controller->nativeBookBadge(nativeUuid)=="error";});
+        check(callCount("login")==loginBeforeAuto && !controller->opened()); // Auth failure never opens QR.
+        controller->readingStarted(nativeUuid);controller->readingStopped();controller->readingStarted(nativeUuid);
+        QTest::qWait(1600);check(!controller->busy()); // Cancel queued work if reopened.
+        QFile::remove(temporary.path()+"/exit-rejected");
+        phase="exit upload preempts whole-shelf progress refresh";
+        const auto progressBeforePriority=callCount("reading-progress");const auto exitsBeforePriority=callCount("exit-sync");
+        {QFile slow(temporary.path()+"/slow-progress");check(slow.open(QIODevice::WriteOnly));}
+        controller->openPage();until([&]{return callCount("reading-progress")>progressBeforePriority;});
+        QElapsedTimer priorityWait;priorityWait.start();controller->readingStopped(42);
+        until([&]{return callCount("exit-sync")>exitsBeforePriority;},4000);check(priorityWait.elapsed()<3500);
+        QFile::remove(temporary.path()+"/slow-progress");
+        until([&]{return !controller->busy() && controller->nativeBookBadge(nativeUuid)=="weread";});
+        controller->closePage();controller->readingStarted(nativeUuid);
+        controller->setReadingApplicationActive(false);controller->readingStopped();
+        {QFile registry(coverRoot+"/imports.json");check(registry.open(QIODevice::WriteOnly));registry.write("{\"books\":{}}");}
+        controller->setReadingApplicationActive(true);QTest::qWait(1600);
+        check(controller->nativeBookBadge(nativeUuid).isEmpty() && !controller->busy()); // Removed source drops queued upload.
+        phase="passive native badge component";
+        QQuickWindow badgeWindow;badgeWindow.setColor(Qt::white);badgeWindow.resize(420,160);badgeWindow.show();
+        QQmlComponent badgeComponent(&engine,QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[1])).absolutePath()+"/WeReadBadge.qml"));
+        if(badgeComponent.isError())std::cerr<<badgeComponent.errorString().toStdString();
+        auto *badge=qobject_cast<QQuickItem*>(badgeComponent.create());check(badge);
+        badge->setParentItem(badgeWindow.contentItem());badge->setWidth(96);badge->setHeight(96);badge->setProperty("badgeStatus","weread");QCoreApplication::processEvents();check(badge->isVisible());
+        badge->setProperty("badgeStatus","sync");check(badge->isVisible());
+        badge->setProperty("badgeStatus","error");check(badge->isVisible());
+        badge->setProperty("badgeStatus","");check(!badge->isVisible());delete badge;
+        const QStringList badgeStates{"weread","sync","error"};
+        for(int i=0;i<badgeStates.size();++i){auto *b=qobject_cast<QQuickItem*>(badgeComponent.create());check(b);
+            b->setParentItem(badgeWindow.contentItem());b->setParent(&badgeWindow);b->setWidth(96);b->setHeight(96);b->setX(24+i*132);b->setY(32);b->setProperty("badgeStatus",badgeStates[i]);}
+        badgeWindow.show();QTest::qWait(100);const auto badgeScreenshot=badgeWindow.grabWindow();
+        if(!badgeScreenshot.isNull())check(badgeScreenshot.save(QString::fromLocal8Bit(argv[2])+".badges.png"));
         std::cout << "touch paging, cached startup, auth expiry, import queue and native QML instantiation ok\n";
     } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
 }

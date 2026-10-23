@@ -10,6 +10,10 @@
 #include <QMap>
 #include <QSet>
 #include "cover_store.h"
+#include "reading_time_store.h"
+#include <QTimer>
+#include <QElapsedTimer>
+#include <QFileSystemWatcher>
 
 class LoginImage : public QQuickImageProvider {
 public:
@@ -24,6 +28,7 @@ class DownloaderController : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool opened READ opened NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(int nativeBookRevision READ nativeBookRevision NOTIFY nativeBooksChanged)
     Q_PROPERTY(bool canQueue READ canQueue NOTIFY changed)
     Q_PROPERTY(bool loggedIn READ loggedIn NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
@@ -31,20 +36,29 @@ class DownloaderController : public QObject {
     Q_PROPERTY(QString qrImage READ qrImage NOTIFY changed)
     Q_PROPERTY(QVariantList books READ books NOTIFY booksChanged)
     Q_PROPERTY(int coverRevision READ coverRevision NOTIFY coversChanged)
+    Q_PROPERTY(QVariantList readingStats READ readingStats NOTIFY readingStatsChanged)
+    Q_PROPERTY(QStringList readingDates READ readingDates NOTIFY readingStatsChanged)
+    Q_PROPERTY(QString readingDate READ readingDate WRITE setReadingDate NOTIFY readingStatsChanged)
 public:
     explicit DownloaderController(LoginImage *image, QObject *parent = nullptr,
         const QString &workerProgram = QStringLiteral("/home/root/weread-downloader/weread-downloader-worker"),
         const QString &coverRoot = QStringLiteral("/home/root/.local/share/weread-downloader"));
     ~DownloaderController() override;
     bool opened() const { return m_opened; }
-    bool busy() const { return m_process.state() != QProcess::NotRunning; }
-    bool canQueue() const { return m_loggedIn && (!busy() || (m_operation == "import" && !m_error)); }
+    bool busy() const { return m_process.state() != QProcess::NotRunning || m_autoSyncProcess.state() != QProcess::NotRunning; }
+    int nativeBookRevision() const { return m_nativeBookRevision; }
+    Q_INVOKABLE QString nativeBookBadge(const QString &uuid) const;
+    bool canQueue() const { return m_loggedIn && (!busy() || (m_process.state()!=QProcess::NotRunning && m_operation == "import" && !m_error)); }
     bool loggedIn() const { return m_loggedIn; }
-    QString status() const { return m_status; }
+    QString status() const { return m_autoSyncProcess.state()!=QProcess::NotRunning ? QStringLiteral("正在后台上传微信读书进度…") : m_status; }
     QString accountName() const { return m_accountName; }
     QString qrImage() const { return m_qrImage; }
     QVariantList books() const { return m_books; }
     int coverRevision() const { return m_coverRevision; }
+    QVariantList readingStats() const;
+    QStringList readingDates() const;
+    QString readingDate() const { return m_readingDate; }
+    void setReadingDate(const QString &date);
     Q_INVOKABLE QString coverSource(const QString &id, const QString &url);
     Q_INVOKABLE void openPage();
     Q_INVOKABLE void closePage();
@@ -60,6 +74,14 @@ public:
     Q_INVOKABLE void completeRestore(const QString &id, bool ok);
     Q_INVOKABLE void attachSettings(QObject *settings);
     Q_INVOKABLE void placeBelowAppLoad(QQuickItem *item);
+    Q_INVOKABLE void uploadReadingTime(const QString &id);
+    Q_INVOKABLE void readingStarted(const QString &uuid, int page = -1);
+    Q_INVOKABLE void readingStopped(int expectedPage = -1);
+    Q_INVOKABLE void readingActivity();
+    Q_INVOKABLE void setReadingSuspended(bool suspended);
+    Q_INVOKABLE void setReadingDeviceSleeping(bool sleeping);
+    Q_INVOKABLE void setReadingApplicationActive(bool active);
+    Q_INVOKABLE void setReadingLocked(bool locked);
 signals:
     void changed();
     void coversChanged();
@@ -67,6 +89,8 @@ signals:
     void bookUpdated(const QString &id, const QVariantMap &book);
     void restoreRequested(const QString &uuid, int page, const QString &id);
     void recentReadRequested(const QString &uuid);
+    void readingStatsChanged();
+    void nativeBooksChanged();
 private:
     void start(const QString &operation, const QString &id = {});
     void readOutput();
@@ -79,13 +103,34 @@ private:
     void bookState(const QString &state, int progress = -1);
     void updateBook(const QString &id, const QString &state, int progress = -1);
     void clearQueue();
+    void checkpointReadingTime();
+    void updateReadingTimer();
+    void reloadNativeBooks();
+    void processExitQueue();
+    void finishExitSync(int code, QProcess::ExitStatus status);
+    void readExitSync();
+    void stopExitSync();
+    void notifyNativeBooks();
     QString currentTitle() const;
     bool enableImporter();
     bool restoreImporter();
     CoverStore m_covers;
     int m_coverRevision = 0;
     LoginImage *m_image;
-    QProcess m_process, m_progressProcess;
+    QProcess m_process, m_progressProcess, m_autoSyncProcess;
+    QFileSystemWatcher m_nativeBookWatcher;
+    QMap<QString,QJsonObject> m_nativeBooks;
+    QMap<QString,QJsonObject> m_exitJobs;
+    QMap<QString,qint64> m_exitNotBefore;
+    QElapsedTimer m_exitClock;
+    QStringList m_exitQueue;
+    QSet<QString> m_exitErrors;
+    QString m_readingUuid,m_exitUuid,m_readingOpeningSignature;
+    QJsonObject m_exitJob;
+    QByteArray m_exitBuffer;
+    bool m_exitSuccess=false,m_exitCanceled=false;
+    int m_nativeBookRevision=0;
+    quint64 m_exitGeneration=0;
     QByteArray m_progressBuffer;
     QString m_restoreId;
     QSet<QString> m_autoRestoreTried;
@@ -102,4 +147,10 @@ private:
     quint64 m_qrRevision = 0;
     quint64 m_generation = 0;
     const QString m_workerProgram;
+    QString m_readingDate;
+    const QString m_dataRoot;
+    WereadDownloader::ReadingTimeStore m_readingTime;
+    QTimer m_readingTimer;
+    QElapsedTimer m_readingClock;
+    bool m_deviceSleeping=false,m_readingSuspended=true,m_readingAppActive=true,m_readingLocked=false;
 };

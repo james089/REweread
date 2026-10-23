@@ -7,7 +7,11 @@ local root = "/home/root/.local/share/weread-downloader"
 package.path = "/home/root/weread-downloader/lua/?.lua;" .. app .. "/?.lua;" .. app .. "/lib/?.lua;" .. package.path
 require("koreader_paths").append(ko)
 local ffi = require("ffi")
-ffi.cdef[[unsigned int umask(unsigned int mask);]]
+ffi.cdef[[unsigned int umask(unsigned int mask);
+int getppid(void);int prctl(int,unsigned long,unsigned long,unsigned long,unsigned long);]]
+-- A stopped UI/worker must not leave a helper sending requests in the background.
+local worker_parent=ffi.C.getppid()
+assert(ffi.C.prctl(1,15,0,0,0)==0 and ffi.C.getppid()==worker_parent,"worker_parent_changed")
 ffi.C.umask(63) -- 0077 before any file is created, including helper caches.
 local Json = require("json_util")
 local Config = require("config_bridge")
@@ -130,9 +134,10 @@ local function execute()
         return
     end
     local settings, scope, account_root = context()
+    if arg[3] then assert((operation == "sync-progress" or operation == "upload-time") and scope == arg[3], "account_changed") end
     local ShelfCache = require("shelf_cache")
     local shelf = ShelfCache:new(account_root)
-    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" then
+    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "upload-time" then
         local progress = require("reading_progress").new(settings, scope, account_root)
         local ok, result = pcall(function()
             if operation == "reading-progress" then
@@ -141,6 +146,7 @@ local function execute()
             end
             if operation == "prepare-restore" then return progress:prepareRestore(arg[2]) end
             if operation == "mark-recent" then return progress:markRecent(arg[2]) end
+            if operation == "upload-time" then return progress:uploadTime(arg[2]) end
             if operation == "restore-progress" then return progress:restore(arg[2]) end
             if operation == "restore-complete" then return progress:restored(arg[2]) end
             return progress:sync(arg[2])
@@ -149,7 +155,8 @@ local function execute()
         if not ok then
             local codes={progress_not_located=true,progress_layout_unsupported=true,progress_network_failed=true,
                 progress_cache_changed=true,progress_offset_unsupported=true,cloud_progress_unavailable=true,
-                cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true}
+                cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true,
+                time_cache_unavailable=true,time_cloud_unavailable=true,time_upload_rejected=true,time_upload_uncertain=true}
             emit({state="error", code=codes[result] and result or "progress_failed"})
             return
         end

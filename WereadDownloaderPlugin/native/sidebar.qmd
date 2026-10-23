@@ -29,8 +29,14 @@ AFFECT /qml/device/view/main/MainView.qml
                 anchors.fill: parent
                 z: 10000
                 visible: Downloader.opened
+                property bool readingLocked: root.passcodeHandler?.userLocked ?? true
+                onReadingLockedChanged: Downloader.setReadingLocked(readingLocked)
                 onVisibleChanged: { if (!visible && Downloader.opened) Downloader.closePage() }
-                Component.onCompleted: Downloader.attachSettings(Settings)
+                Component.onCompleted: {
+                    Downloader.attachSettings(Settings);
+                    Downloader.setReadingApplicationActive(Qt.application.state === Qt.ApplicationActive);
+                    Downloader.setReadingLocked(readingLocked);
+                }
                 Loader {
                     anchors.fill: parent
                     active: Downloader.opened
@@ -59,8 +65,133 @@ AFFECT /qml/device/view/main/MainView.qml
                 Connections {
                     target: Qt.application
                     function onStateChanged() {
+                        Downloader.setReadingApplicationActive(Qt.application.state === Qt.ApplicationActive);
                         if (Qt.application.state !== Qt.ApplicationActive) Downloader.closePage()
                     }
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/documentview/DocumentView.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE FocusScope#root
+        LOCATE BEFORE ALL
+        INSERT {
+            Item {
+                id: wereadReadingTimeTracker
+                property string uuid: ""
+                property int lastPage: -1
+                function updatePause() {
+                    Downloader.setReadingDeviceSleeping(root.inSuspend);
+                    Downloader.setReadingSuspended(root.inSuspend || !root.documentLoaded || !root.visible || root.subDialogOpen || root.fullscreenSubDialogOpen);
+                }
+                Connections {
+                    target: root
+                    function onDocumentOpened(document) {
+                        wereadReadingTimeTracker.uuid = String(document.id);
+                        wereadReadingTimeTracker.lastPage = root.currentPage;
+                        Downloader.readingStarted(wereadReadingTimeTracker.uuid, root.currentPage);
+                        wereadReadingTimeTracker.updatePause();
+                    }
+                    function onDocumentClosed() { Downloader.readingStopped(wereadReadingTimeTracker.lastPage);wereadReadingTimeTracker.uuid = "";wereadReadingTimeTracker.lastPage = -1; }
+                    function onCurrentPageChanged() {
+                        if (root.document && String(root.document.id) === wereadReadingTimeTracker.uuid && root.currentPage >= 0) {
+                            wereadReadingTimeTracker.lastPage = root.currentPage;
+                            Downloader.readingActivity();
+                        }
+                    }
+                    function onInSuspendChanged() { wereadReadingTimeTracker.updatePause(); }
+                    function onDocumentLoadedChanged() { wereadReadingTimeTracker.updatePause(); }
+                    function onFullscreenSubDialogOpenChanged() { wereadReadingTimeTracker.updatePause(); }
+                    function onSubDialogOpenChanged() { wereadReadingTimeTracker.updatePause(); }
+                    function onVisibleChanged() { wereadReadingTimeTracker.updatePause(); }
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/navigator/ContentEntriesGridItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE MouseArea#gridItem > Item#preview > Rectangle#thumbnail
+        LOCATE AFTER ALL
+        INSERT {
+            Loader {
+                id: wereadNativeBadgeLoader
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.rightMargin: 10
+                anchors.bottomMargin: Math.max(archiveWarning.visible ? archiveWarning.height : 0, inactiveWarning.visible ? inactiveWarning.height : 0) + 10
+                width: 48
+                height: 48
+                property string badgeStatus: {
+                    const revision = Downloader.nativeBookRevision;
+                    return gridItem.entry ? Downloader.nativeBookBadge(String(gridItem.entry.id)) : "";
+                }
+                active: badgeStatus !== ""
+                visible: active
+                source: "qrc:/weread-downloader/WeReadBadge.qml"
+                onLoaded: {
+                    item.badgeStatus = Qt.binding(function() { return wereadNativeBadgeLoader.badgeStatus; });
+                    console.info("WereadDownloaderPlugin: native-badge-ready");
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/syncserviceexplorer/ContentGridItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE ContentItemBase#gridItem > Item#_thumbnail
+        LOCATE AFTER ALL
+        INSERT {
+            Loader {
+                id: wereadCurrentGridBadge
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 10
+                width: 48
+                height: 48
+                property string badgeStatus: {
+                    const revision = Downloader.nativeBookRevision;
+                    return Downloader.nativeBookBadge(gridItem.entityId);
+                }
+                active: badgeStatus !== ""
+                visible: active
+                source: "qrc:/weread-downloader/WeReadBadge.qml"
+                onLoaded: {
+                    item.badgeStatus = Qt.binding(function() { return wereadCurrentGridBadge.badgeStatus; });
+                    console.info("WereadDownloaderPlugin: current-library-badge-ready");
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/syncserviceexplorer/ContentListItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE ContentItemBase#listItem > RowLayout#row > Rectangle#thumbnailBackground
+        LOCATE AFTER ALL
+        INSERT {
+            Loader {
+                id: wereadCurrentListBadge
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 10
+                width: 40
+                height: 40
+                property string badgeStatus: {
+                    const revision = Downloader.nativeBookRevision;
+                    return Downloader.nativeBookBadge(listItem.entityId);
+                }
+                active: badgeStatus !== ""
+                visible: active
+                source: "qrc:/weread-downloader/WeReadBadge.qml"
+                onLoaded: {
+                    item.badgeStatus = Qt.binding(function() { return wereadCurrentListBadge.badgeStatus; });
+                    console.info("WereadDownloaderPlugin: current-library-badge-ready");
                 }
             }
         }

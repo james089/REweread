@@ -1,6 +1,7 @@
 #include "epub.h"
 #include "cache_cleanup.h"
 #include "reading_progress.h"
+#include "exit_sync_state.h"
 #include "import_registry.h"
 #include "native_address.h"
 #include "native_http.h"
@@ -55,7 +56,7 @@ QJsonObject readJson(const QString &path, qint64 limit = 128 * 1024) {
     need(e.error == QJsonParseError::NoError && doc.isObject(), "invalid_json");
     return doc.object();
 }
-QJsonObject helper(const QString &operation, const QString &id = {}) {
+QJsonObject helper(const QString &operation, const QString &id = {}, const QString &expectedScope = {}) {
     QProcess process;
     // An allowlist prevents XOVI preload and credential/debugging environment
     // variables from reaching the upstream helper process.
@@ -71,6 +72,7 @@ QJsonObject helper(const QString &operation, const QString &id = {}) {
     process.setProgram("/home/root/xovi/exthome/appload/koreader/luajit");
     QStringList args{installRoot + "/lua/adapter.lua", operation};
     if (!id.isEmpty()) args.append(id);
+    if (!expectedScope.isEmpty()) args.append(expectedScope);
     process.setArguments(args);
     process.start(); need(process.waitForStarted(5000), "helper_unavailable");
     QElapsedTimer elapsed; elapsed.start();
@@ -235,8 +237,19 @@ int main(int argc, char **argv) {
 #endif
     QCoreApplication app(argc, argv);
     try {
-        need(argc == 2 || argc == 3, "invalid_command");
-        const auto operation = QString::fromLocal8Bit(argv[1]);
+        need(argc == 2 || argc == 3 || argc == 5 || argc == 6 || argc == 7, "invalid_command");
+        const auto requested = QString::fromLocal8Bit(argv[1]);
+        const bool exitSync=requested=="exit-sync";
+        need(exitSync?(argc>=5 && argc<=7):argc<=3,"invalid_command");
+        const auto expectedScope=exitSync?QString::fromLocal8Bit(argv[3]):QString();
+        const auto expectedUuid=exitSync?QString::fromLocal8Bit(argv[4]):QString();
+        bool pageValid=true;const int expectedPage=exitSync && argc>=6?QString::fromLocal8Bit(argv[5]).toInt(&pageValid):-1;
+        need(pageValid && expectedPage>=-1 && expectedPage<5000,"invalid_command");
+        const auto openingSignature=exitSync && argc==7?QString::fromLocal8Bit(argv[6]):QString();
+        need(openingSignature.isEmpty() || QRegularExpression("\\A[a-f0-9]{64}\\z").match(openingSignature).hasMatch(),"invalid_command");
+        if(exitSync)need(QRegularExpression("\\A[a-f0-9]{64}\\z").match(expectedScope).hasMatch()
+            && QRegularExpression("\\A[0-9a-f-]{36}\\z").match(expectedUuid).hasMatch(),"invalid_command");
+        const auto operation = exitSync?QStringLiteral("sync-progress"):requested;
         need(QDir().mkpath(root) && !QFileInfo(root).isSymLink(), "private_root_unavailable");
         need(::chmod(QFile::encodeName(root).constData(), 0700) == 0, "private_root_unavailable");
         if (operation == "reading-progress") { emitRow(helper(operation)); return 0; }
@@ -265,19 +278,54 @@ int main(int argc, char **argv) {
             }
             row["books"] = books; emitRow(row); return 0;
         }
-        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress") && argc == 3, "invalid_command");
+        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress" || operation == "upload-time") && (exitSync || argc == 3), "invalid_command");
         const auto id = QString::fromLocal8Bit(argv[2]);
         need(Epub::validBookId(id), "invalid_book_id");
         auto identity = helper("status");
         need(identity.value("state") == "authenticated", "login_required");
+        if(exitSync)need(identity.value("accountScope")==expectedScope,"account_changed");
         registry.reconcile(scan(registry));
+        if(operation=="upload-time") {
+            const auto record=registry.record(id);
+            need((record.value("state")=="imported" || record.value("state")=="removed")
+                && record.value("accountScope")==identity.value("accountScope"),"progress_not_located");
+            emitRow(helper(operation,id));return 0;
+        }
         if (operation == "sync-progress" || operation == "restore-progress") {
             const auto record = registry.record(id);
             need(record.value("state") == "imported" && record.value("accountScope") == identity.value("accountScope"), "progress_not_located");
+            if(exitSync)need(record.value("uuid")==expectedUuid && record.value("accountScope")==expectedScope,"account_changed");
             const auto path = libraryRoot + '/' + record.value("uuid").toString() + ".epub";
             need(!QFileInfo(path).isSymLink() && Epub(path).sourceBookId() == id, "progress_not_located");
-            if (operation == "restore-progress") restoreProgress(id, false);
-            else emitRow(helper(operation, id)); return 0;
+            if(exitSync && expectedPage>=0){
+                const auto metadata=libraryRoot+'/'+expectedUuid+".metadata";bool settled=false;
+                for(int i=0;i<50 && !canceled;++i){
+                    if(readJson(metadata).value("lastOpenedPage").toInt(-1)==expectedPage){settled=true;break;}
+                    QThread::msleep(100);
+                }
+                need(settled && !canceled,"progress_local_changed");
+            }
+            if (operation == "restore-progress") {restoreProgress(id, false);return 0;}
+            const auto base=libraryRoot+'/'+record.value("uuid").toString();
+            const auto signature=exitSync?exitPositionSignature(base):QString();
+            const auto account=root+"/accounts/"+identity.value("accountScope").toString();
+            // Compare this reading session's opening/closing position. Never
+            // skip a move back to a formerly uploaded page merely because an
+            // old upload receipt happens to match it.
+            const bool unchanged=exitSync && !signature.isEmpty() && signature==openingSignature;
+            if(unchanged){
+                const auto localPath=account+"/local-reading-time-v1.json",sentPath=account+"/uploaded-reading-time-v1.json";
+                const auto local=QFileInfo::exists(localPath)?readJson(localPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
+                const auto sent=QFileInfo::exists(sentPath)?readJson(sentPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
+                const auto date=QDate::currentDate().toString(Qt::ISODate);
+                const auto pending=local.value("days").toObject().value(date).toDouble()-sent.value("confirmedDays").toObject().value(date).toDouble();
+                bool timeOk=!sent.value("pending").isObject();
+                if(pending>0 && timeOk)timeOk=helper("upload-time",id,expectedScope).value("state")=="time_uploaded";
+                emitRow({{"state","exit_sync_skipped"},{"bookId",id},{"uuid",record.value("uuid")},
+                    {"accountScope",identity.value("accountScope")},{"timeUploaded",timeOk},{"recentMarked",false}});return 0;
+            }
+            auto synced=helper(operation,id,expectedScope);
+            emitRow(synced);return 0;
         }
         if (operation == "clear-cache") {
             need(registry.record(id).value("state") == "removed", "book_not_removed");

@@ -306,6 +306,13 @@ function M.new(settings,scope,account,environment)
    restorePending=old.restorePending or false,restoreAutomatic=old.restoreAutomatic or false})
   return {state='recent_marked',bookId=id,uuid=row.uuid,accountScope=scope}
  end
+ function self:uploadTime(id)
+  need(valid(id),'invalid_book_id')
+  local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
+  need(row and (row.state=='imported' or row.state=='removed') and row.accountScope==scope,'progress_not_located')
+  local result=require('reading_time_sync').upload(self,id,account,row.uuid)
+  return {state='time_uploaded',bookId=id,accountScope=scope,uploadedSeconds=result.uploaded,remainingSeconds=result.remaining,deferredSeconds=result.deferred or 0}
+ end
  function self:sync(id)
   need(valid(id),'invalid_book_id')
   local registered=need(json(root..'/imports.json'),'progress_not_located')
@@ -394,7 +401,8 @@ function M.new(settings,scope,account,environment)
   local display=Percent.calculate(catalog,after,original)
   self:saveRecord(id,after,display,{restorePending=false,restoreAutomatic=false})
   local recent=pcall(function()self:markRecent(id)end)
-  return {state='progress_synced',bookId=id,uuid=row.uuid,recentMarked=recent,accountScope=scope,cloudProgress=percent(display) or -1,cloudProgressStale=display==nil,restorePending=false,restoreAutomatic=false}
+  local timeOk,timeResult=pcall(function()return self:uploadTime(id)end)
+  return {state='progress_synced',bookId=id,uuid=row.uuid,recentMarked=recent,timeUploaded=timeOk,timeUncertain=not timeOk and timeResult=='time_upload_uncertain',accountScope=scope,cloudProgress=percent(display) or -1,cloudProgressStale=display==nil,restorePending=false,restoreAutomatic=false}
  end
  return self
 end

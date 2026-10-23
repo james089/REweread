@@ -566,3 +566,160 @@ Download optimization and single/multi-select deployment (2026-10-22):
   Install 20261022234854 confirmed fresh host/sidebar readiness and exact success
   marker. Temporary synthetic fixtures removed; install wake lock released.
   Actual native position remains unchanged pending the user's explicit retry.
+
+### Reading-time statistics tab and native tracking
+
+- Bottom navigation now mirrors the main app's 88px footer with 书架 and
+  阅读时间统计. Statistics are per-book, sorted by latest local/cloud activity,
+  showing local measured cumulative seconds, last-fetched cloud cumulative
+  readingTime, pending local seconds, and an independent 上传时长 action.
+  Existing 上传进度 also attempts pending time after successful position sync.
+  Zero/absent local time never creates a synthetic duration or extra time POST.
+- Only UUIDs registered as imported with a valid account scope/book ID start
+  the native clock. Tracking does not require opening/logging into the plugin
+  UI, works offline, and stays isolated by the original account scope. No old
+  native duration is inferred from timestamps or imported from the standalone app.
+- Native DocumentView open/close/page/suspend/visibility/subdialog hooks plus
+  MainView passcode and application-state gates pause the clock for hidden,
+  locked, suspended or non-reading views and while the plugin is open. A steady
+  clock checkpoints every five seconds while active, rejects missed intervals
+  over 15 seconds, and stops after five minutes without a page change. Page
+  activity or wake/unlock resumes it. This measures active-view time, not gaze.
+- The UI exclusively owns account/local-reading-time-v1.json (version 1, 0600,
+  atomic saves). Worker exclusively owns uploaded-reading-time-v1.json with
+  confirmed local-through counters and a durable pending journal BEFORE POST.
+  Separate writers prevent display/reading checkpoints from losing receipts.
+  Business rejection releases the pending reservation; transport ambiguity or
+  crash leaves it uncertain and blocks blind retransmission. There is no
+  automatic discard/clear of uncertain records. Data remains for later audit.
+- Upload uses existing signed read payloads, preserves a fresh cloud position,
+  and sends only recorded, unconfirmed deltas in chunks <=60 seconds, bounded
+  to 60 chunks/roughly 90 seconds of work per operation. Positive business
+  receipts confirm delivery like the independent app; cloud aggregate counters
+  may lag and are refreshed without resending accepted chunks. Long backlogs
+  can remain pending for another explicit upload. Local counters never reset.
+- Existing download/restore/progress information reads already fetch the cloud
+  readingTime field; statistics reuse that private record rather than adding a
+  separate per-book statistics network request. Removed books' local history
+  survives cache deletion; time-only upload accepts their retained registry
+  identity, while position uploads retain native-source verification.
+- Synthetic tests cover fractional seconds, pause, missed sleep, idle cutoff,
+  restart/corrupt-data handling, imported-only offline controller events, stats
+  tab switching, time upload dispatch, chunked deltas, repeat-no-op, explicit
+  rejection and ambiguous-response refusal. Device Lua tests cover combined
+  progress+time upload. No real account time was fabricated for a device test.
+- Full Linux regression, official SDK build, host Qt5 core/UI tests, device Qt6
+  timer/UI tests and exact-firmware peer replay passed. Inspected synthetic
+  device statistics screenshot for footer, durations and the upload control.
+  Real nonzero cloud-time receipt validation awaits the user's first measured
+  reading session and explicit upload; no synthetic duration was sent remotely.
+
+- Initial real reading check produced no ledger. Native Document.id is a UUID
+  value; the controller now parses both identifiers with QUuid instead of exact
+  string equality (handles braces and case), while preserving the registry UUID
+  in the ledger. The offline regression uses a braced upper-case identifier.
+  Installed corrected build 20261023002831; host/sidebar readiness confirmed,
+  install wake lock released. Real native event/clock validation remains pending;
+  do not claim actual-device recording or real cloud-time upload is verified.
+
+### Per-day reading statistics (2026-10-22)
+- Account-local ledger keeps cumulative seconds plus `days` keyed by the device's
+  ISO local date. Steady-clock elapsed intervals are split at local midnight;
+  timezone/daylight transitions use Qt local calendar boundaries. Existing
+  cumulative seconds without day buckets remain an explicitly undated balance.
+  No date is inferred from lastRead. Date totals plus undated balance preserve
+  the previous cumulative total. Cloud display is still explicitly cumulative.
+- Statistics supports all dates, individual recorded dates (including today)
+  and undated history. Uploadable-today and held historical balances are shown
+  separately. Both time-only and combined progress uploads use today's bucket
+  and per-day acknowledgement counters in the worker-owned journal. Existing
+  aggregate receipts survive migration. Previous/undated deltas are retained,
+  never silently charged to today's reading. Historical cloud attribution is
+  unverified; this build does not backdate requests or claim cloud daily sync.
+  Crossing midnight during request preparation stops further POSTs.
+- Verified the preceding UUID-format fix with a real native reading event:
+  matched/active state and a nonzero private counter, inspected only as aggregate
+  counts (no titles, identifiers or account material). No real time uploaded.
+- Date splitting, migration, filtering, today's uploads, historical deferral,
+  ambiguous-reply refusal and midnight upload cutoff pass synthetic tests.
+  Full Linux regression, host Qt5 core/UI, official SDK, device Qt6 core/UI,
+  device Lua time and combined-progress tests pass. Inspected synthetic daily
+  statistics screenshot. Build 20261023003914 installed; native host/sidebar readiness confirmed,
+  rollback guard disarmed, install wake lock and synthetic fixtures cleaned.
+
+### Exit upload and native library badges (2026-10-22)
+- The user explicitly reinstated the previously canceled automatic exit upload.
+  It is enabled by default for plugin-imported native books. DocumentClosed
+  checkpoints local time and queues the provenance-bound UUID/book/account job.
+  A monotonic 1.5-second minimum lets native position persistence settle. Jobs
+  serialize with plugin work; locked, display-sleeping or inactive views defer
+  new jobs. Reopening the same native UUID drops queued work or cancels its
+  running worker. Ordinary sleep/menu/page events do not themselves upload.
+- Independent background `exit-sync` reuses the existing exact position upload,
+  recent-reading update and today's pending-time upload. Worker and Lua adapter
+  both verify the original account scope; registry/native EPUB provenance and
+  existing cloud-conflict/location guards remain mandatory. Auth/network errors
+  stay passive and never launch login QR in the background. No blind retries;
+  ambiguous time receipts retain the existing pending journal. No wake lock is
+  held by reading or exit sync. Each job has a three-minute upper bound.
+- Worker termination is graceful before forced kill, and the Lua adapter installs
+  a Linux parent-death signal so stopping a worker cannot orphan an uploader.
+- Native library cover bottom-right gets a passive 48px source badge for all
+  known imported UUIDs, independent of whether the plugin page was opened.
+  Queued/running upload shows a static sync icon; normal completion restores the
+  source icon; failures add an exclamation indicator. Manual progress/time
+  uploads also reflect this state. No touch handler or continuous animation.
+  Badge artwork is project-drawn SVG, not downloaded vendor artwork. The native
+  archive/excluded-sync warnings retain their space. Registry changes are
+  watched atomically, with cached lookups rather than disk reads per tile.
+- Focused regressions cover offline close queueing, duplicate close suppression,
+  sleeping defer/resume, reopening cancellation, account-bound arguments,
+  missing/removed provenance, silent auth failure and badge component states.
+  Firmware peer replay verifies exact grid/reader/host insertion. Full Linux
+  regression, host Qt5 UI and official SDK build pass; real-device worker rejects
+  a synthetic wrong-account job with account_changed before any upload. No real
+  reading position or duration was submitted in this guard test. Device badge
+  rendering/load checks and installation are tracked in the following note.
+
+### Correction: current explorer badges and exit priority
+- Build 20261023005648 was loaded (device/source SHA comparison confirmed),
+  and an actual background success was observed in sanitized runtime markers.
+  However its icon hook targeted the legacy ContentEntriesGridItem, used by the
+  Recent menu, not the current navigator. Static replay/component rendering did
+  not prove the actual shelf hook. Current grid/list delegates are instead
+  /qml/device/view/syncserviceexplorer/ContentGridItem.qml (entityId, _thumbnail)
+  and ContentListItem.qml (entityId, thumbnailBackground). Both now receive
+  passive source/sync/error badges and are included in replay validation.
+- Exit jobs now preempt the whole-shelf reading-progress subprocess; starting
+  whole-shelf reads defers to queued exit work. A focused five-second blocked
+  shelf-read regression verifies the exit worker starts before that read ends.
+  Foreground work still serializes normally, and exit batches refresh only once.
+- Capture opening page/layout/native-PDF size+mtime signature (not a percentage)
+  and compare after native close/save settling. If unchanged, skip the expensive
+  exact position upload; only today's measured pending time is eligible for its
+  own upload, retaining account/provenance/uncertain-receipt guards. A changed
+  page/layout/PDF takes the existing exact synchronization path. Reopening
+  timestamps are ignored. No broad scan/upload is triggered by opening the
+  plugin. Entering the plugin still reads the cloud progress for display.
+- Time upload retains a fresh cloud position before each acknowledged chunk,
+  but refreshes the display aggregate once at batch end rather than after every
+  chunk, reducing HTTP requests without weakening receipts or lost-reply guards.
+- Added privacy-safe queue/start/page-open/unchanged markers for distinguishing
+  actual exit work from foreground refresh without logging titles or IDs.
+  Deployment and the current native-library/exit runtime check follow below.
+
+- Installed corrected build 20261023041430. Native host/sidebar readiness and
+  current-library-badge-ready markers confirmed without opening the plugin.
+  A real imported body-text reading session then closed: queue -> start in
+  roughly 2 seconds, followed by successful exact position/combined-time result
+  roughly 19 seconds after start. No page-open marker occurred during this
+  sequence, and no position-unchanged shortcut was taken. This is the first
+  explicit exit-without-entering-plugin runtime verification for the corrected
+  current-explorer hooks. Only event codes/timing were inspected, no titles,
+  identifiers, tokens or page content. Real cloud synchronization was authorized
+  by the user's reinstated default-exit feature and performed for their actual
+  reading session, not fabricated test time.
+- Full Linux regression, host Qt5 core/UI, official SDK, device Qt6 signature/UI
+  and device Lua time regressions passed. Priority regression interrupts a slow
+  whole-shelf read before it can delay an exit job. Install rollback timer is
+  disarmed; install wake lock and temporary synthetic device fixtures cleaned.

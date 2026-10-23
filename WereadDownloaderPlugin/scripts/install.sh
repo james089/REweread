@@ -31,7 +31,10 @@ PY
 "${SCP[@]}" "$package/"*.so "$package/weread-downloader-worker" "$package/"*.sh "$package/"*.qmd "$package/install.sha256" "$MOVE_HOST:$stage/"
 "${SCP[@]}" "$package/lua/"*.lua "$MOVE_HOST:$stage/lua/"
 "${SCP[@]}" -r "$package/helper" "$MOVE_HOST:$stage/helper"
-"${SSH[@]}" "$MOVE_HOST" "sh '$stage/install-device.sh' '$stamp'"
+# Xochitl restart may terminate the SSH session that launched the installer.
+# Run the guarded device transaction as its own systemd job so the EXIT trap
+# cannot mistake that expected disconnect for an interrupted installation.
+"${SSH[@]}" "$MOVE_HOST" "systemd-run --unit='weread-downloader-install-$stamp' --collect /bin/sh '$stage/install-device.sh' '$stamp'"
 # Confirm both registration and the actual host/sidebar QML bindings. Diagnostics
 # stay on the tablet; output is only success/failure, never raw device logs.
 "${SSH[@]}" "$MOVE_HOST" "set -e; ready=0; attempt=0; since=\"\$(cat /home/root/weread-downloader/.install-restart-at)\"; while [ \"\$attempt\" -lt 90 ]; do attempt=\$((attempt + 1)); if systemctl is-active --quiet xochitl && journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: host-ready' && journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: sidebar-ready'; then ready=1; break; fi; sleep 1; done; test \"\$ready\" = 1; test ! -f /home/root/weread-downloader/.install-rolled-back; printf '%s\\n' '$stamp' > /home/root/weread-downloader/.install-ok; systemctl stop 'weread-downloader-rollback-$stamp.timer'"

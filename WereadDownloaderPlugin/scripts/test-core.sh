@@ -20,7 +20,19 @@ python3 "$ROOT/tests/make_fixtures.py" "$work/fixtures"
 "$work/address-test"
 
 "${CXX:-c++}" -std=c++17 -fPIC -Wall -Wextra -Werror \
+  -I"$QT_INCLUDE" -I"$QT_INCLUDE/QtCore" -I"$ROOT/native" \
+  "$ROOT/tests/reading_time_store_test.cpp" \
+  -L"$QT_PREFIX/lib" -Wl,-rpath,"$QT_PREFIX/lib" -l"Qt${QT_MAJOR}Core" -o "$work/reading-time-test"
+"$work/reading-time-test"
+
+"${CXX:-c++}" -std=c++17 -fPIC -Wall -Wextra -Werror \
   -I"$QT_INCLUDE" -I"$QT_INCLUDE/QtCore" -I"$QT_INCLUDE/QtNetwork" -I"$ROOT/src" \
   "$ROOT/tests/upload_test.cpp" -L"$QT_PREFIX/lib" -Wl,-rpath,"$QT_PREFIX/lib" \
   -l"Qt${QT_MAJOR}Core" -l"Qt${QT_MAJOR}Network" -o "$work/upload-test"
 "$work/upload-test"
+
+"${CXX:-c++}" -std=c++17 -fPIC -Wall -Wextra -Werror \
+  -I"$QT_INCLUDE" -I"$QT_INCLUDE/QtCore" -I"$ROOT/src" \
+  "$ROOT/tests/exit_sync_state_test.cpp" \
+  -L"$QT_PREFIX/lib" -Wl,-rpath,"$QT_PREFIX/lib" -l"Qt${QT_MAJOR}Core" -o "$work/exit-state-test"
+"$work/exit-state-test"

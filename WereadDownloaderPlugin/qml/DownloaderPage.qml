@@ -6,6 +6,13 @@ import org.reweread.Downloader 1.0
 Rectangle {
     id: page
     color: "white"
+    property int activeTab: 0
+    function duration(seconds) {
+        if (typeof seconds !== "number" || seconds < 0) return "—"
+        var n = Math.floor(seconds)
+        if (n >= 3600) return Math.floor(n / 3600) + "小时" + Math.floor(n % 3600 / 60) + "分"
+        return Math.floor(n / 60) + "分" + n % 60 + "秒"
+    }
     property var selectedIds: []
     property bool multiSelect: false
     onMultiSelectChanged: { if (!multiSelect) selectedIds = [] }
@@ -46,6 +53,7 @@ Rectangle {
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 32
+        anchors.bottomMargin: Downloader.loggedIn ? 108 : 32
         spacing: 20
         RowLayout {
             Layout.fillWidth: true
@@ -69,7 +77,7 @@ Rectangle {
             }
             Label {
                 objectName: "pageInfo"
-                visible: Downloader.loggedIn
+                visible: Downloader.loggedIn && page.activeTab === 0
                 text: (page.pageIndex + 1) + " / " + page.pageCount
                 color: "black"; font.pixelSize: 24
                 horizontalAlignment: Text.AlignRight
@@ -80,7 +88,7 @@ Rectangle {
             visible: Downloader.loggedIn
             RoundedButton { visible: Downloader.loggedIn; objectName: "refreshButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26; text: "刷新"; enabled: !Downloader.busy; onClicked: { page.selectedIds = []; Downloader.refresh() } }
             RoundedButton {
-                visible: Downloader.loggedIn && page.multiSelect
+                visible: Downloader.loggedIn && page.multiSelect && page.activeTab === 0
                 objectName: "importButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; font.pixelSize: 26
                 text: "导入（" + page.selectedIds.length + "）"
                 enabled: Downloader.canQueue && page.selectedIds.length > 0
@@ -117,7 +125,7 @@ Rectangle {
         ListView {
             id: shelf
             Layout.fillWidth: true; Layout.fillHeight: true
-            visible: Downloader.loggedIn
+            visible: Downloader.loggedIn && page.activeTab === 0
             clip: true; spacing: 4
             objectName: "pagedShelf"
             interactive: false
@@ -307,6 +315,69 @@ Rectangle {
                     }
                 }
             }
+        }
+        ColumnLayout {
+            visible: Downloader.loggedIn && page.activeTab === 1
+            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#555555"
+                text: "按设备日期分日统计；退出、休眠和静置5分钟暂停。云端显示累计值。仅上传当日新增时长；历史及无日期记录保留，暂不补传。"
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 16
+                RoundedButton {
+                    objectName: "previousReadingDate"; text: "上一项"; font.pixelSize: 22
+                    enabled: Downloader.readingDates.indexOf(Downloader.readingDate) > 0
+                    onClicked: { var dates=Downloader.readingDates; Downloader.readingDate=dates[dates.indexOf(Downloader.readingDate)-1] }
+                }
+                Label {
+                    Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; font.pixelSize: 24
+                    text: Downloader.readingDate === "" ? "全部日期" : (Downloader.readingDate === "undated" ? "无日期的历史记录" : Downloader.readingDate)
+                }
+                RoundedButton {
+                    objectName: "nextReadingDate"; text: "下一项"; font.pixelSize: 22
+                    enabled: Downloader.readingDates.indexOf(Downloader.readingDate) < Downloader.readingDates.length-1
+                    onClicked: { var dates=Downloader.readingDates; Downloader.readingDate=dates[dates.indexOf(Downloader.readingDate)+1] }
+                }
+            }
+            ListView {
+                objectName: "readingTimeList"
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8
+                model: Downloader.readingStats
+                delegate: Rectangle {
+                    width: ListView.view.width; height: 176; radius: 12
+                    border.color: "#aaaaaa"; color: "white"
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 20; spacing: 16
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 10
+                            Label { text: modelData.title; textFormat: Text.PlainText; font.pixelSize: 24; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: (Downloader.readingDate === "" ? "本地累计 " : (Downloader.readingDate === "undated" ? "无日期累计 " : "本地当日 ")) + page.duration(modelData.localSeconds) + "    云端累计 " + page.duration(modelData.cloudSeconds); font.pixelSize: 20; color: "#444444" }
+                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "当日待传 " + page.duration(modelData.uploadableSeconds) + (modelData.heldSeconds > 0 ? " · 历史保留 " + page.duration(modelData.heldSeconds) : "") + (modelData.timeUncertain ? " · 上传结果待核对，已暂停重传" : ""); font.pixelSize: 20; color: modelData.timeUncertain ? "black" : "#555555" }
+                        }
+                        RoundedButton {
+                            objectName: "uploadReadingTimeButton"
+                            text: "上传时长"; font.pixelSize: 24
+                            leftPadding: 20; rightPadding: 20; topPadding: 8; bottomPadding: 8
+                            visible: modelData.uploadableSeconds > 0 && !modelData.timeUncertain && modelData.canUploadDate
+                            enabled: !Downloader.busy
+                            Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
+                            Layout.minimumHeight: 56; Layout.preferredHeight: 56; Layout.maximumHeight: 56
+                            onClicked: Downloader.uploadReadingTime(modelData.bookId)
+                        }
+                    }
+                }
+                Label { anchors.centerIn: parent; visible: parent.count === 0; text: "暂无阅读记录"; font.pixelSize: 26; color: "#555555" }
+            }
+        }
+    }
+    Rectangle {
+        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+        visible: Downloader.loggedIn; height: 88; color: "white"; border.color: "black"; border.width: 1
+        Row {
+            anchors.centerIn: parent; spacing: 32
+            RoundedButton { objectName: "shelfTabButton"; width: 240; height: 58; topPadding: 8; bottomPadding: 8; text: "书架"; font.pixelSize: 24; font.bold: page.activeTab === 0; checked: page.activeTab === 0; onClicked: page.activeTab = 0 }
+            RoundedButton { objectName: "readingTimeTabButton"; width: 240; height: 58; topPadding: 8; bottomPadding: 8; text: "阅读时间统计"; font.pixelSize: 24; font.bold: page.activeTab === 1; checked: page.activeTab === 1; onClicked: { page.multiSelect = false; page.activeTab = 1 } }
         }
     }
     Dialog {

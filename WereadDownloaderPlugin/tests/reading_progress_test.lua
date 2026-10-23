@@ -13,6 +13,7 @@ local html='<html><body><p>'..text..'</p></body></html>';local position=assert(S
 local chapter={chapterUid=42,chapterIdx=0,title='synthetic',wordCount=120}
 local base=work..'/library/'..uuid;local account=work..'/account'
 os.remove(account..'/reading-progress-v1.json') -- Reset this synthetic test's persisted display cache.
+os.remove(account..'/local-reading-time-v1.json');os.remove(account..'/uploaded-reading-time-v1.json')
 local function write(path,data)local f=assert(io.open(path,'wb'));assert(f:write(data));assert(f:close())end
 local function json(path,data)write(path,J.encode(data))end
 local function read(path)local f=assert(io.open(path,'rb'));local s=f:read('*a');f:close();return s end
@@ -26,7 +27,7 @@ write(base..'.pdf','synthetic')
 assert(Hash.file(base..'.pdf')==Hash.hex('synthetic'))
 write(account..'/books/'..id..'/chapters/42.xhtml',html)
 json(account..'/books/'..id..'/download-manifest.json',{version=1,accountScope='sha256-'..scope,catalogFingerprint=V.catalog({chapter}),chapters={['42']={bytes=#html,checksum=V.checksum(html),chapterFingerprint=V.chapter(chapter,1)}}})
-local saved={chapterUid=42,chapterIdx=0,chapterOffset=position.codepoints,progress=20,summary=text:sub(1,18),updateTime=10}
+local saved={chapterUid=42,chapterIdx=0,chapterOffset=position.codepoints,progress=20,summary=text:sub(1,18),updateTime=10,readingTime=0}
 local Percent=require('progress_percent')
 local weighted={{chapterUid=17,wordCount=100},{chapterUid=901,wordCount=900}}
 local middle=text:sub(181) -- 60 Chinese codepoints into 120
@@ -45,18 +46,19 @@ assert(Percent.calculate({{chapterUid=17,wordCount=100}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901,wordCount=0}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901,wordCount=1},{chapterUid=901,wordCount=1}},rec,html)==nil)
 assert(Percent.calculate({{chapterUid=901}},rec,html)==nil)
-local writes=0;local enters=0;local rejectEnter=false;local rejected=false;local changed=false;local lastPayload
+local writes=0;local timeWrites=0;local enters=0;local rejectEnter=false;local rejected=false;local changed=false;local lastPayload
 package.loaded.sha256={hex=function()return scope end}
 package.loaded.config_bridge=nil
 local client={request=function()return 'window.__INITIAL_STATE__='..J.encode({reader={progress={book=saved}}}),200 end,
  report_read=function(_,payload)
+  if (payload.elapsed_seconds or 0)>0 then timeWrites=timeWrites+1;saved.readingTime=saved.readingTime+payload.elapsed_seconds;return {succ=1}end
   if payload.enter then enters=enters+1;assert(payload.rt==nil and payload.elapsed_seconds==nil)
    if rejectEnter then return {errCode=1}end
    saved.updateTime=saved.updateTime+1;return {succ=1}
   end
   writes=writes+1;lastPayload=payload
   if rejected then return {errCode=1} end
-  saved={chapterUid=payload.chapter_uid,chapterIdx=payload.chapter_idx,chapterOffset=payload.chapter_offset,summary=payload.summary,progress=payload.progress,updateTime=20}
+  saved={chapterUid=payload.chapter_uid,chapterIdx=payload.chapter_idx,chapterOffset=payload.chapter_offset,summary=payload.summary,progress=payload.progress,updateTime=20,readingTime=saved.readingTime}
   return {succ=1}
  end}
 package.loaded['lib.client']={new=function()return client end}
@@ -141,4 +143,9 @@ ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='progress_layout_un
 json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a','b'},redirectionPageMap={0,1}})
 M:refresh({{bookId=id}},function()end);rejectEnter=true
 result=M:sync(id);assert(result.state=='progress_synced' and not result.recentMarked and writes==3)
+rejectEnter=false
+json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=5,days={[os.date('%Y-%m-%d')]=5}}}})
+M:refresh({{bookId=id}},function()end)
+result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==1)
+assert(J.decode(read(account..'/uploaded-reading-time-v1.json')).books[id].confirmedSeconds==5)
 M:close();print('synthetic progress: imported-only reads, exact sync/zero time, conflict, rejection, restore and layout refusal passed')

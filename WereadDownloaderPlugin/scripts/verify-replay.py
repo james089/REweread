@@ -18,6 +18,18 @@ for token in ['wereadDownloaderHost', 'Downloader.attachSettings', 'DownloaderPa
     if token not in main:
         raise SystemExit('Main view replay is incomplete')
 # Both markers refer to the current patch, not a stale prior build.
+reader = (root / 'build/replay/qml/device/view/documentview/DocumentView.qml').read_text()
+for token in ['wereadReadingTimeTracker', 'Downloader.readingStarted', 'Downloader.readingStopped', 'onInSuspendChanged', 'onCurrentPageChanged']:
+    if token not in reader:
+        raise SystemExit('Native reading time hooks are missing')
+grid = (root / 'build/replay/qml/device/view/navigator/ContentEntriesGridItem.qml').read_text()
+for token in ['wereadNativeBadgeLoader', 'nativeBookBadge', 'nativeBookRevision', 'WeReadBadge.qml']:
+    if token not in grid:
+        raise SystemExit('Native book badge replay is incomplete')
+for name, token in [('ContentGridItem.qml','wereadCurrentGridBadge'),('ContentListItem.qml','wereadCurrentListBadge')]:
+    current = (root / 'build/replay/qml/device/view/syncserviceexplorer' / name).read_text()
+    if token not in current or 'entityId' not in current or 'nativeBookBadge' not in current:
+        raise SystemExit('Current native library badge replay is incomplete')
 patch = (root / 'native/sidebar.qmd').read_bytes()
 record = root / 'build/replayed-patch.sha256'
 if not record.exists() or record.read_text().strip() != hashlib.sha256(patch).hexdigest():
