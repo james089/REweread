@@ -17,7 +17,7 @@ function M.run(manager,job,progress)
  end
  local success,failure=pcall(function()
   for lane=1,2 do
-   local settings=setmetatable({cache_dir=job.settings.cache_dir,values=copy(job.settings.values)},getmetatable(job.settings))
+   local settings=setmetatable({cache_dir=job.settings.cache_dir,data_dir=job.settings.data_dir,values=copy(job.settings.values)},getmetatable(job.settings))
    local client=manager:client(settings,job.book_id)
    if client.persistentTransport then client.persistentTransport:close() end
    client.request=assert(getmetatable(client).request)

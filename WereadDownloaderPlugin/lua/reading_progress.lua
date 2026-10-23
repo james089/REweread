@@ -10,7 +10,9 @@ local M={}
 local root='/home/root/.local/share/weread-downloader'
 local library='/home/root/.local/share/remarkable/xochitl'
 local ffi=require('ffi')
-ffi.cdef[[char *realpath(const char*,char*);long readlink(const char*,char*,unsigned long); void FPDF_InitLibrary(void);void FPDF_DestroyLibrary(void);
+ffi.cdef[[char *realpath(const char*,char*);long readlink(const char*,char*,unsigned long);
+struct wrdp_timespec { long tv_sec; long tv_nsec; }; int clock_gettime(int,struct wrdp_timespec*);
+void FPDF_InitLibrary(void);void FPDF_DestroyLibrary(void);
 void* FPDF_LoadDocument(const char*,const char*);void FPDF_CloseDocument(void*);
 int FPDF_GetPageCount(void*);void* FPDF_LoadPage(void*,int);void FPDF_ClosePage(void*);
 void* FPDFText_LoadPage(void*);void FPDFText_ClosePage(void*);
@@ -26,6 +28,11 @@ end
 local function json(p)local s=read(p);if not s then return nil end;local ok,v=pcall(J.decode,s);return ok and type(v)=='table' and v or nil end
 local function valid(id)return type(id)=='string' and #id>0 and #id<=128 and id:match('^[%w_-]+$') end
 local function percent(v)v=tonumber(v);if v and v==v and v>=0 and v<=100 then return v end end
+local function monotonicMs()
+ local t=ffi.new('struct wrdp_timespec[1]');if ffi.C.clock_gettime(1,t)~=0 then return math.floor(os.clock()*1000)end
+ return tonumber(t[0].tv_sec)*1000+tonumber(t[0].tv_nsec)/1000000
+end
+local function elapsedMs(s)return math.max(0,math.floor(monotonicMs()-s))end
 local function signature(v)
  if type(v)~='table' then return '' end
  return table.concat({tostring(v.chapterUid or ''),tostring(v.chapterIdx or ''),tostring(v.chapterOffset or ''),
@@ -135,11 +142,11 @@ function M.new(settings,scope,account,environment)
    return cached.title
   end
   if cacheOnly then return nil end
-  local function remember(title)
+  local function remember(title,uid)
    need(read(base..'.metadata')==metadata and read(base..'.content')==contentBytes
        and read(account..'/books/'..id..'/download-manifest.json')==manifestBytes
        and Hash.file(base..'.pdf')==pdfHash,'progress_not_located')
-   self.cache.localChapters[id]={key=key,title=title};self:save();return title
+   self.cache.localChapters[id]={key=key,title=title,uid=uid};self:save();return title
   end
   local P=pdf();P.FPDF_InitLibrary();local doc=P.FPDF_LoadDocument(base..'.pdf',nil);local text
   if doc~=nil then
@@ -163,7 +170,7 @@ function M.new(settings,scope,account,environment)
   need(manifest.accountScope=='sha256-'..require('sha256').hex('rm-weread-cache-v1\31'..settings:get('cookies',{}).wr_vid),'account_changed')
   catalog=catalog or self:displayCatalog(id)
   need(Verify.catalog(catalog)==manifest.catalogFingerprint,'progress_cache_changed')
-  local matches,title,bytes,started=0,nil,0,os.time()
+  local matches,title,matchedUid,bytes,started=0,nil,nil,0,os.time()
   for i,c in ipairs(catalog)do
    local uid=tostring(c.chapterUid or '');need(valid(uid),'progress_not_located')
    local record=manifest.chapters and manifest.chapters[uid]
@@ -171,10 +178,10 @@ function M.new(settings,scope,account,environment)
    bytes=bytes+#x;need(bytes<=40*1024*1024 and os.time()-started<=15,'progress_not_located')
    need(record and record.bytes==#x and record.checksum==Verify.checksum(x)
        and record.chapterFingerprint==Verify.chapter(c,i),'progress_cache_changed')
-   local n=#Text.candidates(text,x);matches=matches+n;if n>0 then title=tostring(c.title or '')end
+   local n=#Text.candidates(text,x);matches=matches+n;if n>0 then title=tostring(c.title or '');matchedUid=uid end
   end
   need(matches==1 and read(base..'.metadata')==metadata and read(base..'.content')==contentBytes,'progress_not_located')
-  return remember(title)
+  return remember(title,matchedUid)
  end
  function self:saveRecord(id,record,display,flags)
   local entry={record=record,fetchedAt=os.time(),displayProgress=display,displayMethod=1,
@@ -286,10 +293,13 @@ function M.new(settings,scope,account,environment)
   return {state='progress_restored',bookId=id,accountScope=scope,restorePending=false,restoreAutomatic=false,
     cloudProgress=percent(self.cache.books[id].displayProgress) or -1,cloudProgressStale=self.cache.books[id].displayProgress==nil}
  end
- function self:markRecent(id)
+ function self:markRecent(id,initialPosition,deferVerification)
+  self.lastMarkedPosition=nil
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
   need(row and row.state=='imported' and row.accountScope==scope,'progress_not_located')
-  local before,html=self:fetch(id)
+  local before,html
+  if initialPosition then before,html=initialPosition.record,initialPosition.html
+  else before,html=self:fetch(id) end
   need(type(before.chapterUid)=='number' and type(before.chapterOffset)=='number'
       and before.chapterOffset>=0 and type(before.summary)=='string','progress_not_located')
   local state=require('lib.content').extract_reader_state(html)
@@ -298,22 +308,28 @@ function M.new(settings,scope,account,environment)
    chapter_offset=before.chapterOffset,progress=before.progress,summary=before.summary,psvts=state.psvts,pclts=state.pclts})
   need(payload.rt==nil,'progress_sync_unconfirmed')
   need(require('read_sync_protocol').response_succeeded(client:report_read(payload,W.reader_url(id))),'progress_sync_unconfirmed')
-  local after=self:fetch(id)
+  if deferVerification then
+   self.lastMarkedPosition={record=before,html=html}
+   return {state='recent_marked',bookId=id,uuid=row.uuid,accountScope=scope}
+  end
+  local after,afterHtml=self:fetch(id)
   need(after.chapterUid==before.chapterUid and after.chapterOffset==before.chapterOffset
       and after.progress==before.progress and after.readingTime==before.readingTime,'progress_sync_unconfirmed')
   local old=self.cache.books[id] or {}
   self:saveRecord(id,after,old.displayProgress,{cloudChapter=old.cloudChapter,displayCalculatedAt=old.displayCalculatedAt,
    restorePending=old.restorePending or false,restoreAutomatic=old.restoreAutomatic or false})
+  self.lastMarkedPosition={record=after,html=afterHtml}
   return {state='recent_marked',bookId=id,uuid=row.uuid,accountScope=scope}
  end
- function self:uploadTime(id)
+ function self:uploadTime(id,initialPosition)
   need(valid(id),'invalid_book_id')
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
   need(row and (row.state=='imported' or row.state=='removed') and row.accountScope==scope,'progress_not_located')
-  local result=require('reading_time_sync').upload(self,id,account,row.uuid)
+  local result=require('reading_time_sync').upload(self,id,account,row.uuid,initialPosition)
   return {state='time_uploaded',bookId=id,accountScope=scope,uploadedSeconds=result.uploaded,remainingSeconds=result.remaining,deferredSeconds=result.deferred or 0}
  end
  function self:sync(id)
+  local timings={};local phase=monotonicMs();local syncStarted=phase
   need(valid(id),'invalid_book_id')
   local registered=need(json(root..'/imports.json'),'progress_not_located')
   local row=need(registered.books and registered.books[id],'progress_not_located')
@@ -341,37 +357,78 @@ function M.new(settings,scope,account,environment)
     end
    end;P.FPDF_CloseDocument(doc)
   end
-  P.FPDF_DestroyLibrary();need(text and #text>0,'progress_not_located')
-  local book=account..'/books/'..id;local manifest=need(json(book..'/download-manifest.json'),'progress_not_located')
+  P.FPDF_DestroyLibrary();need(text and #text>0,'progress_not_located');timings.pageTextMs=elapsedMs(phase)
+  phase=monotonicMs()
+  local book=account..'/books/'..id;local manifestBytes=need(read(book..'/download-manifest.json'),'progress_not_located');local manifest=J.decode(manifestBytes)
   local vid=settings:get('cookies',{}).wr_vid
   need(manifest.accountScope=='sha256-'..require('sha256').hex('rm-weread-cache-v1\31'..vid),'account_changed')
-  local matches,uid,bytes,chaptersChecked=0,nil,0,0;local cachedWeights={};local started=os.time()
-  for key,record in pairs(manifest.chapters or {}) do
-   need(os.time()-started<=30 and bytes<=32*1024*1024 and chaptersChecked<2000,'progress_not_located')
-   need(valid(key),'progress_not_located')
-   local x=need(read(book..'/chapters/'..key..'.xhtml',2*1024*1024),'progress_not_located')
-   need(#x==record.bytes and Verify.checksum(x)==record.checksum,'progress_cache_changed')
-   bytes=bytes+#x;chaptersChecked=chaptersChecked+1
-   cachedWeights[key]=math.max(1,#Text.xhtml(x));
-   local n=#Text.candidates(text,x);matches=matches+n;if n>0 then uid=key end
-  end
-  need(matches==1,'progress_not_located')
-  local Content=require('lib.content');local catalog=Content.fetch_catalog(client,{bookId=id})
+  local Hash=require('progress_hash');local pdfHash=need(Hash.file(base..'.pdf'),'progress_not_located')
+  local pageKey=table.concat({'1',row.uuid,tostring(ix),Hash.hex(contentBytes),Hash.hex(manifestBytes),pdfHash},':')
+  local cache=self.cache.localChapters and self.cache.localChapters[id]
+  local hint=cache and cache.exactSync==true and cache.key==pageKey and valid(cache.uid) and cache.uid or nil
+  need(type(manifest.chapters)=='table','progress_not_located')
+  if hint and not manifest.chapters[hint] then hint=nil end
+  timings.cacheKeyMs=elapsedMs(phase)
+  local Content=require('lib.content');phase=monotonicMs();local catalog=self:displayCatalog(id);timings.catalogMs=elapsedMs(phase);phase=monotonicMs()
   need(Verify.catalog(catalog)==manifest.catalogFingerprint,'progress_cache_changed')
+  local cachedWeights={};local totalEstimate=0;local estimateWeights={}
+  for i,c in ipairs(catalog)do
+   local uid=tostring(c.chapterUid or '');need(valid(uid),'progress_not_located')
+   local w=tonumber(c.wordCount)
+   if not w or w<=0 then w=tonumber(manifest.chapters[uid] and manifest.chapters[uid].bytes) end
+   need(w and w>0,'progress_weight_unavailable');estimateWeights[i]=w;totalEstimate=totalEstimate+w
+  end
+  local ranges={};local margin=12
+  local localPercent=count>1 and ix*100/(count-1) or 0
+  local oldCloud=self.cache.books[id]
+  local cloudPercent=oldCloud and tonumber(oldCloud.displayProgress) or nil
+  local function addRange(pct)
+   if not pct or pct<0 or pct>100 then return end
+   local lo=math.max(0,(pct-margin)*totalEstimate/100);local hi=math.min(totalEstimate,(pct+margin)*totalEstimate/100)
+   local cursor=0
+   for i,w in ipairs(estimateWeights)do
+    if cursor+w>=lo and cursor<=hi then ranges[tostring(catalog[i].chapterUid)]=true end
+    cursor=cursor+w
+   end
+  end
+  addRange(localPercent);addRange(cloudPercent);if hint then ranges[hint]=true end
+  local function scanChapterSet(onlyCandidates)
+   local found,foundHtml,countMatches,bytes,chaptersChecked=nil,nil,0,0,0;local started=os.time()
+   for index,c in ipairs(catalog)do
+    local key=tostring(c.chapterUid);local record=manifest.chapters[key]
+    if not onlyCandidates or ranges[key] then
+     need(record and os.time()-started<=30 and bytes<=32*1024*1024 and chaptersChecked<2000,'progress_not_located')
+     local x=need(read(book..'/chapters/'..key..'.xhtml',2*1024*1024),'progress_not_located')
+     need(#x==record.bytes and Verify.checksum(x)==record.checksum
+        and record.chapterFingerprint==Verify.chapter(c,index),'progress_cache_changed')
+     bytes=bytes+#x;chaptersChecked=chaptersChecked+1
+     local n=#Text.candidates(text,x)
+     if n>0 then countMatches=countMatches+n;found=key;foundHtml=x;cachedWeights[key]=math.max(1,#Text.xhtml(x))end
+    end
+   end
+   return found,countMatches,foundHtml
+  end
+  local uid,matches,matchedHtml=scanChapterSet(true)
+  local matchMode='nearby'
+  if matches~=1 then uid,matches,matchedHtml=scanChapterSet(false);matchMode='full' end
+  timings.localChapterMs=elapsedMs(phase);need(matches==1,'progress_not_located')
   local chapter
-  for i,c in ipairs(catalog) do if tostring(c.chapterUid)==uid then need(not chapter,'progress_not_located');chapter=c
-   need(manifest.chapters[uid].chapterFingerprint==Verify.chapter(c,i),'progress_cache_changed')end end
+  for _,c in ipairs(catalog) do if tostring(c.chapterUid)==uid then need(not chapter,'progress_not_located');chapter=c end end
   need(chapter and type(chapter.chapterIdx)=='number','progress_not_located')
-  -- Download helpers normally store annotation source as a side effect. This
-  -- operation needs only raw text, and must not modify annotation databases.
-  local storeSource=Content.cache_annotation_source;Content.cache_annotation_source=function()end
-  local ok,original=pcall(Content.fetch_chapter_xhtml,client,settings,{bookId=id,_content_format='epub'},chapter)
-  Content.cache_annotation_source=storeSource;need(ok and type(original)=='string','progress_network_failed')
-  local position=need(Source.locate(text,original),'progress_not_located')
+  self.cache.localChapters=self.cache.localChapters or {}
+  self.cache.localChapters[id]={key=pageKey,title=tostring(chapter.title or ''),uid=uid,exactSync=true};self:save()
+  -- Exit synchronization is local-only: maps are captured from the original
+  -- XHTML during download. Legacy caches without a map need a fresh download.
+  local sourceIndex,position,sourceMode
+  phase=monotonicMs()
+  position,sourceIndex=require('progress_source_store').locate(account,id,uid,matchedHtml,text)
+  timings.localSourceMs=elapsedMs(phase);timings.chapterFetchMs=0
+  need(position,'progress_source_map_missing')
+  sourceMode='download-map'
   need(position.coordinateAgrees,'progress_offset_unsupported')
   local baseline=self.cache.books[id]
   need(baseline and baseline.record,'cloud_progress_unavailable')
-  local before,html=self:fetch(id)
+  phase=monotonicMs();local before,html=self:fetch(id);timings.cloudReadMs=elapsedMs(phase)
   need(signature(before)==signature(baseline.record),'cloud_progress_changed')
   need(metaBytes==read(base..'.metadata') and contentBytes==read(base..'.content'),'progress_local_changed')
   local latest=need(json(root..'/imports.json'),'progress_local_changed').books[id]
@@ -379,30 +436,50 @@ function M.new(settings,scope,account,environment)
   -- Whole-book percentage uses chapter word weights, not native page fraction.
   local total,preceding=0,0;local targetIndex
   for i,c in ipairs(catalog) do
-   local w=tonumber(c.wordCount);if not w or w<=0 then w=cachedWeights[tostring(c.chapterUid)] end;need(w and w>0,'progress_weight_unavailable')
+   local w=tonumber(c.wordCount)
+   if not w or w<=0 then
+    local uid=tostring(c.chapterUid);w=cachedWeights[uid]
+    if not w then local record=need(manifest.chapters[uid],'progress_weight_unavailable');w=math.max(1,tonumber(record.bytes) or 0) end
+   end
+   need(w and w>0,'progress_weight_unavailable')
    c._progressWeight=w;total=total+w;if tostring(c.chapterUid)==uid then targetIndex=i end
   end
   need(targetIndex and total>0,'progress_weight_unavailable')
   for i=1,targetIndex-1 do preceding=preceding+catalog[i]._progressWeight end
-  local index=need(Source.index(original),'progress_not_located')
-  local anchor=need(index.text:find(position.anchor,1,true),'progress_not_located')
+  local anchor=need(sourceIndex.text:find(position.anchor,1,true),'progress_not_located')
   local function chars(s)local n=0;for _ in s:gmatch('[%z\1-\127\194-\244][\128-\191]*')do n=n+1 end;return n end
-  local fraction=chars(index.text:sub(1,anchor-1))/math.max(1,chars(index.text))
+  local fraction=chars(sourceIndex.text:sub(1,anchor-1))/math.max(1,chars(sourceIndex.text))
   local progress=math.max(0,math.min(100,(preceding+catalog[targetIndex]._progressWeight*fraction)*100/total))
   local state=Content.extract_reader_state(html)
   local Read=require('read_sync_protocol')
-  local payload=require('lib.weread').make_read_payload({book_id=id,chapter_uid=chapter.chapterUid,chapter_idx=chapter.chapterIdx,
-   chapter_offset=position.codepoints,progress=progress,summary=Read.utf8_prefix_bytes(position.anchor,20),
-   psvts=state.psvts,pclts=state.pclts,token=state.token,elapsed_seconds=0})
-  local response=client:report_read(payload,require('lib.weread').reader_url(id))
-  need(Read.response_succeeded(response),'progress_sync_unconfirmed')
-  local after=self:fetch(id)
+  local target={};for k,v in pairs(before)do target[k]=v end
+  target.chapterUid=chapter.chapterUid;target.chapterIdx=chapter.chapterIdx
+  target.chapterOffset=position.codepoints;target.progress=progress
+  target.summary=Read.utf8_prefix_bytes(position.anchor,20)
+  local Time=require('reading_time_sync');local writeMs=0
+  phase=monotonicMs()
+  local timeResult=Time.uploadCombined(self,id,account,row.uuid,{record=before,html=html},function(delta)
+   local payload=require('lib.weread').make_read_payload({book_id=id,chapter_uid=target.chapterUid,chapter_idx=target.chapterIdx,
+    chapter_offset=target.chapterOffset,progress=target.progress,summary=target.summary,
+    psvts=state.psvts,pclts=state.pclts,token=state.token,elapsed_seconds=delta})
+   local started=monotonicMs();local result=client:report_read(payload,require('lib.weread').reader_url(id));writeMs=writeMs+elapsedMs(started)
+   return result
+  end)
+  timings.positionWriteMs=writeMs;timings.readingTimeMs=math.max(0,elapsedMs(phase)-writeMs)
+  phase=monotonicMs();local recent=pcall(function()self:markRecent(id,{record=target,html=html},true)end);timings.recentMs=elapsedMs(phase)
+  phase=monotonicMs();local after,afterHtml=self:fetch(id);timings.positionVerifyMs=elapsedMs(phase)
   need(tostring(after.chapterUid)==tostring(chapter.chapterUid) and tonumber(after.chapterOffset)==position.codepoints,'progress_sync_unconfirmed')
   local display=Percent.calculate(catalog,after,original)
   self:saveRecord(id,after,display,{restorePending=false,restoreAutomatic=false})
-  local recent=pcall(function()self:markRecent(id)end)
-  local timeOk,timeResult=pcall(function()return self:uploadTime(id)end)
-  return {state='progress_synced',bookId=id,uuid=row.uuid,recentMarked=recent,timeUploaded=timeOk,timeUncertain=not timeOk and timeResult=='time_upload_uncertain',accountScope=scope,cloudProgress=percent(display) or -1,cloudProgressStale=display==nil,restorePending=false,restoreAutomatic=false}
+  self.lastMarkedPosition={record=after,html=afterHtml}
+  local timeOk=true
+  timings.totalLuaMs=elapsedMs(syncStarted)
+  timings.matchMode=matchMode
+  timings.sourceMode=sourceMode
+  return {state='progress_synced',bookId=id,uuid=row.uuid,recentMarked=recent,timeUploaded=timeOk,
+   timeUploadedSeconds=timeResult.uploaded,timeRemainingSeconds=timeResult.remaining,
+   timeDeferredSeconds=timeResult.deferred,timeUncertain=false,accountScope=scope,cloudProgress=percent(display) or -1,
+   cloudProgressStale=display==nil,restorePending=false,restoreAutomatic=false,timings=timings}
  end
  return self
 end

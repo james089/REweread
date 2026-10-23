@@ -31,12 +31,25 @@ PY
 "${SCP[@]}" "$package/"*.so "$package/weread-downloader-worker" "$package/"*.sh "$package/"*.qmd "$package/install.sha256" "$MOVE_HOST:$stage/"
 "${SCP[@]}" "$package/lua/"*.lua "$MOVE_HOST:$stage/lua/"
 "${SCP[@]}" -r "$package/helper" "$MOVE_HOST:$stage/helper"
-# Xochitl restart may terminate the SSH session that launched the installer.
-# Run the guarded device transaction as its own systemd job so the EXIT trap
-# cannot mistake that expected disconnect for an interrupted installation.
-"${SSH[@]}" "$MOVE_HOST" "systemd-run --unit='weread-downloader-install-$stamp' --collect /bin/sh '$stage/install-device.sh' '$stamp'"
-# Confirm both registration and the actual host/sidebar QML bindings. Diagnostics
-# stay on the tablet; output is only success/failure, never raw device logs.
-"${SSH[@]}" "$MOVE_HOST" "set -e; ready=0; attempt=0; since=\"\$(cat /home/root/weread-downloader/.install-restart-at)\"; while [ \"\$attempt\" -lt 90 ]; do attempt=\$((attempt + 1)); if systemctl is-active --quiet xochitl && journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: host-ready' && journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: sidebar-ready'; then ready=1; break; fi; sleep 1; done; test \"\$ready\" = 1; test ! -f /home/root/weread-downloader/.install-rolled-back; printf '%s\\n' '$stamp' > /home/root/weread-downloader/.install-ok; systemctl stop 'weread-downloader-rollback-$stamp.timer'"
+# Commit the guarded file transaction in a detached job. Restart Xochitl only
+# after that job exits, so the service restart cannot kill its own rollback trap.
+"${SSH[@]}" "$MOVE_HOST" "rm -f /home/root/weread-downloader/.install-restart-at && systemd-run --unit='weread-downloader-install-$stamp' --collect /bin/sh '$stage/install-device.sh' '$stamp'" || true
+prepared=0
+for attempt in {1..30}; do
+  if "${SSH[@]}" "$MOVE_HOST" "test -s /home/root/weread-downloader/.install-restart-at"; then prepared=1; break; fi
+  sleep 1
+done
+[[ "$prepared" = 1 ]]
+# The device may close this SSH session while restarting Xochitl. The guarded
+# rollback timer remains armed until both host and sidebar bindings are seen.
+"${SSH[@]}" "$MOVE_HOST" "systemctl restart xochitl" || true
+# Confirm fresh registration and host/sidebar QML bindings without returning
+# raw device logs. Retry SSH across the expected restart disconnect.
+ready=0
+for attempt in {1..90}; do
+  if "${SSH[@]}" "$MOVE_HOST" "set -e; since=\$(cat /home/root/weread-downloader/.install-restart-at); systemctl is-active --quiet xochitl; journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: host-ready'; journalctl -u xochitl --since \"\$since\" --no-pager | grep -q 'WereadDownloaderPlugin: sidebar-ready'; test ! -f /home/root/weread-downloader/.install-rolled-back; printf '%s\\n' '$stamp' > /home/root/weread-downloader/.install-ok; systemctl stop 'weread-downloader-rollback-$stamp.timer' || true"; then ready=1; break; fi
+  sleep 2
+done
+[[ "$ready" = 1 ]]
 node "$ROOT/../scripts/check-repository.mjs"
 echo 'Installed native sidebar plugin; account login and a selected real-book import still need user acceptance.'

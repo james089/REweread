@@ -328,14 +328,20 @@ int main(int argc, char **argv) {
             emitRow(synced);return 0;
         }
         if (operation == "clear-cache") {
-            need(registry.record(id).value("state") == "removed", "book_not_removed");
+            const auto record = registry.record(id);
+            const auto importState = record.value("state").toString();
+            need(importState == "removed" || importState == "imported", "book_not_available");
+            if (importState == "imported") need(record.value("accountScope") == identity.value("accountScope"), "account_changed");
             const auto scope = identity.value("accountScope").toString();
             need(QRegularExpression("\\A[a-f0-9]{64}\\z").match(scope).hasMatch(), "invalid_account_scope");
             need(!QFileInfo(root + "/accounts").isSymLink(), "invalid_cache_path");
             clearDownloadCache(root + "/accounts/" + scope, id);
             emitRow({{"state", "cache_cleared"}}); return 0;
         }
-        if (operation == "import") registry.reserve(id, identity.value("accountScope").toString());
+        if (operation == "import") {
+            const auto scope = identity.value("accountScope").toString();
+            registry.reserve(id, scope);
+        }
         QString path;
         try {
             need(QStorageInfo(root).bytesAvailable() >= 256 * 1024 * 1024, "insufficient_space");

@@ -82,6 +82,11 @@ local function context()
     local scope = Sha256.hex("weread-downloader-account-v1\31" .. cookies.wr_vid)
     local account_root = root .. "/accounts/" .. scope
     ensure(account_root)
+    -- The upstream source-index store otherwise falls back to a path relative
+    -- to the helper's working directory, which differs between download and
+    -- native exit-sync worker launches. Keep this DB inside our private,
+    -- account-scoped plugin cache in both processes.
+    settings.data_dir = account_root
     return settings, scope, account_root
 end
 
@@ -153,7 +158,7 @@ local function execute()
         end)
         progress:close()
         if not ok then
-            local codes={progress_not_located=true,progress_layout_unsupported=true,progress_network_failed=true,
+            local codes={progress_not_located=true,progress_layout_unsupported=true,progress_network_failed=true,progress_source_map_missing=true,
                 progress_cache_changed=true,progress_offset_unsupported=true,cloud_progress_unavailable=true,
                 cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true,
                 time_cache_unavailable=true,time_cloud_unavailable=true,time_upload_rejected=true,time_upload_uncertain=true}
@@ -203,6 +208,21 @@ local function execute()
             if candidate.bookId == id then book = candidate; break end
         end
         assert(book and book.title and book.title ~= "")
+        -- Capture the exact original chapter source before the upstream helper
+        -- rewrites it for EPUB packaging. Only compact offsets are persisted;
+        -- chapter text remains in the verified download cache.
+        local Content = require("lib.content")
+        local fetchChapter = Content.fetch_chapter_xhtml
+        assert(type(fetchChapter) == "function")
+        Content.fetch_chapter_xhtml = function(client, chapterSettings, chapterBook, chapter)
+            local html, extra = fetchChapter(client, chapterSettings, chapterBook, chapter)
+            local sourceId = chapterBook and (chapterBook.bookId or chapterBook.book_id) or id
+            local uid = chapter and (chapter.chapterUid or chapter.chapter_uid or chapter.uid)
+            if sourceId == id and uid and type(html) == "string" then
+                pcall(require("progress_source_store").save, account_root, id, tostring(uid), html)
+            end
+            return html, extra
+        end
         local statuses = require("book_status_store"):new({root = account_root})
         local manager = require("download_manager"):new({
             config = settings, status_store = statuses, cache_dir = account_root .. "/books",

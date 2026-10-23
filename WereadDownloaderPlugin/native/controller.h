@@ -66,8 +66,8 @@ public:
     Q_INVOKABLE void logout();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void importBooks(const QVariantList &ids);
-    Q_INVOKABLE void cancelQueued(const QString &id);
     Q_INVOKABLE void clearCache(const QString &id);
+    Q_INVOKABLE void cancelQueued(const QString &id);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void uploadProgress(const QString &id);
     Q_INVOKABLE void downloadProgress(const QString &id);
@@ -123,10 +123,12 @@ private:
     QMap<QString,QJsonObject> m_exitJobs;
     QMap<QString,qint64> m_exitNotBefore;
     QElapsedTimer m_exitClock;
+    QElapsedTimer m_exitWorkerClock;
     QStringList m_exitQueue;
     QSet<QString> m_exitErrors;
     QString m_readingUuid,m_exitUuid,m_readingOpeningSignature;
     QJsonObject m_exitJob;
+    QJsonObject m_exitTimings;
     QByteArray m_exitBuffer;
     bool m_exitSuccess=false,m_exitCanceled=false;
     int m_nativeBookRevision=0;

@@ -17,6 +17,7 @@ const scripts = [
   'validate-ui-polish.mjs',
   'validate-shelf-swipe.mjs',
   'validate-status-refresh.mjs',
+  'validate-downloader-cache-controls.mjs',
   'validate-partial-downloads.mjs',
   'validate-cover-prefetch.mjs',
   'validate-cover-hosts.mjs',

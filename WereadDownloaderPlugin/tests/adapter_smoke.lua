@@ -23,7 +23,7 @@ package.preload["json"] = function() return {encode = encode, decode = fallback.
 local Json = require("json_util")
 local Sha = require("sha256")
 local source = repo .. "/WereadDownloaderPlugin/lua/adapter.lua"
-local function check(value) assert(value, "private adapter behavior failed") end
+local function check(value) assert(value, "private adapter behavior failed at line " .. debug.getinfo(2, "l").currentline) end
 local private = "/home/root/.local/share/weread-downloader"
 local function run(operation, partial, age, responseCode, brokenParallel, renewal)
     local lines, writes, paths = {}, {}, {}
@@ -36,7 +36,7 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
         local expected = operation == "login" and "/dev/null" or private .. "/session.json"
         check(opts.config_path == "/dev/null" and opts.session_path == expected)
         isolated = true
-        local config = {values = {cookies = {wr_vid = "synthetic"}}}
+        local config = {values = {cookies = {wr_vid = "synthetic"}}, data_dir = ""}
         function config:set(key, value) self.values[key] = value end
         function config:get(key, default) return self.values[key] or default end
         function config:is_cookie_configured() return true end
@@ -56,10 +56,16 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
     end
     local manager = {}
     local starts, serialSteps = 0, 0
+    local mapSaved = 0
+    local content = {fetch_chapter_xhtml = function() return "<p>synthetic chapter</p>" end}
     function manager:new(opts)
-        check(opts.cache_dir == account .. "/books")
+      check(opts.cache_dir == account .. "/books")
+      check(opts.config.data_dir == account)
         return {start_full_download = function()
             starts = starts + 1
+            local before = mapSaved
+            content.fetch_chapter_xhtml({}, {}, {bookId = "synthetic-1"}, {chapterUid = "chapter-1"})
+            check(mapSaved == before + 1)
             return {state = brokenParallel and starts == 2 and "running" or "done"}
         end, step_full_download = function(_, job)
             serialSteps = serialSteps + 1; job.state = "done"; job.selected = {1}; job.chapters = {1}
@@ -67,8 +73,13 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
     end
     local modules = {
         koreader_paths = {append = function(path) check(path:match("/appload/koreader$")) end},
-        ffi = {cdef = function() end, C = {umask = function(value) mask = value == 63 end}},
+        ffi = {cdef = function() end, C = {getppid = function() return 123 end,
+            prctl = function() return 0 end, umask = function(value) mask = value == 63 end}},
         json_util = Json, config_bridge = Config, sha256 = Sha, shelf_cache = cache,
+        reading_progress = {new = function(settings)
+            check(settings.data_dir == account)
+            return {cache = {books = {}}, close = function() end}
+        end},
         session_auth = {prepare = function() end, renew = function(_, force)
             if force and renewal == "success" then responseCode = 200; return true, false end
             return false, renewal ~= "offline"
@@ -77,6 +88,7 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
         download_io = dofile(repo .. "/WereadDownloaderPlugin/lua/download_io.lua"),
         shelf_service = {new = function(_, settings)
             check(settings:is_cookie_configured())
+            check(settings.data_dir == account)
             return {client = {request = function(_, request)
                     shelfRequests = shelfRequests + 1
                     check(request.method == "GET" and request.url == "https://weread.qq.com/web/shelf/sync?userVid=synthetic&synckey=0&lectureSynckey=0")
@@ -87,6 +99,11 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
         end},
         cover_cache = {new = function() return {ensure_cover = function(book) book.localCover = account .. "/covers/synthetic-1.jpg" end} end},
         book_status_store = statuses, download_manager = manager,
+        ["lib.content"] = content,
+        progress_source_store = {save = function(path, id, uid, html)
+            check(path == account and id == "synthetic-1" and uid == "chapter-1" and html == "<p>synthetic chapter</p>")
+            mapSaved = mapSaved + 1; return true
+        end},
     }
     local environment = setmetatable({arg = {operation, "synthetic-1"}, package = {path = ""}}, {__index = _G})
     local internal_error

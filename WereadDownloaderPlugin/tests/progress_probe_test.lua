@@ -1,4 +1,4 @@
-package.path = 'WereadDownloaderPlugin/tools/?.lua;' .. package.path
+package.path = 'WereadDownloaderPlugin/lua/?.lua;WereadDownloaderPlugin/tools/?.lua;' .. package.path
 local M = require('progress_probe_match')
 local text = '';for i=1,120 do text=text..M.utf8(0x4e00+i) end
 assert(M.normalize(' a\n b　c ')=='abc')
@@ -34,8 +34,22 @@ assert(entity.text=='A&中文' and entity.positions[2].codepoints==4)
 assert(S.index('<p>&unknown;</p>')==nil)
 assert(S.index('<p title="bad>')==nil)
 assert(S.index('<script>unfinished')==nil)
+local spans=assert(S.indexSpans({{20,28,'A&amp;中文'}}))
+assert(spans.text=='A&中文' and spans.positions[1].codepoints==20
+    and spans.positions[2].codepoints==21 and spans.positions[3].codepoints==26)
+local spanPos=assert(S.locateIndex(text,assert(S.indexSpans({{12,12+120,text}}))))
+assert(spanPos.coordinateAgrees and spanPos.codepoints==12)
+assert(S.indexSpans({{0,1,'😀'}}).hasSupplementary)
+local emojiSpans=assert(S.indexSpans({{0,1,'😀'},{10,130,text}}))
+local emojiPosition=assert(S.locateIndex(text,emojiSpans))
+assert(emojiPosition.codepoints==10 and emojiPosition.utf16==10 and emojiPosition.coordinateAgrees)
 local quoted=assert(S.locate(text,'<p title=">">'..text..'</p>'))
 assert(quoted.codepoints==#'<p title=">">')
+local compact=assert(S.compact(assert(S.index('<p>😀'..text..'</p>'))))
+local mapped=assert(S.locateMapped(text,assert(S.index('<p>😀'..text..'</p>')).text,compact))
+assert(mapped.coordinateAgrees and mapped.codepoints==emoji.codepoints)
+local duplicate=assert(S.index('<p>😀'..text..text..'</p>'))
+assert(S.locateMapped(text,duplicate.text,compact)==nil)
 print('original source mapping: markup/entities/ambiguity/UTF16/hidden text passed')
 local V=require('progress_cache_verify')
 local catalog={{chapterUid=42,chapterIdx=0,title='one'},{chapterUid=901,chapterIdx=1,title='two'}}

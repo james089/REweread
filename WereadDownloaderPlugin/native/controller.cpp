@@ -115,7 +115,7 @@ void DownloaderController::processExitQueue(){
     const auto uuid=m_exitQueue.takeFirst();m_exitNotBefore.remove(uuid);const auto job=m_exitJobs.take(uuid);
     auto provenance=job;provenance.remove("expectedPage");provenance.remove("openingSignature");
     if(uuid==m_readingUuid || m_nativeBooks.value(uuid)!=provenance){notifyNativeBooks();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);return;}
-    m_exitUuid=uuid;m_exitJob=job;m_exitBuffer.clear();m_exitSuccess=false;m_exitCanceled=false;
+    m_exitUuid=uuid;m_exitJob=job;m_exitBuffer.clear();m_exitTimings={};m_exitSuccess=false;m_exitCanceled=false;m_exitWorkerClock.start();
     QProcessEnvironment env;env.insert("PATH","/usr/bin:/bin:/usr/sbin:/sbin");env.insert("HOME","/home/root");
     env.insert("LANG","C.UTF-8");env.insert("LC_ALL","C.UTF-8");
     m_autoSyncProcess.setProcessEnvironment(env);m_autoSyncProcess.setStandardErrorFile(QProcess::nullDevice());
@@ -138,6 +138,7 @@ void DownloaderController::readExitSync(){
         if((row.value("state")=="progress_synced" || row.value("state")=="exit_sync_skipped") && row.value("bookId")==m_exitJob.value("bookId")
            && row.value("accountScope")==m_exitJob.value("accountScope") && QUuid(row.value("uuid").toString())==QUuid(m_exitUuid)){
             if(row.value("state")=="exit_sync_skipped")qInfo("WereadDownloaderPlugin: exit-sync position-unchanged");
+            if(row.value("timings").isObject())m_exitTimings=row.value("timings").toObject();
             m_exitSuccess=!row.contains("timeUploaded") || row.value("timeUploaded").toBool();
             if(row.value("recentMarked").toBool())emit recentReadRequested(m_exitUuid);
             applyProgress(row);
@@ -150,6 +151,14 @@ void DownloaderController::finishExitSync(int code,QProcess::ExitStatus status){
     const bool success=code==0 && status==QProcess::NormalExit && m_exitSuccess && !m_exitCanceled;
     if(!m_exitCanceled){if(success)m_exitErrors.remove(uuid);else m_exitErrors.insert(uuid);}
     if(success)m_shelfAfterAction=true;
+    const char *matchMode=m_exitTimings.value("matchMode").toString()=="nearby"?"nearby":"full";
+    const char *sourceMode=m_exitTimings.value("sourceMode").toString()=="local-cache"?"local-cache":"network";
+    qInfo("WereadDownloaderPlugin: exit-sync timing total_ms=%lld lua_total_ms=%d page_text_ms=%d cache_key_ms=%d catalog_ms=%d local_chapter_ms=%d match_mode=%s local_source_ms=%d source_mode=%s chapter_fetch_ms=%d cloud_read_ms=%d position_write_ms=%d position_verify_ms=%d recent_ms=%d reading_time_ms=%d",
+        static_cast<long long>(m_exitWorkerClock.elapsed()),m_exitTimings.value("totalLuaMs").toInt(),m_exitTimings.value("pageTextMs").toInt(),
+        m_exitTimings.value("cacheKeyMs").toInt(),m_exitTimings.value("catalogMs").toInt(),m_exitTimings.value("localChapterMs").toInt(),matchMode,
+        m_exitTimings.value("localSourceMs").toInt(),sourceMode,m_exitTimings.value("chapterFetchMs").toInt(),m_exitTimings.value("cloudReadMs").toInt(),
+        m_exitTimings.value("positionWriteMs").toInt(),m_exitTimings.value("positionVerifyMs").toInt(),m_exitTimings.value("recentMs").toInt(),
+        m_exitTimings.value("readingTimeMs").toInt());
     qInfo("WereadDownloaderPlugin: exit-sync finished success=%d canceled=%d",success,m_exitCanceled);
     m_exitUuid.clear();m_exitJob={};m_exitBuffer.clear();notifyNativeBooks();emit changed();emit readingStatsChanged();
     // Background failures stay passive: never open QR login or interrupt reading.
@@ -421,7 +430,9 @@ void DownloaderController::clearCache(const QString &id) {
     if (!m_opened || !m_loggedIn || busy() || !m_queue.isEmpty()) return;
     for (const auto &row : m_books) {
         const auto book = row.toMap();
-        if (book.value("bookId") == id && book.value("importState") == "removed" && book.value("hasDownloadCache", true).toBool()) { start("clear-cache", id); return; }
+        const auto state = book.value("importState").toString();
+        if (book.value("bookId") == id && (state == "removed" || state == "imported")
+            && book.value("hasDownloadCache", true).toBool()) { start("clear-cache", id); return; }
     }
 }
 void DownloaderController::cancelQueued(const QString &id) {
@@ -523,6 +534,8 @@ void DownloaderController::readOutput() {
                     m_status+=QStringLiteral("；云端最近阅读标记未完成");
                 if(row.value("timeUploaded").isBool() && !row.value("timeUploaded").toBool())
                     m_status+=QStringLiteral("；阅读时长待核对或重试");
+                if(row.value("timeRemainingSeconds").toInt()>0)
+                    m_status+=QStringLiteral("；还有 %1 秒阅读时长待上传").arg(row.value("timeRemainingSeconds").toInt());
             }
         } else if(state=="time_uploaded") {
             m_final=true;m_shelfAfterAction=true;
@@ -543,10 +556,13 @@ void DownloaderController::readOutput() {
         } else if (state == "cache_cleared" && m_operation == "clear-cache") {
             for (int i = 0; i < m_books.size(); ++i) {
                 auto book = m_books[i].toMap();
-                if (book.value("bookId") == m_currentId) { book["hasDownloadCache"] = false; m_books[i] = book; }
+                if (book.value("bookId") == m_currentId) {
+                    book["hasDownloadCache"] = false; m_books[i] = book;
+                    emit bookUpdated(m_currentId, book);
+                }
             }
-            bookState("removed"); m_final = true;
-            m_status = QStringLiteral("下载缓存已删除，再次导入将重新下载正文");
+            m_final = true;
+            m_status = QStringLiteral("插件下载缓存已删除；重新导入时会重新下载正文");
         } else if (state == "needs_importer") {
             if (enableImporter()) QTimer::singleShot(1000, this, [this] {
                 if (busy()) m_process.write("go\n");
@@ -570,13 +586,15 @@ void DownloaderController::readOutput() {
                 continue;
             }
             if (row.value("importState") == "failed") { bookState("failed"); m_final = true; }
-            m_status = row.value("code")=="time_upload_uncertain" ? QStringLiteral("时长上传结果待核对，已暂停重传以免重复累计")
+            m_status = row.value("code")=="time_upload_uncertain" ? QStringLiteral("进度/时长请求结果待核对，已暂停重传以免重复累计")
                 : m_operation=="upload-time" ? QStringLiteral("时长上传未完成，记录已保留，请刷新后重试")
                 : (m_operation == "sync-progress" || m_operation == "restore-progress")
                 ? (row.value("code") == "cloud_progress_changed" ? QStringLiteral("云端进度已变化，请刷新后再同步")
                    : row.value("code") == "progress_sync_unconfirmed" ? QStringLiteral("同步结果待核对，请刷新查看云端进度")
                    : row.value("code") == "cloud_progress_unavailable" ? QStringLiteral("云端进度尚未读取，请刷新后重试")
                    : row.value("code") == "progress_network_failed" ? QStringLiteral("进度读取失败，请检查网络后重试")
+                   : row.value("code") == "time_upload_rejected" ? QStringLiteral("微信读书拒绝了进度或时长写入，请刷新核实后重试")
+                   : row.value("code") == "progress_source_map_missing" ? QStringLiteral("此书旧缓存缺少章节映射；先点“删除缓存”，再重新导入")
                    : m_operation == "restore-progress" ? QStringLiteral("云端位置无法唯一匹配本地正文，请刷新后重试")
                    : QStringLiteral("暂不能准确定位阅读位置，请确认已读到正文并刷新后重试"))
                 : row.value("code") == "native_rejected"

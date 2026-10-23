@@ -2,10 +2,113 @@
 
 Last updated: 2026-10-22 (America/Chicago).
 
+### 2026-10-23 Combine exit position/time report; limit cache deletion to removed books
+
+The existing “删除缓存” row action is retained; the additional “重新下载缓存”
+action is removed, and the delete action is visible only after the native copy
+is removed. Clear that book's plugin cache and use ordinary import to rebuild
+legacy chapter maps.
+
+Exit synchronization now attaches eligible, journaled reading seconds to the
+same `report_read` write as the exact chapter/offset/progress. Multiple 60-second
+time chunks each carry the target position and require their own positive receipt;
+the existing no-blind-retry journal is preserved. The separate enter-read request
+still updates “recently read”. The earlier immediate position readback and the
+time uploader's extra final fetch are replaced by one final cloud fetch after
+the enter-read request, which verifies the target chapter and offset. Cloud
+reading-time aggregates can lag, so the duration ledger still advances only on
+the write receipt. Standalone time uploads are unchanged.
+
+A native-library deletion does not remove the plugin's account-scoped EPUB
+cache. To rebuild legacy chapter maps, remove the native copy, use “删除缓存” on
+the removed-book row, then ordinary import. Do not delete the account directory:
+it also holds reading-time/progress records. Plugin book caches live under
+`/home/root/.local/share/weread-downloader/accounts/<scope>/books`.
+
+This supersedes earlier redownload-button instructions below. Host Qt UI test,
+full repository suite, C++ core tests, LuaJIT synthetic progress and reading-time
+tests, shell/Lua syntax, repository safety check and official SDK build passed.
+Build `20261023060847` is installed; host/sidebar readiness passed, Xochitl is
+active, the rollback marker is absent, and the installed worker SHA-256 matches
+the local SDK binary. No user book/cache was removed. The combined duration path
+was synthetic-only; no real cloud progress or reading time was submitted.
+
 The native sidebar candidate is installed below AppLoad on the exact supported
 3.28.0.172 firmware (internal build 20260827113527). Read the repository root
 AGENTS.md and docs/agent-handoff.md before touching the device. Preserve all
 existing reader, account, library and plugin cache data.
+
+### 2026-10-22 Exit-sync nearby chapter matching
+
+Exit progress synchronization now estimates likely chapters from the local
+native PDF page fraction and the cached cloud percentage. It reads and validates
+only those nearby chapter files first, then performs the exact 64-character
+body-text match. A unique nearby hit is still checked against freshly fetched
+WeRead chapter XHTML and coordinate agreement before upload. No hit or multiple
+hits trigger the prior bounded full-book search, preserving the conservative
+fallback for uncertain matches. An unchanged page/PDF cache hit can directly
+seed the previous exact chapter as another candidate. Missing catalog word
+counts use manifest byte sizes for estimates so percentage calculation does
+not reopen every chapter body.
+
+The exit worker reports aggregate phase timings only (page extraction, cache
+key, catalog, local chapter search, source fetch, cloud read/write/verify, recent
+mark, and reading-time upload); it emits no title, content, account or book ID.
+Official SDK build, Lua syntax, shell syntax, exact-firmware peer replay and
+repository safety checks passed. Build 20261023043806 installed; fresh host and
+sidebar readiness markers confirmed, rollback guard disarmed. Real reading
+sync timing has not yet been sampled on this build, so the expected speedup is
+not claimed as measured.
+
+### 2026-10-22 Follow-up network reductions
+
+Exit sync now calls the account- and manifest-validated display catalog cache;
+it fetches the catalog only when that cache is absent or invalid. After the
+progress POST has been read back and verified, that same verified position and
+reader HTML seed the recent-reading POST, eliminating its redundant pre-POST
+reader GET. The recent-reading POST still gets a fresh readback and verifies
+chapter, offset, progress and reading-time invariants. Build 20261023044641 is
+installed; fresh host/sidebar markers passed and rollback timer is inactive.
+In the preceding real run, catalog retrieval took about 1.5s and the redundant
+recent pre-read was part of a 2.5s phase; these are the targeted costs, not a
+measured post-change result. A new real reading session is needed to measure the
+actual gain. Installer restart now occurs after the guarded file transaction
+has exited, avoiding Xochitl restart canceling that transaction.
+
+### Historical: 2026-10-23 annotation-store source index attempt
+
+This intermediate fix pinned the upstream annotation database to the plugin
+account cache and temporarily added a one-time network fallback. Both have been
+superseded: source maps are now captured directly during download, and exit sync
+never fetches chapter XHTML.
+
+### 2026-10-23 Capture exact source maps during download (supersedes fallback)
+
+The previous note's one-time chapter-network fallback is removed. The downloader
+now wraps the original chapter fetch and stores only compact visible-text byte
+runs plus source codepoint offsets under the account-scoped book cache. It does
+not copy chapter text into the map; the existing verified XHTML cache remains
+the source of text. Exit sync locates the matching chapter locally, reads its
+map, checks the map hash against that cached XHTML, and never calls
+`fetch_chapter_xhtml`. A legacy book without a map returns
+`progress_source_map_missing` and asks for its plugin cache to be cleared and
+the book re-downloaded. The clear-cache action now also accepts imported books;
+it removes only that book's plugin download cache and leaves the native library
+copy and registry alone. Parallel workers inherit `data_dir` as well.
+
+Source-map and adapter Lua tests, the synthetic LuaJIT sync test, repository
+checks and the official SDK build pass. Build `20261023053958` is installed;
+fresh host/sidebar readiness markers passed, Xochitl is active, and its rollback
+timer is inactive. The deployed `progress_source_store.lua` SHA-256 matches the
+host build. Real exit timing and a legacy-book cache rebuild still need a device
+reading session; no user book was downloaded or cache cleared during install.
+
+The initial `redownload-cache` implementation incorrectly fell through into
+the import cover-validation path, which could fetch/stamp a cover while the UI
+remained at “validating”. It now returns `cache_ready` immediately after the
+download helper's full-cache result and canonical-path checks, before EPUB
+cover scanning or native submission. Build `20261023053958` is installed and
+its worker hash matches; a real cache rebuild still needs a device run.
 
 Important corrections already made:
 

@@ -41,6 +41,5 @@ mv -f "$qmd.installing" "$qmd"
 systemd-run --unit="weread-downloader-rollback-$stamp" --on-active=180 \
   /bin/sh "$root/rollback-device.sh" "$backup" >/dev/null
 date "+%Y-%m-%d %H:%M:%S" > "$root/.install-restart-at"
-systemctl restart xochitl
 prepared=1
-printf '%s\n' 'plugin files installed; guarded UI restart requested'
+printf '%s\n' 'plugin files installed; guarded UI restart pending'

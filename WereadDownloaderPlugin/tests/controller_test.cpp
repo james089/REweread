@@ -359,13 +359,13 @@ ColumnLayout {
         until([&]{return restored && !controller->busy() && controller->status().contains(QStringLiteral("已恢复"));});
         check(!QFile::exists(restoreFixture.fileName()));
         QObject::disconnect(restoreConnection);
-        phase = "removed book cache action";
+        phase = "manual delete-cache action remains";
         QFile cacheFixture(temporary.path() + "/cache-fixture"); check(cacheFixture.open(QIODevice::WriteOnly)); cacheFixture.close();
         controller->refresh(); until([] { return !controller->busy(); });
         auto *cacheButton = visualChild(item, "deleteCacheButton");
         until([&] { return cacheButton && cacheButton->isVisible() && cacheButton->width() > 0; });
+        check(cacheButton->property("text") == QStringLiteral("删除缓存"));
         check(cacheButton->width() == 144 && cacheButton->height() == 88);
-        check(visualChild(item, "bookImportButton")->width() == 144 && visualChild(item, "bookImportButton")->height() == 88);
         check(QMetaObject::invokeMethod(cacheButton, "clicked")); until([] { return !controller->busy(); });
         check(!controller->books()[0].toMap().value("hasDownloadCache").toBool());
         check(controller->books()[0].toMap().value("importState") == "removed");

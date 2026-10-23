@@ -302,14 +302,14 @@ Rectangle {
                             }
                         }
                         RoundedButton {
-                            id: clearCacheAction
                             objectName: "deleteCacheButton"
-                            visible: !page.multiSelect && enabled
+                            visible: !page.multiSelect && Downloader.loggedIn && !Downloader.busy
+                                && bookRow.book.importState === "removed"
+                                && bookRow.book.hasDownloadCache !== false
                             leftPadding: 20; rightPadding: 20
                             Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
                             Layout.minimumHeight: 88; Layout.preferredHeight: 88; Layout.maximumHeight: 88
                             font.pixelSize: 24; text: "删除缓存"
-                            enabled: bookRow.book.importState === "removed" && bookRow.book.hasDownloadCache !== false && !Downloader.busy
                             onClicked: Downloader.clearCache(bookRow.book.bookId)
                         }
                     }

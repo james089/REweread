@@ -20,7 +20,7 @@ local function save(path,v)
  need(ok and closed and os.rename(tmp,path),'time_cache_unavailable')
 end
 local function seconds(n)return type(n)=='number' and n>=0 and n<=315360000 and n==math.floor(n)end
-function M.upload(progress,id,account,uuid)
+function M.upload(progress,id,account,uuid,initialPosition)
  local localRow=load(account..'/local-reading-time-v1.json').books[id]
  if not localRow then return {uploaded=0,remaining=0}end
  need(seconds(localRow.seconds) and localRow.uuid==uuid,'time_cache_unavailable')
@@ -50,7 +50,10 @@ function M.upload(progress,id,account,uuid)
  for _=1,60 do
   local delta=math.min(60,eligible)
   if delta<=0 or os.time()-started>90 or os.date('%Y-%m-%d')~=today then break end
-  local before,html=progress:fetch(id);need(seconds(before.readingTime),'time_cloud_unavailable')
+  local before,html
+  if initialPosition then before,html=initialPosition.record,initialPosition.html;initialPosition=nil
+  else before,html=progress:fetch(id) end
+  need(type(before)=='table' and type(html)=='string' and seconds(before.readingTime),'time_cloud_unavailable')
   local state=require('lib.content').extract_reader_state(html);local W=require('lib.weread')
   need(type(before.chapterUid)=='number' and type(before.chapterOffset)=='number' and type(before.summary)=='string','progress_not_located')
   local payload=W.make_read_payload({book_id=id,chapter_uid=before.chapterUid,chapter_idx=before.chapterIdx,
@@ -79,5 +82,61 @@ function M.upload(progress,id,account,uuid)
   end
  end
  return {uploaded=uploaded,remaining=math.max(0,total-row.confirmedSeconds),deferred=math.max(0,total-row.confirmedSeconds-eligible)}
+end
+
+-- Exit sync combines the exact reading position and eligible time in the same
+-- report_read POST. The callback receives each bounded delta and must send the
+-- position together with that delta. Its positive receipt advances the same
+-- durable no-duplicate journal used by standalone time uploads.
+function M.uploadCombined(progress,id,account,uuid,position,send)
+ need(type(send)=='function' and type(position)=='table' and type(position.record)=='table','time_cache_unavailable')
+ local localRow=load(account..'/local-reading-time-v1.json').books[id]
+ local path=account..'/uploaded-reading-time-v1.json'
+ local journal=load(path);journal.version=1
+ local row=journal.books[id] or {confirmedSeconds=0}
+ need(seconds(row.confirmedSeconds),'time_cache_unavailable')
+ need(not row.pending,'time_upload_uncertain')
+ local total=row.confirmedSeconds;local eligible=0;local today=os.date('%Y-%m-%d')
+ if localRow then
+  need(seconds(localRow.seconds) and localRow.uuid==uuid,'time_cache_unavailable')
+  total=localRow.seconds;need(total>=row.confirmedSeconds,'time_cache_unavailable')
+  local days=localRow.days or {};need(type(days)=='table','time_cache_unavailable')
+  local dated=0
+  for date,value in pairs(days)do
+   need(type(date)=='string' and date:match('^%d%d%d%d%-%d%d%-%d%d$') and seconds(value),'time_cache_unavailable');dated=dated+value
+  end
+  need(dated<=total,'time_cache_unavailable')
+  row.confirmedDays=row.confirmedDays or {};need(type(row.confirmedDays)=='table','time_cache_unavailable')
+  local confirmedDated=0
+  for date,value in pairs(row.confirmedDays)do
+   need(seconds(value) and value<=(days[date] or 0),'time_cache_unavailable');confirmedDated=confirmedDated+value
+  end
+  need(confirmedDated<=row.confirmedSeconds and row.confirmedSeconds-confirmedDated<=total-dated,'time_cache_unavailable')
+  eligible=(days[today] or 0)-(row.confirmedDays[today] or 0)
+ end
+ local uploaded=0;local started=os.time();local sent=false
+ for _=1,60 do
+  local delta=math.min(60,eligible)
+  if delta<=0 or os.time()-started>90 or os.date('%Y-%m-%d')~=today then break end
+  need(seconds(position.record.readingTime),'time_cloud_unavailable')
+  row.pending={date=today,seconds=delta,localThrough=row.confirmedSeconds+delta,
+   cloudBefore=position.record.readingTime,createdAt=os.time()}
+  journal.books[id]=row;save(path,journal)
+  if os.date('%Y-%m-%d')~=today then row.pending=nil;save(path,journal);break end
+  local ok,response=pcall(send,delta)
+  if not ok then error('time_upload_uncertain',0) end
+  if not require('read_sync_protocol').response_succeeded(response)then
+   row.pending=nil;save(path,journal);error('time_upload_rejected',0)
+  end
+  row.confirmedDays[today]=(row.confirmedDays[today] or 0)+delta
+  row.confirmedSeconds=row.pending.localThrough;row.pending=nil;save(path,journal)
+  uploaded=uploaded+delta;eligible=eligible-delta;sent=true
+ end
+ if not sent then
+  local ok,response=pcall(send,0)
+  if not ok or not require('read_sync_protocol').response_succeeded(response) then error('progress_sync_unconfirmed',0) end
+ end
+ return {uploaded=uploaded,remaining=math.max(0,total-row.confirmedSeconds),
+  deferred=math.max(0,total-row.confirmedSeconds-eligible)}
 end
 return M

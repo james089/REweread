@@ -43,4 +43,29 @@ local realDate=os.date;local dateCalls=0
 os.date=function(format,...)if format=='%Y-%m-%d' then dateCalls=dateCalls+1;return dateCalls<3 and today or '2099-01-01'end;return realDate(format,...)end
 write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=10,days={[today]=10}}}})
 result=Sync.upload(p,id,work,uuid);assert(result.uploaded==0 and posts==oldPosts);os.date=realDate
-print('reading time sync: measured deltas, chunking, no duplicates, rejection, ambiguous response refusal, unchanged position ok')
+-- Combined exit sync places the position and each acknowledged time chunk in
+-- the same write callback; it does not fetch cloud state between those writes.
+os.remove(work..'/uploaded-reading-time-v1.json')
+write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=150,days={[today]=125,['2000-01-01']=20}}}})
+local combined={}
+result=Sync.uploadCombined(p,id,work,uuid,{record=record,html='synthetic'},function(delta)
+ combined[#combined+1]=delta
+ assert(record.chapterUid==42 and record.chapterOffset==123 and record.progress==37)
+ if delta>0 then record.readingTime=record.readingTime+delta end
+ return {succ=1}
+end)
+assert(result.uploaded==125 and result.remaining==25 and #combined==3 and combined[1]==60 and combined[2]==60 and combined[3]==5)
+assert(read('uploaded-reading-time-v1.json').books[id].confirmedSeconds==125)
+local zeroCalls=0
+result=Sync.uploadCombined(p,id,work,uuid,{record=record,html='synthetic'},function(delta)zeroCalls=zeroCalls+1;assert(delta==0);return {succ=1}end)
+assert(result.uploaded==0 and result.remaining==25 and zeroCalls==1)
+os.remove(work..'/uploaded-reading-time-v1.json')
+write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=10,days={[today]=10}}}})
+local combinedOk,combinedErr=pcall(function()Sync.uploadCombined(p,id,work,uuid,{record=record},function()return {errCode=1}end)end)
+assert(not combinedOk and combinedErr=='time_upload_rejected' and not read('uploaded-reading-time-v1.json').books[id].pending)
+combinedOk,combinedErr=pcall(function()Sync.uploadCombined(p,id,work,uuid,{record=record},function()error('connection_lost')end)end)
+assert(not combinedOk and combinedErr=='time_upload_uncertain')
+local noResend=0
+combinedOk,combinedErr=pcall(function()Sync.uploadCombined(p,id,work,uuid,{record=record},function()noResend=noResend+1;return {succ=1}end)end)
+assert(not combinedOk and combinedErr=='time_upload_uncertain' and noResend==0)
+print('reading time sync: standalone and combined position/time writes, chunking, no duplicates, rejection and ambiguous response refusal ok')
