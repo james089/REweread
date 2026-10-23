@@ -229,6 +229,14 @@ local function execute()
         })
         require("download_io").attach(statuses, manager)
         local job = manager:start_full_download(book)
+        local downloadStartReaderRecord
+        if job.client and type(job.client.cachedReaderState) == "function" then
+            local cachedOk, cachedValue = pcall(job.client.cachedReaderState, job.client)
+            if cachedOk and type(cachedValue) == "string" then
+                local recordOk, record = pcall(require("saved_progress").extract, cachedValue, Json.decode)
+                if recordOk and type(record) == "table" then downloadStartReaderRecord = record end
+            end
+        end
         local parallelOk, parallelFailure = pcall(function() require("parallel_download").run(manager, job, function(done, total)
             emit({state = "progress", done = done, total = total})
         end) end)
@@ -245,6 +253,16 @@ local function execute()
         local status = statuses:get(id)
         assert(status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0)
         assert(type(status.fullFile) == "string" and status.fullFile ~= "" and status.imageAssets == true)
+        -- Keep the reader-state bookmark already fetched at download start.
+        -- The user's requested snapshot semantics allow it to stay fixed while
+        -- chapters download; import-time restore can use local catalog/XHTML.
+        local progressOk, progress = pcall(function()
+            return require("reading_progress").new(settings, scope, account_root)
+        end)
+        if progressOk then
+            pcall(function() progress:prepareDownloadedRestore(id, job.chapters, downloadStartReaderRecord) end)
+            pcall(function() progress:close() end)
+        end
         emit({state = "downloaded", path = status.fullFile, accountScope = scope, coverUrl = book.cover or ""})
     else
         error("unsupported operation")

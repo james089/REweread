@@ -1,6 +1,7 @@
 -- Reuse DownloadManager's chapter fetch/retry/checkpoint path; assemble strictly
--- in catalog order only after both lanes have finished their assigned chapters.
+-- in catalog order only after all bounded lanes have finished their assigned chapters.
 local M={}
+local MAX_LANES=3
 local function copy(value)
  if type(value)~='table' then return value end
  local result={}; for key,item in pairs(value) do result[key]=copy(item) end; return result
@@ -16,7 +17,7 @@ function M.run(manager,job,progress)
   for _,asset in ipairs(cached.assets or {}) do local name=tostring(asset.href or ''):match('([^/]+)$'); if name then used[name]=true end end
  end
  local success,failure=pcall(function()
-  for lane=1,2 do
+  for lane=1,MAX_LANES do
    local settings=setmetatable({cache_dir=job.settings.cache_dir,data_dir=job.settings.data_dir,values=copy(job.settings.values)},getmetatable(job.settings))
    local client=manager:client(settings,job.book_id)
    if client.persistentTransport then client.persistentTransport:close() end

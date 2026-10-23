@@ -50,7 +50,7 @@ assert(Percent.calculate({{chapterUid=901,wordCount=0}},rec,plainHtml)==nil)
 assert(Percent.calculate({{chapterUid=901,wordCount=1},{chapterUid=901,wordCount=1}},rec,plainHtml)==nil)
 assert(Percent.calculate({{chapterUid=901}},rec,plainHtml)==nil)
 local writes=0;local timeWrites=0;local enters=0;local cloudReads=0;local rejectEnter=false;local rejected=false;local changed=false;local lastPayload
-local chapterFetches=0
+local chapterFetches=0;local catalogFetches=0
 package.loaded.sha256={hex=function()return scope end}
 package.loaded.config_bridge=nil
 local client={request=function()cloudReads=cloudReads+1;return 'window.__INITIAL_STATE__='..J.encode({reader={progress={book=saved}}}),200 end,
@@ -70,7 +70,7 @@ package.loaded['lib.client']={new=function()return client end}
 package.loaded.persistent_http={attach=function()end}
 package.loaded['lib.weread']={reader_url=function()return 'https://weread.qq.com/web/reader/synthetic'end,make_read_payload=function(v)return v end,
  make_enter_read_payload=function(v)v.enter=true;return v end}
-package.loaded['lib.content']={fetch_catalog=function()return {chapter}end,cache_annotation_source=function()error('no-annotation-writes')end,
+package.loaded['lib.content']={fetch_catalog=function()catalogFetches=catalogFetches+1;return {chapter}end,cache_annotation_source=function()error('no-annotation-writes')end,
  fetch_chapter_xhtml=function()chapterFetches=chapterFetches+1;return plainHtml end,extract_reader_state=function()return {psvts=1,pclts=1,token='synthetic'}end}
 local currentPage=0;local pdfLoads=0
 local P={FPDF_InitLibrary=function()end,FPDF_DestroyLibrary=function()end,FPDF_LoadDocument=function()pdfLoads=pdfLoads+1;return {}end,FPDF_CloseDocument=function()end,
@@ -145,6 +145,26 @@ assert(result.state=='restore_position' and result.page==1 and writes==2 and rea
 local oldSummary=saved.summary;saved.summary='no matching saved text'
 ok,err=pcall(function()M:restore(id)end);assert(not ok and err=='progress_offset_unsupported' and writes==2)
 saved.summary=oldSummary;saved.chapterOffset=0
+local chapterFetchesBeforeSnapshot=chapterFetches
+local catalogFetchesBeforeSnapshot=catalogFetches
+local snapshotRecord=J.decode(J.encode(saved))
+local readsBeforeDownloadSnapshot=cloudReads
+local prepared=M:prepareDownloadedRestore(id,{chapter},snapshotRecord)
+assert(prepared.snapshot and cloudReads==readsBeforeDownloadSnapshot,'download-start reader state should be reused')
+local readsBeforeCachedRestore=cloudReads
+result=M:restore(id)
+assert(result.state=='restore_position' and result.page==1)
+assert(cloudReads==readsBeforeCachedRestore and chapterFetches==chapterFetchesBeforeSnapshot
+ and catalogFetches==catalogFetchesBeforeSnapshot,'fresh download snapshot, catalog and XHTML should restore locally')
+prepared=M:prepareDownloadedRestore(id,{chapter},J.decode(J.encode(saved)))
+assert(prepared.snapshot)
+M.cache.books[id].downloadSnapshotAt=os.time()-3600;M:save()
+local readsBeforeOldSnapshot=cloudReads
+result=M:restore(id)
+assert(result.state=='restore_position' and cloudReads==readsBeforeOldSnapshot,'the download-time snapshot is used even if cloud position changes during download')
+local readsAfterConsumedSnapshot=cloudReads
+result=M:restore(id)
+assert(result.state=='restore_position' and cloudReads==readsAfterConsumedSnapshot+1,'a consumed snapshot is never reused for later manual retries')
 write(base..'.metadata',before)
 local cache=J.decode(read(account..'/reading-progress-v1.json'));assert(cache.books[id].restorePending and not cache.books[id].restoreAutomatic)
 result=M:restored(id);assert(result.state=='progress_restored')

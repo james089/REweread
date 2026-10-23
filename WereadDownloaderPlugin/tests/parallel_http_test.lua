@@ -12,10 +12,10 @@ local serial=assert(Persistent.new()); local started=socket.gettime()
 for i=1,8 do request(serial,i) end
 local sequential=socket.gettime()-started; serial:close()
 local scheduler=assert(Http.new()); local owners,fn={},{}
-for lane=1,2 do
+for lane=1,3 do
  local owner=assert(Persistent.new({perform=function(handle)return scheduler:await(handle)end}))
  scheduler.owners[#scheduler.owners+1]=owner; owners[lane]=owner
- fn[lane]=function() for i=lane,8,2 do request(owner,i) end end
+ fn[lane]=function() for i=lane,8,3 do request(owner,i) end end
 end
 started=socket.gettime(); scheduler:run(fn,owners); local parallel=socket.gettime()-started; scheduler:close()
 assert(http.request==original,'restore global HTTP dispatcher')
@@ -23,7 +23,7 @@ assert(parallel<sequential*.8,'overlap network waits')
 -- Real content fetches inline images inside a C string.gsub callback. Such a
 -- callback cannot yield; a pending handle must not outlive its coroutine.
 local images=assert(Http.new());local imageOwners,imageFunctions={},{}
-for lane=1,2 do
+for lane=1,3 do
  local owner=assert(Persistent.new({perform=function(handle)return images:await(handle)end}))
  images.owners[#images.owners+1]=owner;imageOwners[lane]=owner
  imageFunctions[lane]=function()

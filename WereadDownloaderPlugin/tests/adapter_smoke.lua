@@ -27,7 +27,7 @@ local function check(value) assert(value, "private adapter behavior failed at li
 local private = "/home/root/.local/share/weread-downloader"
 local function run(operation, partial, age, responseCode, brokenParallel, renewal)
     local lines, writes, paths = {}, {}, {}
-    local shelfRequests = 0
+    local shelfRequests, snapshotPrepared = 0, 0
     local mask, renamed, isolated = false, false, false
     local scope = Sha.hex("weread-downloader-account-v1\31synthetic")
     local account = private .. "/accounts/" .. scope
@@ -66,9 +66,11 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
             local before = mapSaved
             content.fetch_chapter_xhtml({}, {}, {bookId = "synthetic-1"}, {chapterUid = "chapter-1"})
             check(mapSaved == before + 1)
-            return {state = brokenParallel and starts == 2 and "running" or "done"}
+            return {state = brokenParallel and starts == 2 and "running" or "done",
+                client = {cachedReaderState = function() return "synthetic reader state" end},
+                chapters = {{chapterUid = "chapter-1"}}}
         end, step_full_download = function(_, job)
-            serialSteps = serialSteps + 1; job.state = "done"; job.selected = {1}; job.chapters = {1}
+            serialSteps = serialSteps + 1; job.state = "done"; job.selected = {1}; job.chapters = job.chapters or {1}
         end}
     end
     local modules = {
@@ -78,7 +80,17 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
         json_util = Json, config_bridge = Config, sha256 = Sha, shelf_cache = cache,
         reading_progress = {new = function(settings)
             check(settings.data_dir == account)
-            return {cache = {books = {}}, close = function() end}
+            return {cache = {books = {}}, close = function() end,
+                prepareDownloadedRestore = function(_, id, catalog, record)
+                    check(operation == "download" and id == "synthetic-1" and catalog[1].chapterUid == "chapter-1")
+                    check(type(record) == "table" and record.chapterUid == "chapter-1")
+                    snapshotPrepared = snapshotPrepared + 1
+                    return {state = "restore_prepared", snapshot = true}
+                end}
+        end},
+        saved_progress = {extract = function(html, decode)
+            check(html == "synthetic reader state" and type(decode) == "function")
+            return {chapterUid = "chapter-1", progress = 45}
         end},
         session_auth = {prepare = function() end, renew = function(_, force)
             if force and renewal == "success" then responseCode = 200; return true, false end
@@ -157,6 +169,7 @@ local function run(operation, partial, age, responseCode, brokenParallel, renewa
     if renewal == "offline" then check(#writes == 0 and lines[#lines].state == "error") end
     if responseCode == 500 then check(#writes == 0) end
     if brokenParallel then check(starts == 2 and serialSteps == 1 and lines[#lines].state == "downloaded") end
+    if operation == "download" then check(snapshotPrepared == (partial and 0 or 1)) end
     return lines
 end
 run("login")

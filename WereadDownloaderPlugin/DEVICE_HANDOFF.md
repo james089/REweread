@@ -2,6 +2,22 @@
 
 Last updated: 2026-10-22 (America/Chicago).
 
+### 2026-10-23 Reuse download-time cloud bookmark and verified chapter cache
+
+The download client exposes only its already-cached reader-state HTML. The
+adapter extracts the saved progress record into the account-private progress
+cache and stores the catalog only when it matches the completed download
+manifest. The record remains a download-start snapshot for the immediate import,
+as requested; it is consumed once, and a later retry fetches current cloud state.
+
+After native import, restore validates the account-scoped manifest, catalog
+fingerprint, chapter fingerprint, byte length and checksum, then uses the local
+XHTML to locate the anchor before scanning the generated PDF. Missing or invalid
+local cache falls back to the existing network catalog/chapter fetch. The native
+PDF page write and metadata readback checks are unchanged. Synthetic regression
+coverage verifies no cloud, catalog or chapter request is repeated on the cached
+path; device install and real-book timing have not yet been performed.
+
 ### 2026-10-23 Combine exit position/time report; limit cache deletion to removed books
 
 The existing “删除缓存” row action is retained; the additional “重新下载缓存”
@@ -259,6 +275,17 @@ Download optimization and single/multi-select deployment (2026-10-22):
   installation wake lock released. No user book was imported during benchmarking.
 - Human visual acceptance of the toggle and physical touch remains for the user;
   host UI and native QML-load checks do not replace that acceptance.
+
+### 2026-10-23 Raise bounded full-download concurrency to three
+
+- Full-book downloads now run up to three chapter lanes through the same
+  libcurl multi event loop. Each lane retains an independent settings/client
+  context; retries, verified checkpoints, image handling, and ordered EPUB
+  assembly are unchanged. The scheduler rejects more than three lanes.
+- The existing two-lane device sample showed about 23% improvement over serial.
+  Three-lane speed and service throttling have not yet been measured on-device;
+  host parallel HTTP coverage now exercises three lanes, including inline-image
+  requests that cannot yield from their callback.
 
 2026-10-22 inline-image coroutine failure correction:
 - The initial parallel version fails when upstream fetches an inline image from

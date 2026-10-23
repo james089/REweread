@@ -79,6 +79,27 @@ function M.new(settings,scope,account,environment)
   end
   return catalog
  end
+ function self:prepareDownloadedRestore(id,catalog,readerRecord)
+  need(valid(id) and type(catalog)=='table' and #catalog>0,'progress_not_located')
+  local book=account..'/books/'..id
+  local manifest=need(json(book..'/download-manifest.json'),'progress_not_located')
+  local expected='sha256-'..require('sha256').hex('rm-weread-cache-v1\31'..settings:get('cookies',{}).wr_vid)
+  need(manifest.accountScope==expected and Verify.catalog(catalog)==manifest.catalogFingerprint,'progress_cache_changed')
+  self.cache.catalogs=self.cache.catalogs or {}
+  self.cache.catalogs[id]={chapters=catalog}
+  local entry=self.cache.books[id] or {}
+  entry.restorePending=true;entry.restoreAutomatic=true;entry.downloadSnapshotAt=nil
+  local record=type(readerRecord)=='table' and percent(readerRecord.progress) and readerRecord or nil
+  if not record then
+   local ok,value=pcall(function()return self:fetch(id)end)
+   if ok and type(value)=='table' and percent(value.progress) then record=value end
+  end
+  if record then
+   entry.record=record;entry.fetchedAt=os.time();entry.downloadSnapshotAt=entry.fetchedAt
+  end
+  self.cache.books[id]=entry;self:save()
+  return {state='restore_prepared',snapshot=entry.downloadSnapshotAt~=nil}
+ end
  function self:displayPercent(id,record,catalog,original)
   local old=self.cache.books[id]
   if not catalog and old and old.displayMethod==1 and old.displayPosition==Percent.positionKey(record)
@@ -228,9 +249,15 @@ function M.new(settings,scope,account,environment)
   need(valid(id),'invalid_book_id')
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
   need(row and row.state=='imported' and row.accountScope==scope and type(row.uuid)=='string' and #row.uuid==36 and row.uuid:match('^[%x-]+$'),'progress_not_located')
-  local old=self.cache.books[id] or {};old.restorePending=true;old.restoreAutomatic=false;self.cache.books[id]=old;self:save()
-  local record=self:fetch(id)
-  self.cache.books[id]={record=record,fetchedAt=os.time(),restorePending=true,restoreAutomatic=false};self:save()
+  local old=self.cache.books[id] or {}
+  local snapshotAt=tonumber(old.downloadSnapshotAt)
+  local useSnapshot=old.restorePending==true and old.restoreAutomatic==true and snapshotAt
+      and type(old.record)=='table' and percent(old.record.progress)~=nil
+  old.restorePending=true;old.restoreAutomatic=false;self.cache.books[id]=old;self:save()
+  local record=useSnapshot and old.record or self:fetch(id)
+  self.cache.books[id]={record=record,fetchedAt=useSnapshot and snapshotAt or os.time(),
+      restorePending=true,restoreAutomatic=false}
+  self:save()
   local base=library..'/'..row.uuid
   local mb=need(read(base..'.metadata'),'progress_not_located');local cb=need(read(base..'.content'),'progress_not_located')
   local meta,content=J.decode(mb),J.decode(cb)
@@ -242,12 +269,21 @@ function M.new(settings,scope,account,environment)
   local display
   if tonumber(record.progress)==0 and (tonumber(record.chapterOffset) or 0)==0 then target=0
   else
-   local Content=require('lib.content');local catalog=Content.fetch_catalog(client,{bookId=id});local chapter
-   for _,c in ipairs(catalog) do if tostring(c.chapterUid)==tostring(record.chapterUid) then need(not chapter,'progress_not_located');chapter=c end end
-   need(chapter and type(record.summary)=='string' and #record.summary>0,'progress_not_located')
-   local put=Content.cache_annotation_source;Content.cache_annotation_source=function()end
-   local ok,html=pcall(Content.fetch_chapter_xhtml,client,settings,{bookId=id,_content_format='epub'},chapter)
-   Content.cache_annotation_source=put;need(ok,'progress_network_failed')
+   local Content=require('lib.content');local catalog=self:displayCatalog(id);local chapter,chapterIndex
+   for i,c in ipairs(catalog) do if tostring(c.chapterUid)==tostring(record.chapterUid) then need(not chapter,'progress_not_located');chapter=c;chapterIndex=i end end
+   need(chapter and chapterIndex and type(record.summary)=='string' and #record.summary>0,'progress_not_located')
+   local html
+   local manifest=json(account..'/books/'..id..'/download-manifest.json')
+   local entry=manifest and manifest.accountScope=='sha256-'..require('sha256').hex('rm-weread-cache-v1\31'..settings:get('cookies',{}).wr_vid)
+       and manifest.catalogFingerprint==Verify.catalog(catalog) and manifest.chapters and manifest.chapters[tostring(chapter.chapterUid)]
+   local cached=entry and read(account..'/books/'..id..'/chapters/'..tostring(chapter.chapterUid)..'.xhtml',2*1024*1024)
+   if cached and #cached==entry.bytes and Verify.checksum(cached)==entry.checksum
+       and entry.chapterFingerprint==Verify.chapter(chapter,chapterIndex) then html=cached end
+   if not html then
+    local put=Content.cache_annotation_source;Content.cache_annotation_source=function()end
+    local ok,value=pcall(Content.fetch_chapter_xhtml,client,settings,{bookId=id,_content_format='epub'},chapter)
+    Content.cache_annotation_source=put;need(ok and type(value)=='string','progress_network_failed');html=value
+   end
    local indexed=need(Source.index(html),'progress_not_located');local summary=Text.normalize(record.summary)
    -- A saved offset may describe a different HTML serialization. Downloading
    -- a native page can instead prove the bookmark with a unique exact summary

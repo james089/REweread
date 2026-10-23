@@ -1,5 +1,5 @@
 -- A bounded coroutine scheduler over the existing verified libcurl transport.
--- One event loop, two independent easy handles; no credential logs or threads.
+-- One event loop, at most three independent easy handles; no credential logs or threads.
 local M = {}
 function M.new()
  local ffi = require('ffi')
@@ -40,7 +40,7 @@ function M.new()
   self.owners={}
  end
  function self:run(functions, transports)
-  assert(#functions<=2 and #functions==#transports, "parallelism must be bounded to two")
+  assert(#functions<=3 and #functions==#transports, "parallelism must be bounded to three")
   local http=require('socket.http'); local original=http.request
   http.request=function(opts,...)
    local owner=self.contexts[coroutine.running()]

@@ -10,6 +10,9 @@ function ReaderStateCache.attach(client, reader_url, clock)
     function client:invalidateReaderState()
         cached_html, fetched_at = nil, nil
     end
+    function client:cachedReaderState()
+        return cached_html
+    end
     function client:get_text(url, opts)
         -- WeRead's encoded IDs contain hex digits and 'g'; 'k' is the
         -- separator between the book and chapter IDs, not part of a book ID.
