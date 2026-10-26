@@ -36,6 +36,14 @@ SearchButton and ShareMenu are hidden with `shouldShow: false`, which also
 collapses their layout slots. This does not hide the library's search control.
 The separate PDF fit/crop submenu remains available as “页面缩放”.
 
+The page-jump panel has one transparent TOC icon button to the left of the
+slider, using the built-in `qrc:/ark/icons/list` icon in black. Its touch target
+is 88 × 88 with a 48px icon, centered in a 120px row (16px top/bottom clearance).
+The slider reserves 24px between the button and the track. The existing
+reading-enhancements TOC helper is reused; if unavailable, the button hides
+and the slider regains its original width. Clicking dismisses preview and the
+slider without accepting a page jump. No extra page-overview shortcut remains.
+
 For an existing verified defaults installation, `install-menu-device.sh` adds
 only the menu QMD and extends the firmware-update guard to cover it. It checks
 the current installation manifest, saves the old guard/manifest and arms

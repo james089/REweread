@@ -14,6 +14,49 @@ AFFECT /qt/qml/xofm/libs/toolbar/qml/SettingsMenu.qml
     END TRAVERSE
 END AFFECT
 
+AFFECT /qml/device/view/documentview/DocumentPageSlider.qml
+    TRAVERSE PageSlider#pageSlider
+        REPLACE leftVisibleMargin WITH {
+            leftVisibleMargin: ArkControls.Values.spacing.xlarge
+                + (nativeReaderJumpTocButton.visible ? nativeReaderJumpTocButton.width + 24 : 0)
+        }
+        LOCATE BEFORE ALL
+        INSERT {
+            height: 120
+            ArkControls.IconButton {
+                id: nativeReaderJumpTocButton
+                objectName: "nativeReaderJumpTocButton"
+                iconSource: "qrc:/ark/icons/list"
+                width: 88
+                height: 88
+                transparent: true
+                focusPolicy: Qt.NoFocus
+                anchors.left: parent.left
+                anchors.leftMargin: ArkControls.Values.spacing.xlarge
+                anchors.verticalCenter: parent.verticalCenter
+                contentItem: ArkControls.Icon {
+                    source: "qrc:/ark/icons/list"
+                    size: 48
+                    color: "black"
+                }
+                visible: {
+                    const view = pageSlider.documentView;
+                    return !!view && !!view.rmtoolTableOfContentsAvailable
+                        && typeof view.rmtoolOpenTableOfContents === "function";
+                }
+                Component.onCompleted: console.info("native reader jump shortcuts ready 2026102604")
+                onClicked: {
+                    const view = pageSlider.documentView;
+                    if (!view || typeof view.rmtoolOpenTableOfContents !== "function") return;
+                    pageSlider.pageThumbnailVisible = false;
+                    pageSlider.visible = false;
+                    view.rmtoolOpenTableOfContents();
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
 AFFECT /qt/qml/xofm/libs/toolbar/qml/AdjustmentToolsMenu.qml
     TRAVERSE ToolbarTool#root
         REPLACE shouldShow WITH { shouldShow: false }

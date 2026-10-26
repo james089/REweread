@@ -1,5 +1,5 @@
 #!/bin/sh
-# Adds only menu resources to the already verified defaults installation.
+# Installs/upgrades menu resources in the already verified defaults installation.
 set -eu
 umask 077
 root=/home/root/native-reader-defaults
@@ -15,19 +15,25 @@ test -s "$root/.install-ok"
 test ! -f /home/root/.local/share/weread-downloader/imports.lock
 ! pidof rm_weread_qt >/dev/null
 link=/home/root/xovi/exthome/qt-resource-rebuilder/native-reader-menu.qmd
-[ ! -e "$link" ] && [ ! -L "$link" ]
+if [ -e "$link" ] || [ -L "$link" ]; then
+    [ -L "$link" ] && [ "$(readlink "$link")" = "$root/menu.qmd" ]
+    test -f "$root/menu.qmd"
+    test -s "$root/.menu-install-ok"
+fi
 (cd "$stage"; sha256sum -c install.sha256 >/dev/null)
 (cd "$root"; sha256sum -c install.sha256 >/dev/null)
 backup="$root/before-menu-$stamp"
 mkdir "$backup"
 cp "$root/pre-start.sh" "$root/install.sha256" "$backup/"
+if [ -f "$root/menu.qmd" ]; then cp "$root/menu.qmd" "$backup/menu.qmd"; fi
 cp "$stage/rollback-menu.sh" "$root/rollback-menu.sh"
 systemd-run --unit="native-reader-menu-rollback-$stamp" --on-active=180 /bin/sh "$root/rollback-menu.sh" "$stamp" >/dev/null
 cp "$stage/pre-start.sh" "$root/pre-start.sh.installing"
 chmod +x "$root/pre-start.sh.installing"
 mv "$root/pre-start.sh.installing" "$root/pre-start.sh"
-cp "$stage/menu.qmd" "$root/menu.qmd"
-ln -s "$root/menu.qmd" "$link"
+cp "$stage/menu.qmd" "$root/menu.qmd.installing"
+mv "$root/menu.qmd.installing" "$root/menu.qmd"
+if [ ! -L "$link" ]; then ln -s "$root/menu.qmd" "$link"; fi
 (cd "$root"; sha256sum defaults.qmd install-device.sh native-reader-defaults.so pre-start.sh rollback-device.sh menu.qmd > install.sha256)
 date '+%Y-%m-%d %H:%M:%S' > "$root/.menu-restart-at"
 printf '%s\n' 'menu files prepared; guarded soft restart pending'
