@@ -184,4 +184,27 @@ result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded
  ..' remaining='..tostring(result.timeRemainingSeconds)..' deferred='..tostring(result.timeDeferredSeconds)..' writes='..writes..' timeWrites='..timeWrites..' elapsed='..tostring(lastPayload and lastPayload.elapsed_seconds))
 assert(J.decode(read(account..'/uploaded-reading-time-v1.json')).books[id].confirmedSeconds==5)
 assert(cloudReads-readsBeforeCombined==2,'combined sync should perform one preflight cloud read and one final verification')
+-- Native cPages v2 must retain exact sync/restore without rewriting CRDT/annotations.
+local function cell(v)return {timestamp='1:1',value=v}end
+local v2={fileType='epub',formatVersion=2,pageCount=2,cPages={original=cell(2),lastOpened=cell('00000000-0000-4000-8000-000000000002'),pages={
+ {id='00000000-0000-4000-8000-000000000001',idx=cell('a'),redir=cell(0)},
+ {id='00000000-0000-4000-8000-000000000002',idx=cell('b'),redir=cell(1)},
+}}}
+json(base..'.content',v2)
+local preservedContent=read(base..'.content');local preservedMetadata=read(base..'.metadata')
+M:refresh({{bookId=id}},function()end)
+local v2Writes=writes;local v2Fetches=chapterFetches
+result=M:sync(id)
+assert(result.state=='progress_synced' and writes==v2Writes+1 and lastPayload.chapter_uid==42
+ and lastPayload.chapter_offset==position.codepoints and chapterFetches==v2Fetches)
+assert(read(base..'.content')==preservedContent and read(base..'.metadata')==preservedMetadata)
+result=M:restore(id)
+assert(result.state=='restore_position' and result.page==1 and writes==v2Writes+1)
+assert(read(base..'.content')==preservedContent and read(base..'.metadata')==preservedMetadata)
+local rejectedWrites=writes
+v2.cPages.pages[2].redir.value=0;json(base..'.content',v2)
+ok,err=pcall(function()M:sync(id)end)
+assert(not ok and err=='progress_layout_unsupported' and writes==rejectedWrites)
+ok,err=pcall(function()M:restore(id)end)
+assert(not ok and err=='progress_layout_unsupported' and writes==rejectedWrites)
 M:close();print('synthetic progress: imported-only reads, exact sync/zero time, conflict, rejection, restore and layout refusal passed')

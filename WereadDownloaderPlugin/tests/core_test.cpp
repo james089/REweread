@@ -30,6 +30,15 @@ int main(int argc, char **argv) {
         progressMetadata["lastOpenedPage"]=3; check(nativeReadingPercent(progressMetadata,progressContent)<0);
         progressMetadata["lastOpenedPage"]=0.5; check(nativeReadingPercent(progressMetadata,progressContent)<0);
         progressMetadata["lastOpenedPage"]=0; progressMetadata["parent"]="trash"; check(nativeReadingPercent(progressMetadata,progressContent)<0);
+        progressMetadata=QJsonObject{{"lastOpenedPage",1}};
+        const QJsonObject cPages{{"pages",QJsonArray{QJsonObject{{"id","synthetic-a"}},QJsonObject{{"id","synthetic-b"}},QJsonObject{{"id","synthetic-c"}}}}};
+        QJsonObject v2Content{{"formatVersion",2},{"pageCount",3},{"cPages",cPages}};
+        check(nativeReadingPercent(progressMetadata,v2Content)==50);
+        progressMetadata["lastOpenedPage"]=2; check(nativeReadingPercent(progressMetadata,v2Content)==100);
+        progressMetadata["lastOpenedPage"]=0; check(nativeReadingPercent(progressMetadata,v2Content)==0);
+        v2Content["pageCount"]=4; check(nativeReadingPercent(progressMetadata,v2Content)<0);
+        v2Content["pageCount"]=3;v2Content["cPages"]=QJsonObject{};
+        check(nativeReadingPercent(progressMetadata,v2Content)<0);
         const QString fixtures = QString::fromLocal8Bit(argv[1]);
         QTemporaryDir temporary; check(temporary.isValid());
         const auto stamped = temporary.path() + "/stamped.epub";

@@ -722,6 +722,7 @@ void DownloaderController::readOutput() {
                    : row.value("code") == "progress_network_failed" ? QStringLiteral("进度读取失败，请检查网络后重试")
                    : row.value("code") == "time_upload_rejected" ? QStringLiteral("微信读书拒绝了进度或时长写入，请刷新核实后重试")
                    : row.value("code") == "progress_source_map_missing" ? QStringLiteral("此书旧缓存缺少章节映射；先点“删除缓存”，再重新导入")
+                   : row.value("code") == "progress_layout_unsupported" ? QStringLiteral("当前书籍的分页结构暂不支持同步")
                    : m_operation == "restore-progress" ? QStringLiteral("云端位置无法唯一匹配本地正文，请刷新后重试")
                    : QStringLiteral("暂不能准确定位阅读位置，请确认已读到正文并刷新后重试"))
                 : row.value("code") == "native_rejected"

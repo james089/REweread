@@ -40,3 +40,14 @@ bash WereadDownloaderPlugin/scripts/build-sdk.sh
 ```
 
 该脚本构建核心库、下载 worker、原生扩展和隔离测试程序，不安装、不启动设备程序、不重编现有阅读器。安装前仍需精确固件的资源回放及加载检查。
+
+## 原生分页格式兼容
+
+上传和下载进度同时支持旧式页码映射，以及 `formatVersion: 2` / `cPages`。
+对于 cPages，原始页数、唯一页面 ID、有序 CRDT 索引和每页重定向必须证明
+页面与 PDF 一一对应。只读取这些结构，不改写页面记录或批注；重排、增删或
+格式异常仍会在云端写入前停止。本地百分比显示也支持读取 cPages。
+
+`tests/native_page_layout_test.lua` 覆盖两种结构及异常映射；
+`tests/reading_progress_test.lua` 使用合成 cPages 文件验证精确上传、下载进度，
+并确认原生元数据逐字节保持不变。

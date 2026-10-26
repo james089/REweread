@@ -10,8 +10,10 @@ inline double nativeReadingPercent(const QJsonObject &metadata, const QJsonObjec
     const auto p=metadata.value("lastOpenedPage"), n=content.value("pageCount");
     if (!p.isDouble() || !n.isDouble()) return -1;
     const double page=p.toDouble(), count=n.toDouble();
+    const auto pages = content.value("formatVersion")==2
+        ? content.value("cPages").toObject().value("pages") : content.value("pages");
     if (!std::isfinite(page) || !std::isfinite(count) || page!=std::floor(page) || count!=std::floor(count)
-        || count<1 || page<0 || page>=count || content.value("pages").toArray().size()!=count) return -1;
+        || count<1 || page<0 || page>=count || !pages.isArray() || pages.toArray().size()!=count) return -1;
     return count==1 ? 0 : page*100.0/(count-1);
 }
 }

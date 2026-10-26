@@ -6,6 +6,7 @@ local Source=require('progress_source_map')
 local Verify=require('progress_cache_verify')
 local Saved=require('saved_progress')
 local Percent=require('progress_percent')
+local Layout=require('native_page_layout')
 local M={}
 local root='/home/root/.local/share/weread-downloader'
 local library='/home/root/.local/share/remarkable/xochitl'
@@ -262,9 +263,7 @@ function M.new(settings,scope,account,environment)
   local mb=need(read(base..'.metadata'),'progress_not_located');local cb=need(read(base..'.content'),'progress_not_located')
   local meta,content=J.decode(mb),J.decode(cb)
   need(not meta.deleted and meta.parent~='trash' and content.fileType=='epub','progress_not_located')
-  local count=content.pageCount;local map=content.redirectionPageMap
-  need(type(count)=='number' and count>0 and count<5001 and type(map)=='table' and #map==count and content.originalPageCount==count and #content.pages==count,'progress_layout_unsupported')
-  for i,v in ipairs(map) do need(v==i-1,'progress_layout_unsupported')end
+  local count=need(Layout.identityCount(content),'progress_layout_unsupported')
   local target
   local display
   if tonumber(record.progress)==0 and (tonumber(record.chapterOffset) or 0)==0 then target=0
@@ -374,9 +373,7 @@ function M.new(settings,scope,account,environment)
   local metaBytes=need(read(base..'.metadata'),'progress_not_located');local contentBytes=need(read(base..'.content'),'progress_not_located')
   local meta,content=J.decode(metaBytes),J.decode(contentBytes)
   need(not meta.deleted and meta.parent~='trash' and content.fileType=='epub','progress_not_located')
-  local map=content.redirectionPageMap;local count=tonumber(content.pageCount)
-  need(type(map)=='table' and count and #map==count and type(content.pages)=='table' and #content.pages==count and content.originalPageCount==count,'progress_layout_unsupported')
-  for i,v in ipairs(map) do need(v==i-1,'progress_layout_unsupported')end
+  local count=need(Layout.identityCount(content),'progress_layout_unsupported')
   local ix=tonumber(meta.lastOpenedPage);need(ix and ix==math.floor(ix) and ix>=0 and ix<count,'progress_not_located')
   need(canonical(base..'.pdf'),'progress_not_located')
   local P=pdf();P.FPDF_InitLibrary()

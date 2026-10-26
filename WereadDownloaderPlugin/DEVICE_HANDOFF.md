@@ -853,3 +853,25 @@ Download optimization and single/multi-select deployment (2026-10-22):
   and device Lua time regressions passed. Priority regression interrupts a slow
   whole-shelf read before it can delay an exit job. Install rollback timer is
   disarmed; install wake lock and temporary synthetic device fixtures cleaned.
+# 2026-10-26 cPages identity-layout compatibility
+
+- Actual read-only diagnosis reproduced `progress_layout_unsupported` before
+  matching; the affected native document used formatVersion 2/cPages. Its cached
+  XHTML and original source map both matched the current PDF page uniquely.
+- `native_page_layout.identityCount()` now validates legacy identity maps and
+  cPages original/page counts, unique IDs, strictly ordered CRDT indices,
+  identity redirections and nondeleted pages. Upload and restore share it.
+  Complex or malformed layouts remain rejected; no native records are rewritten.
+- Native percentage reads cPages pages; unsupported layouts get a specific UI
+  message rather than the generic text-location failure.
+- Pure layout tests and device synthetic sync/restore tests passed, including
+  no mutation of native metadata. Host Core, device Qt6 UI, official SDK,
+  Linux validations and replay against current peer QMDs passed. The host Qt5
+  UI build fails on the preexisting Qt6 timezone API and was not changed here.
+- The real document passed new local preflight with HTTP explicitly blocked
+  and cache saving disabled. No real cloud progress/time was submitted.
+- Installed `20261026173840`: fresh host/sidebar markers, translated module,
+  matching worker/Lua hashes and active Xochitl/NRestarts=0 confirmed. The
+  requested UI restart was canceled and the system rebooted; the kernel boot
+  ID changed. OS identity and independent reader menu remained unchanged.
+  No rollback marker; temporary synthetic test files were removed.
