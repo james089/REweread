@@ -2,6 +2,8 @@
 
 更新时间：2026-10-13
 
+2026-10-26 目录返回来源修正与双入口（覆盖下条图标方案）：用户恢复“目录 / 页面概览”两个独立入口，均在完整滑条上方，224×88 白底无边框圆角按钮，黑色系统 icon+文字，按钮间24、到滑条28、面板顶部留白32。`menu.qmd` 对 Pages 增加当次 overview 打开/TOC 激活的来源状态：阅读增强既有直接入口在同一同步调用中 openOverview+激活 TOC，此时 Back 关闭 overview 回正文；从已打开概览进入 TOC，Back 只关闭 TOC 回概览。概览关闭与换文档清理状态，章节点击保留原生处理。修改在独立 QMD 中，不修改阅读增强文件。新增 `toc_navigation_test.cpp`，在带真实 QQuickWindow 的 offscreen 合成页面中运行实际 QMD handlers，覆盖两个目的地、反复进出、文档替换，设备 Qt6/software 测试通过，无真实书籍操作。与全部现有补丁回放、Qt6 SDK QML 语法、官方 SDK 构建和 Linux 全量验证通过。设备 `2026102605` 专属 shortcuts-ready、contrast defaults ready、下载插件 host/sidebar-ready 已确认，Xochitl active/NRestarts=0；本次仅软重启，内核 boot ID 未变。既有插件 QMD 哈希未变，回退保护解除，测试/上传目录已清理。真实菜单点击和视觉效果由用户验收；本轮改动未提交。
+
 2026-10-26 跳页入口最终样式（覆盖下条双按钮布局）：用户取消新增“页面概览”，只保留滑条左侧的目录图标。`menu.qmd` 现使用透明 ArkControls.IconButton、内置 `qrc:/ark/icons/list` 黑色 48px 图标、88×88 点击区，无文字/可见背景/边框；滑条行高120使按钮上下各留16，按钮与滑轨间24。无目录时隐藏并归还滑轨宽度；保留原生页面概览的其他入口。用户中途提出的圆角背景已被后续“透明背景、黑色系统图标”要求取代。联合补丁回放、Qt QML 语法、Linux 全量验证与 SDK 构建通过。设备 `2026102604` 的专属快捷入口 ready、contrast defaults ready、下载插件 host/sidebar ready 已确认；系统 active/NRestarts=0，软重启成功且内核 boot ID 未变。既有阅读增强/下载插件 QMD 哈希未变，回退计时器已解除，上传目录已清理。实际视觉和触控由用户验收。
 
 2026-10-26 跳页快捷入口：`NativeReaderDefaults/menu.qmd` 为底部 DocumentPageSlider 增加“目录 / 页面概览”快捷行，两按钮均 192×88，位于滑条上方，保留原滑条宽度；拖动出现页面预览时隐藏，避免遮挡页码/章节标签。目录复用阅读增强已有 `rmtoolOpenTableOfContents()`，仅其 availability 与方法都有效时显示；概览复用原生 `openOverview()`。点击先隐藏 quick-browse 预览和滑条，不触发 accepted/openPage。与设备活动补丁联合资源回放、Qt QML 语法、官方 SDK 构建和 Linux 全量验证通过。菜单升级/回退脚本现支持保留已有菜单，合成测试覆盖首次安装回退及升级恢复旧菜单。用户授权安装 `2026102603` 后，设备确认 shortcuts ready、下载插件 host-ready，Xochitl active/NRestarts=0，无快捷入口 QML 错误，汉化及既有插件保持；本次软重启成功，内核 boot ID 未变。安装确认已保存，回退计时器已解除，上传目录已清理。未做真实触控或视觉验收。

@@ -16,44 +16,165 @@ END AFFECT
 
 AFFECT /qml/device/view/documentview/DocumentPageSlider.qml
     TRAVERSE PageSlider#pageSlider
-        REPLACE leftVisibleMargin WITH {
-            leftVisibleMargin: ArkControls.Values.spacing.xlarge
-                + (nativeReaderJumpTocButton.visible ? nativeReaderJumpTocButton.width + 24 : 0)
-        }
         LOCATE BEFORE ALL
         INSERT {
-            height: 120
-            ArkControls.IconButton {
-                id: nativeReaderJumpTocButton
-                objectName: "nativeReaderJumpTocButton"
-                iconSource: "qrc:/ark/icons/list"
-                width: 88
-                height: 88
-                transparent: true
-                focusPolicy: Qt.NoFocus
+            Row {
+                id: nativeReaderJumpShortcuts
+                objectName: "nativeReaderJumpShortcuts"
                 anchors.left: parent.left
                 anchors.leftMargin: ArkControls.Values.spacing.xlarge
-                anchors.verticalCenter: parent.verticalCenter
-                contentItem: ArkControls.Icon {
-                    source: "qrc:/ark/icons/list"
-                    size: 48
-                    color: "black"
+                anchors.bottom: parent.top
+                anchors.bottomMargin: 28
+                height: 88
+                spacing: 24
+                visible: !pageSlider.pageThumbnailVisible
+                Component.onCompleted: console.info("native reader jump shortcuts ready 2026102605")
+
+                ArkControls.Button {
+                    id: nativeReaderJumpTocButton
+                    objectName: "nativeReaderJumpTocButton"
+                    text: "目录"
+                    iconSource: "qrc:/ark/icons/list"
+                    width: 224
+                    height: 88
+                    focusPolicy: Qt.NoFocus
+                    background: Rectangle { color: "white"; radius: 18 }
+                    contentItem: Item {
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 12
+                            ArkControls.Icon {
+                                source: "qrc:/ark/icons/list"
+                                size: 40
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: "目录"
+                                font.pixelSize: 26
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                    }
+                    visible: {
+                        const view = pageSlider.documentView;
+                        return !!view && !!view.rmtoolTableOfContentsAvailable && typeof view.rmtoolOpenTableOfContents === "function";
+                    }
+                    onClicked: {
+                        const view = pageSlider.documentView;
+                        if (!view || typeof view.rmtoolOpenTableOfContents !== "function") return;
+                        pageSlider.pageThumbnailVisible = false;
+                        pageSlider.visible = false;
+                        view.rmtoolOpenTableOfContents();
+                    }
                 }
-                visible: {
-                    const view = pageSlider.documentView;
-                    return !!view && !!view.rmtoolTableOfContentsAvailable
-                        && typeof view.rmtoolOpenTableOfContents === "function";
-                }
-                Component.onCompleted: console.info("native reader jump shortcuts ready 2026102604")
-                onClicked: {
-                    const view = pageSlider.documentView;
-                    if (!view || typeof view.rmtoolOpenTableOfContents !== "function") return;
-                    pageSlider.pageThumbnailVisible = false;
-                    pageSlider.visible = false;
-                    view.rmtoolOpenTableOfContents();
+
+                ArkControls.Button {
+                    id: nativeReaderJumpOverviewButton
+                    objectName: "nativeReaderJumpOverviewButton"
+                    text: "页面概览"
+                    iconSource: "qrc:/ark/icons/page_overview"
+                    width: 224
+                    height: 88
+                    focusPolicy: Qt.NoFocus
+                    background: Rectangle { color: "white"; radius: 18 }
+                    contentItem: Item {
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 12
+                            ArkControls.Icon {
+                                source: "qrc:/ark/icons/page_overview"
+                                size: 40
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: "页面概览"
+                                font.pixelSize: 26
+                                color: "black"
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                    }
+                    visible: {
+                        const view = pageSlider.documentView;
+                        return !!view && !!view.document && typeof view.openOverview === "function";
+                    }
+                    onClicked: {
+                        const view = pageSlider.documentView;
+                        if (!view || typeof view.openOverview !== "function") return;
+                        pageSlider.pageThumbnailVisible = false;
+                        pageSlider.visible = false;
+                        view.openOverview();
+                    }
                 }
             }
         }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/documentview/DocumentView.qml
+    TRAVERSE FocusScope#root > Item#_uiContainer > Rectangle#pageSliderBackground
+        REPLACE anchors.topMargin WITH { anchors.topMargin: -148 }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/documentview/Pages.qml
+    TRAVERSE Background#pages
+        LOCATE BEFORE ALL
+        INSERT {
+            // NativeReaderTocOriginBegin
+            property bool nativeReaderOverviewJustOpened: false
+            property bool nativeReaderTocReturnsToBook: false
+
+            function nativeReaderFinishToc() {
+                const returnToBook = nativeReaderTocReturnsToBook;
+                nativeReaderTocReturnsToBook = false;
+                tableOfContentsLoader.active = false;
+                if (returnToBook) documentView.closeOverview();
+            }
+
+            Timer {
+                id: nativeReaderOverviewEntryTimer
+                interval: 0
+                onTriggered: pages.nativeReaderOverviewJustOpened = false
+            }
+            Connections {
+                target: pages
+                function onVisibleChanged() {
+                    pages.nativeReaderOverviewJustOpened = pages.visible;
+                    pages.nativeReaderTocReturnsToBook = false;
+                    if (pages.visible) nativeReaderOverviewEntryTimer.restart();
+                    else nativeReaderOverviewEntryTimer.stop();
+                }
+                function onDocumentChanged() {
+                    pages.nativeReaderOverviewJustOpened = false;
+                    pages.nativeReaderTocReturnsToBook = false;
+                    nativeReaderOverviewEntryTimer.stop();
+                }
+            }
+            // NativeReaderTocOriginEnd
+        }
+    END TRAVERSE
+    TRAVERSE Background#pages > Loader#tableOfContentsLoader
+        LOCATE BEFORE ALL
+        INSERT {
+            onActiveChanged: {
+                // NativeReaderTocActivationBegin
+                if (active) {
+                    pages.nativeReaderTocReturnsToBook = pages.nativeReaderOverviewJustOpened;
+                    pages.nativeReaderOverviewJustOpened = false;
+                    nativeReaderOverviewEntryTimer.stop();
+                } else {
+                    pages.nativeReaderTocReturnsToBook = false;
+                }
+                // NativeReaderTocActivationEnd
+            }
+        }
+    END TRAVERSE
+    TRAVERSE Background#pages > Loader#tableOfContentsLoader > TableOfContent
+        REPLACE onRejected WITH { onRejected: pages.nativeReaderFinishToc() }
     END TRAVERSE
 END AFFECT
 

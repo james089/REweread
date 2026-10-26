@@ -36,13 +36,21 @@ SearchButton and ShareMenu are hidden with `shouldShow: false`, which also
 collapses their layout slots. This does not hide the library's search control.
 The separate PDF fit/crop submenu remains available as “页面缩放”.
 
-The page-jump panel has one transparent TOC icon button to the left of the
-slider, using the built-in `qrc:/ark/icons/list` icon in black. Its touch target
-is 88 × 88 with a 48px icon, centered in a 120px row (16px top/bottom clearance).
-The slider reserves 24px between the button and the track. The existing
-reading-enhancements TOC helper is reused; if unavailable, the button hides
-and the slider regains its original width. Clicking dismisses preview and the
-slider without accepting a page jump. No extra page-overview shortcut remains.
+The page-jump panel has independent “目录” and “页面概览” buttons above the
+full-width slider. Each is 224 × 88, white, borderless and rounded, with a black
+native icon and label. There is a 24px button gap, 28px separation from the
+slider, and 32px of white panel space above the buttons. Preview dragging hides
+the shortcut row so page/chapter labels remain clear.
+
+The TOC shortcut reuses the existing reading-enhancements helper. Direct entry
+from the reader menu or jump panel opens overview and TOC synchronously; the
+Pages hook records that source before yielding to the next UI turn. TOC Back
+then closes overview as well. If overview was already open, Back closes only
+TOC. Document replacement and overview closure clear this state. Chapter
+selection retains the native navigation handler. `native_reader_toc_navigation_test`
+executes the actual QMD state/return handlers using synthetic pages in an
+offscreen window, covering both destinations, repeated entry and document
+replacement. It does not access user books.
 
 For an existing verified defaults installation, `install-menu-device.sh` adds
 only the menu QMD and extends the firmware-update guard to cover it. It checks
