@@ -2,6 +2,10 @@
 
 更新时间：2026-10-13
 
+2026-10-26 原生阅读菜单：`NativeReaderDefaults/menu.qmd` 启用 SettingsMenu 既有 adjustmentToolLoader 的顶层加载路径，隐藏外层 AdjustmentToolsMenu、阅读器 SearchButton 与 ShareMenu；保留 FilterMenu 和 TextSettingsButton 原生组件及其事件、可见性规则。PDF 的独立缩放/裁剪菜单保留并改名“页面缩放”。菜单升级脚本只新增独立 QMD 并扩展现有固件保护，不改阅读增强/微信插件 QMD。与设备全部活动 QMD 的本地联合回放、SDK 构建及 Linux 全量验证通过；macOS 全量验证两次停在已有 XOVI guard SIGTERM 120ms 时序断言，未修改或跳过该测试，Linux 全套通过。安装 `2026102602` 已确认 menu ready、contrast defaults ready、下载插件 host-ready、汉化模块加载，NRestarts=0、无菜单 QML 启动错误，既有插件 QMD 哈希未变。没有真实触控/视觉验收。注意本次仅请求 `systemctl restart xochitl`，但旧界面退出阶段发生 SEGV，系统故障保护继而触发整机重启；实际 kernel boot ID 改变，不得宣称本次仅软重启。新启动后界面稳定并确认加载成功；启动后菜单安装确认已写入，临时上传目录已清理。
+
+2026-10-26 原生阅读器对比度默认值：新增独立 `NativeReaderDefaults/` XOVI 模块与 DocumentView QMD；打开 PDF/EPUB 时仅对 `.content` 中缺失 `viewBackgroundFilter` 且实时设置为空的文档，通过原生 `DocumentController.setViewBackgroundFilter(id, "off")` 初始化。显式空字符串为 Adaptive，必须保留，不能用 `value || "off"` 全局替换；显式 off/fullpage、笔记本、解析失败均不处理。原生读取缺省值来自 `QJsonValue::toString()`，并非全局 conf；`[Dialogs] BackgroundFilter` 只是引导完成标志。精确固件/hashtab 检查、系统更新禁用脚本、首次安装回退保护已实现。官方 SDK 构建、设备合成元数据及实际 QMD handler、动态模块/QML singleton 测试、与设备现有补丁共同回放、仓库全量静态验证均通过。设备安装标记 `2026102601`，软重启后 native defaults QMD ready、汉化及下载插件均加载，NRestarts=0，内核 boot ID 不变；既有阅读增强和下载插件 QMD 哈希未变。未操作真实书籍做设置或视觉验收。补丁在文档下次打开时生效，不批量改写已有元数据；设备临时测试文件已清理。
+
 2026-10-23 最新工作树变更：退出同步把进度和待上传时长合并到 `report_read` 请求，最近阅读请求保留，写入后只做一次云端回读校验；时长回执账本和歧义请求防重保留。原“删除缓存”按钮仅对系统已移除书籍显示，额外“重新下载缓存”动作不提供。构建 `20261023060847` 已安装，host/sidebar readiness、Xochitl active、无回滚标记，远端 worker 哈希与本地一致。真实云端同步未作为测试执行。细节见 `WereadDownloaderPlugin/DEVICE_HANDOFF.md` 最新条目。
 
 随后下载并发上限由 2 调至 3；该源码改动尚无设备实测。新书导入也复用下载开始时读取的云端位置快照和已校验的本地目录/XHTML，恢复时避免重复联网取目录与章节正文，保留 PDF 页面匹配及写入回读校验。合成覆盖已添加；设备安装与真书计时尚未完成。

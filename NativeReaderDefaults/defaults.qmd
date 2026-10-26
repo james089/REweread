@@ -1,0 +1,23 @@
+; Apply only the missing-field default; preserve all explicit selections.
+; Installed only on the verified 20260827113527 firmware and resource table.
+AFFECT /qml/device/view/documentview/DocumentView.qml
+    IMPORT org.reweread.NativeDefaults 1.0
+    TRAVERSE FocusScope#root
+        LOCATE BEFORE ALL
+        INSERT {
+            Item {
+                id: nativeReaderContrastDefaults
+                Component.onCompleted: console.info("native reader contrast defaults ready")
+                Connections {
+                    target: root
+                    function onDocumentOpened(document) {
+                        if (document && ReaderDefaults.needsContrastDefault(
+                                String(document.id), document.viewBackgroundFilter)) {
+                            DocumentController.setViewBackgroundFilter(document.id, "off");
+                        }
+                    }
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT

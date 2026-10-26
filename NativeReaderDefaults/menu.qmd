@@ -1,0 +1,41 @@
+; Use the native ungrouped adjustment loader and native tool components.
+AFFECT /qt/qml/xofm/libs/toolbar/qml/SettingsMenu.qml
+    TRAVERSE ToolbarTool#root
+        LOCATE BEFORE ALL
+        INSERT {
+            Item {
+                id: nativeReaderMenuLayoutReady
+                Component.onCompleted: console.info("native reader menu layout ready 2026102602")
+            }
+        }
+    END TRAVERSE
+    TRAVERSE ToolbarTool#root > Component#settingsComponent > ColumnLayout#content > Repeater > ToolLoader#adjustmentToolLoader
+        REPLACE active WITH { active: true }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qt/qml/xofm/libs/toolbar/qml/AdjustmentToolsMenu.qml
+    TRAVERSE ToolbarTool#root
+        REPLACE shouldShow WITH { shouldShow: false }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qt/qml/xofm/libs/toolbar/qml/AdjustViewMenu.qml
+    TRAVERSE ToolbarTool#root
+        REPLACE label WITH { label: "页面缩放" }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qt/qml/xofm/libs/toolbar/qml/SearchButton.qml
+    TRAVERSE ToolbarTool#root
+        LOCATE BEFORE ALL
+        INSERT { shouldShow: false }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qt/qml/xofm/libs/toolbar/qml/ShareMenu.qml
+    TRAVERSE ToolbarTool#root
+        LOCATE BEFORE ALL
+        INSERT { shouldShow: false }
+    END TRAVERSE
+END AFFECT
