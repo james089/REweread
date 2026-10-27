@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
     };
     run({{"fileType", "pdf"}}, true);
     opened();
-    check(controller.calls == 1 && controller.lastValue == "off");
+    check(controller.calls == 1 && controller.lastValue.isEmpty());
     for (const auto &value : {"", "off", "fullpage"}) {
         run({{"fileType", "pdf"}, {"viewBackgroundFilter", value}}, false);
         opened();

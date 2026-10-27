@@ -8,8 +8,8 @@ and an explicit empty string become Adaptive. Off is `"off"`; Full page is
 This independent XOVI extension and QMD hook inspect the current document's
 `.content` when the native `documentOpened` event fires. For PDF/EPUB files
 with an absent field and an empty live filter, the hook calls the native
-`DocumentController.setViewBackgroundFilter(id, "off")`. The native controller
-owns persistence. Explicit values, including the empty Adaptive value, are
+`DocumentController.setViewBackgroundFilter(id, "")`. The native controller
+owns persistence. The empty string restores the system Adaptive default. Explicit values, including the empty Adaptive value, are
 preserved. Notebooks, malformed/unreadable metadata and unknown types are left
 alone. The reader default takes effect when a document is next opened; there
 is no bulk rewrite or background scan.

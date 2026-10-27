@@ -13,7 +13,7 @@ AFFECT /qml/device/view/documentview/DocumentView.qml
                     function onDocumentOpened(document) {
                         if (document && ReaderDefaults.needsContrastDefault(
                                 String(document.id), document.viewBackgroundFilter)) {
-                            DocumentController.setViewBackgroundFilter(document.id, "off");
+                            DocumentController.setViewBackgroundFilter(document.id, "");
                         }
                     }
                 }

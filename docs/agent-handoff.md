@@ -2,6 +2,8 @@
 
 更新时间：2026-10-13
 
+2026-10-26 对比度默认值恢复：按用户要求，独立 NativeReaderDefaults 的缺省初始化由 off 改回空字符串（系统 Adaptive/自适应）；保留已有显式设置和全部菜单修改，不批量改写旧书。官方 SDK 构建、设备合成元数据/QMD handler 测试、Linux 全量验证通过。设备安装 2026102606，QMD 加载、汉化激活和安装清单校验通过；软重启完成且 boot ID 不变，Xochitl active/NRestarts=0。未操作真实书籍验证视觉效果。
+
 2026-10-26 原生 cPages 分页兼容：只读诊断确认受影响导入书的正文与下载原文映射均可唯一定位，实际同步停在 `progress_layout_unsupported`，原因为该书 `.content` 使用 formatVersion=2/cPages，而非旧式 pages/redirectionPageMap/originalPageCount。新增 `WereadDownloaderPlugin/lua/native_page_layout.lua`，为上传、下载共同验证旧结构与 cPages 的同序一一对应映射，校验 original.value、pageCount、唯一页ID、有序idx.value、redir.value 和删除标志；不放宽正文/来源映射/并发变更校验，不改原生元数据或批注。C++ 本地百分比读取 cPages.pages，UI 为不支持的结构提供专用提示。纯 Lua 布局边界、设备合成精确上传/恢复及元数据不变、主机 Qt Core、设备 Qt6 合成 UI、Linux 全量、官方 SDK、全部活动补丁回放均通过。主机 Qt5 UI 构建因既有 QTimeZone::fromSecondsAheadOfUtc API 不兼容未通过，本轮未改无关时区代码，使用设备 Qt6 UI 验证。受影响真实书的新版只读预检已通过本地精确定位，主动阻断网络请求并禁止缓存保存，未执行真实云端写入。安装 `20261026173840`，host/sidebar-ready、汉化、worker/Lua 哈希一致已确认，无回退标志。注意软重启请求又遭取消并触发整机重启，内核 boot ID 改变；之后系统版本未变、Xochitl active/NRestarts=0，不能宣称本次仅软重启。原生菜单 QMD 保持不变。临时合成测试目录已清理；用户可直接重试，无需删除旧书或重下缓存。
 
 2026-10-26 目录返回来源修正与双入口（覆盖下条图标方案）：用户恢复“目录 / 页面概览”两个独立入口，均在完整滑条上方，224×88 白底无边框圆角按钮，黑色系统 icon+文字，按钮间24、到滑条28、面板顶部留白32。`menu.qmd` 对 Pages 增加当次 overview 打开/TOC 激活的来源状态：阅读增强既有直接入口在同一同步调用中 openOverview+激活 TOC，此时 Back 关闭 overview 回正文；从已打开概览进入 TOC，Back 只关闭 TOC 回概览。概览关闭与换文档清理状态，章节点击保留原生处理。修改在独立 QMD 中，不修改阅读增强文件。新增 `toc_navigation_test.cpp`，在带真实 QQuickWindow 的 offscreen 合成页面中运行实际 QMD handlers，覆盖两个目的地、反复进出、文档替换，设备 Qt6/software 测试通过，无真实书籍操作。与全部现有补丁回放、Qt6 SDK QML 语法、官方 SDK 构建和 Linux 全量验证通过。设备 `2026102605` 专属 shortcuts-ready、contrast defaults ready、下载插件 host/sidebar-ready 已确认，Xochitl active/NRestarts=0；本次仅软重启，内核 boot ID 未变。既有插件 QMD 哈希未变，回退保护解除，测试/上传目录已清理。真实菜单点击和视觉效果由用户验收；本轮改动未提交。
