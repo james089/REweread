@@ -1,6 +1,7 @@
 <RCC>
   <qresource prefix="/weread-downloader">
     <file alias="DownloaderPage.qml">../qml/DownloaderPage.qml</file>
+    <file alias="NativeProgressDialog.qml">../qml/NativeProgressDialog.qml</file>
   <file alias="RoundedButton.qml">../qml/RoundedButton.qml</file>
     <file alias="WeReadBadge.qml">../qml/WeReadBadge.qml</file>
     <file alias="icons/weread.png">../qml/icons/weread.png</file>

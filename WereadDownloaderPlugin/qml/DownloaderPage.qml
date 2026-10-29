@@ -69,6 +69,14 @@ Rectangle {
             }
             RoundedButton { objectName: "returnButton"; text: "返回"; Layout.preferredHeight: 72; font.pixelSize: 24; onClicked: { if (page.multiSelect) page.multiSelect = false; else Downloader.closePage() } }
         }
+        ProgressBar {
+            objectName: "timeUploadProgressBar"
+            Layout.fillWidth: true
+            visible: Downloader.timeUploadActive
+            from: 0; to: Math.max(1, Downloader.timeUploadTotal)
+            value: Downloader.timeUploadDone
+            indeterminate: Downloader.timeUploadTotal === 0
+        }
         RowLayout {
             Layout.fillWidth: true; spacing: 20
             Label {
@@ -452,12 +460,16 @@ Rectangle {
                 text: (Downloader.readingDate === "" ? "本机逐书累计" : "本机当天逐书记录") + " · 仅本机记录，不含其他设备"
                 font.pixelSize: 22; color: "#555555"
             }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#555555"
+                text: "补传提交该书全部未传时长；云端按提交日期统计"
+            }
             ListView {
                 objectName: "readingTimeList"
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8
                 model: Downloader.readingStats
                 delegate: Rectangle {
-                    width: ListView.view.width; height: 136; radius: 12
+                    width: ListView.view.width; height: 168; radius: 12
                     border.color: "#aaaaaa"; color: "white"
                     RowLayout {
                         anchors.fill: parent; anchors.margins: 20; spacing: 16
@@ -465,6 +477,19 @@ Rectangle {
                             Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 10
                             Label { text: modelData.title; textFormat: Text.PlainText; font.pixelSize: 24; Layout.fillWidth: true; elide: Text.ElideRight }
                             Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: (Downloader.readingDate === "" ? "本机累计 " : "本机当天 ") + page.duration(modelData.localSeconds); font.pixelSize: 22; color: "#444444" }
+                            Label {
+                                objectName: "pendingReadingTimeLabel"
+                                Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#444444"
+                                text: (modelData.pendingSeconds < 0 ? "待传时长未知" : "全部待传 " + page.duration(modelData.pendingSeconds))
+                                    + (modelData.timeUploadUncertain ? " · 回执待核对" : "")
+                            }
+                        }
+                        RoundedButton {
+                            objectName: "uploadReadingTimeButton"
+                            text: "补传时长"; font.pixelSize: 22
+                            Layout.preferredWidth: 160; Layout.preferredHeight: 58
+                            enabled: !Downloader.busy && modelData.canUploadTime
+                            onClicked: Downloader.uploadReadingTime(modelData.bookId)
                         }
                     }
                 }

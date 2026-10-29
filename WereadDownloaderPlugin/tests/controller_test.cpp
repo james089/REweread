@@ -45,10 +45,18 @@ printf '%s\n' "$1" >> "$script_root/calls"
 if [ "$1" = reading-progress ] && [ -f "$script_root/slow-progress" ]; then exec /bin/sleep 5; fi
 case "$1" in
 cloud-time) printf '%s\n' '{"state":"cloud_time_ready","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' ;;
-begin-reading)
+reading-tick)
+ if [ -f "$script_root/slow-report" ]; then exec /bin/sleep 5; fi
  if [ -f "$script_root/entry-fail-once" ]; then rm "$script_root/entry-fail-once"; printf '%s\n' '{"state":"error","code":"progress_network_failed"}'; exit 1; fi
  if [ -f "$script_root/entry-always-fail" ]; then printf '%s\n' '{"state":"error","code":"progress_network_failed"}'; exit 1; fi
- printf '%s\n' '{"state":"reading_session_started","bookId":"'"$2"'"}' ;;
+ printf '%s\n' '{"state":"reading_session_reported","timeUploaded":true,"timeUploadedSeconds":60,"bookId":"'"$2"'"}' ;;
+preview-native-restore)
+ printf '%s\n' '{"state":"native_restore_preview","bookId":"'"$2"'","uuid":"'"$WEREAD_NATIVE_PULL_UUID"'","accountScope":"'"$WEREAD_NATIVE_PULL_SCOPE"'","token":"'"$WEREAD_NATIVE_PULL_TOKEN"'","chapterIndex":2,"chapterCount":4,"chapterName":"synthetic chapter","snapshot":"synthetic snapshot"}' ;;
+apply-native-restore)
+ printf '%s\n' '{"state":"restore_position","bookId":"'"$2"'","uuid":"'"$WEREAD_NATIVE_PULL_UUID"'","accountScope":"'"$WEREAD_NATIVE_PULL_SCOPE"'","page":2,"pageCount":4}'
+ IFS= read -r response
+ if [ "$response" != ok ]; then exit 1; fi
+ printf '%s\n' '{"state":"progress_restored","bookId":"'"$2"'","accountScope":"'"$WEREAD_NATIVE_PULL_SCOPE"'"}' ;;
 exit-sync)
  printf '%s\n' "$*" >> "$script_root/exit-args"
  /bin/sleep 0.3
@@ -89,6 +97,8 @@ restore-progress)
  printf '%s\n' '{"state":"progress_restored","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","localProgress":67.5,"cloudProgress":67.8,"restorePending":false}' ;;
 clear-cache) printf '%s\n' '{"state":"cache_cleared"}' ;;
 upload-time)
+ printf '%s\n' '{"state":"time_upload_progress","bookId":"synthetic-2","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","uploadedSeconds":60,"totalSeconds":125,"remainingSeconds":90}'
+ sleep 0.2
  printf '%s\n' '{"version":1,"books":{"synthetic-2":{"confirmedSeconds":125,"confirmedDays":{"'"$(date +%Y-%m-%d)"'":125}}}}' > "$script_root/covers/accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/uploaded-reading-time-v1.json"
  printf '%s\n' '{"state":"time_uploaded","bookId":"synthetic-2","uploadedSeconds":125,"remainingSeconds":25,"deferredSeconds":25}' ;;
 import)
@@ -249,7 +259,8 @@ ColumnLayout {
         check(controller->readingWeekStats().size()==7 && controller->readingWeekTotalSeconds()==240);
         check(controller->readingWeekMaximumSeconds()==240 && controller->readingWeekPeakLabel()!="暂无阅读");
         check(controller->cloudReadingTotalSeconds()==86400 && controller->readingDateTotalSeconds()==240);
-        check(!controller->readingStats()[0].toMap().contains("pendingSeconds"));
+        check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==150);
+        check(controller->readingStats()[0].toMap().value("canUploadTime").toBool());
         check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==125);
         controller->setReadingDate("2000-01-01");check(controller->readingDateTotalSeconds()==42);
         check(controller->readingStats().size()==1 && controller->readingStats()[0].toMap().value("localSeconds").toInt()==20);
@@ -261,7 +272,7 @@ ColumnLayout {
         check(QMetaObject::invokeMethod(visualChild(item,"previousReadingDate"),"clicked"));check(controller->readingDate()==readingToday);
         const auto currentWeek=controller->readingWeekLabel();controller->shiftReadingWeek(-1);check(controller->readingWeekLabel()!=currentWeek);
         controller->shiftReadingWeek(1);
-        check(!visualChild(item,"uploadReadingTimeButton"));
+        until([&]{return visualChild(item,"uploadReadingTimeButton")!=nullptr;});
         check(visualChild(item,"statisticsApiButton"));
         check(QMetaObject::invokeMethod(visualChild(item,"statisticsApiButton"),"clicked"));
         auto *apiDialog=item->findChild<QObject *>("statisticsApiDialog");
@@ -301,8 +312,22 @@ ColumnLayout {
             auto *button=visualChild(item,name);check(button && qAbs(button->height()-58)<1);
         }
         auto *zoneSelector=visualChild(item,"readingTimeZoneSelector");check(zoneSelector && qAbs(zoneSelector->height()-58)<1);
-        controller->uploadReadingTime("synthetic-2");QCoreApplication::processEvents();
-        check(callCount("upload-time")==0 && controller->status().contains(QStringLiteral("已停用")));
+        controller->uploadReadingTime("synthetic-2");
+        until([&]{return controller->timeUploadDone()==60 && controller->timeUploadTotal()==125;});
+        check(controller->timeUploadActive() && controller->status().contains("48%"));
+        check(visualChild(item,"timeUploadProgressBar")->isVisible());
+        until([&]{return callCount("upload-time")==1 && !controller->busy();});
+        check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==25);
+        auto writeReceipt=[&](const QJsonObject &receipt){QFile f(timeDir+"/uploaded-reading-time-v1.json");check(f.open(QIODevice::WriteOnly));f.write(QJsonDocument(QJsonObject{{"version",1},{"books",QJsonObject{{"synthetic-2",receipt}}}}).toJson());f.close();QMetaObject::invokeMethod(controller,"readingStatsChanged");};
+        writeReceipt(QJsonObject{{"confirmedSeconds",150}});
+        until([&]{auto *b=visualChild(item,"uploadReadingTimeButton");return b && !b->isEnabled();});
+        check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==0);
+        controller->uploadReadingTime("synthetic-2");check(callCount("upload-time")==1);
+        writeReceipt(QJsonObject{{"confirmedSeconds",125},{"pending",QJsonObject{{"seconds",25}}}});
+        check(controller->readingStats()[0].toMap().value("timeUploadUncertain").toBool());
+        check(!controller->readingStats()[0].toMap().value("canUploadTime").toBool());
+        writeReceipt(QJsonObject{{"confirmedSeconds",125}});
+        until([&]{auto *b=visualChild(item,"uploadReadingTimeButton");return b && b->isEnabled();});
         check(!controller->statisticsConfigured());
         controller->setStatisticsApiKey("synthetic-independent-statistics-key");
         until([&]{return controller->statisticsConfigured() && controller->statisticsStatus()==QStringLiteral("云端统计已更新");});
@@ -314,7 +339,7 @@ ColumnLayout {
         const auto config=QJsonDocument::fromJson(privateConfig.readAll()).object();
         check(config.value("apiKey")=="synthetic-independent-statistics-key" && config.value("accountScope")==QString(64,'a'));
         check(!(privateConfig.permissions()&(QFileDevice::ReadGroup|QFileDevice::WriteGroup|QFileDevice::ReadOther|QFileDevice::WriteOther)));
-        check(controller->cloudReadingTotalSeconds()==86400 && callCount("upload-time")==0);
+        check(controller->cloudReadingTotalSeconds()==86400 && callCount("upload-time")==1);
         auto timeScreenshot=window.grabWindow();if(!timeScreenshot.isNull())check(timeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.png"));
         check(QMetaObject::invokeMethod(visualChild(item,"shelfTabButton"),"clicked"));
         phase="rendering";
@@ -440,7 +465,7 @@ ColumnLayout {
         auto *cacheButton = visualChild(item, "deleteCacheButton");
         until([&] { return cacheButton && cacheButton->isVisible() && cacheButton->width() > 0; });
         check(cacheButton->property("text") == QStringLiteral("删除缓存"));
-        check(cacheButton->width() == 144 && cacheButton->height() == 88);
+        until([&]{return cacheButton->width() == 144 && cacheButton->height() == 88;});
         check(QMetaObject::invokeMethod(cacheButton, "clicked")); until([] { return !controller->busy(); });
         check(!controller->books()[0].toMap().value("hasDownloadCache").toBool());
         check(controller->books()[0].toMap().value("importState") == "removed");
@@ -482,36 +507,67 @@ ColumnLayout {
         controller->refresh();
         until([&] { return returnedToLogin && controller->loggedIn() && !controller->busy() && controller->books().size() == 2; });
         controller->closePage();
-        phase="entry recovery, wifi gate, sleep gate and close cancellation";
+        phase="periodic reports, wifi, sleep and close gates";
         const QString entryUuid="12345678-1234-1234-1234-123456789abc";
+        auto reportTimer=controller->findChild<QTimer*>("readingReportTimer");check(reportTimer);
+        auto tick=[&]{reportTimer->stop();check(QMetaObject::invokeMethod(reportTimer,"timeout",Qt::DirectConnection));};
         controller->setReadingLocked(false);controller->setReadingApplicationActive(true);controller->setReadingDeviceSleeping(false);
+        auto entriesBefore=callCount("reading-tick");controller->setReadingWifiConnected(false);controller->readingStarted(entryUuid,42);
+        tick();QTest::qWait(200);check(callCount("reading-tick")==entriesBefore);
+        check(controller->readingSessionStatus().contains(QStringLiteral("Wi-Fi")));
+        check(controller->readingSessionStatus().contains(QStringLiteral("0分0秒")));
+        controller->setReadingWifiConnected(true);check(reportTimer->isActive() && reportTimer->interval()==60000);
+        QTest::qWait(200);check(callCount("reading-tick")==entriesBefore);
         {QFile fail(temporary.path()+"/entry-fail-once");check(fail.open(QIODevice::WriteOnly));}
-        auto entriesBefore=callCount("begin-reading");controller->setReadingWifiConnected(false);controller->readingStarted(entryUuid);
-        QTest::qWait(600);check(callCount("begin-reading")==entriesBefore);
-        check(controller->readingSessionStatus().contains(QStringLiteral("等待 Wi-Fi")));
-        check(controller->readingSessionStatus().contains(QStringLiteral("本次本机阅读")));
-        controller->setReadingWifiConnected(true);
-        until([&]{return callCount("begin-reading")==entriesBefore+2;},10000);
-        QTest::qWait(400);controller->readingActivity();QTest::qWait(200);
-        check(callCount("begin-reading")==entriesBefore+2); // Success stops entry retries.
-        check(controller->readingSessionStatus().contains(QStringLiteral("开始阅读已上传")));
-        controller->readingStopped();until([&]{return controller->nativeBookBadge(entryUuid)=="weread" && !controller->busy();});
-        {QFile fail(temporary.path()+"/entry-always-fail");check(fail.open(QIODevice::WriteOnly));}
-        entriesBefore=callCount("begin-reading");controller->readingStarted(entryUuid);
-        until([&]{return callCount("begin-reading")==entriesBefore+1;});QTest::qWait(200);
-        controller->setReadingWifiConnected(false);QTest::qWait(5300);
-        check(callCount("begin-reading")==entriesBefore+1);
-        controller->setReadingDeviceSleeping(true);controller->setReadingWifiConnected(true);QTest::qWait(600);
-        check(callCount("begin-reading")==entriesBefore+1);
-        QFile::remove(temporary.path()+"/entry-always-fail");controller->setReadingDeviceSleeping(false);
-        until([&]{return callCount("begin-reading")==entriesBefore+2;},10000);QTest::qWait(200);
-        controller->readingStopped();until([&]{return controller->nativeBookBadge(entryUuid)=="weread" && !controller->busy();});
-        {QFile fail(temporary.path()+"/entry-always-fail");check(fail.open(QIODevice::WriteOnly));}
-        entriesBefore=callCount("begin-reading");controller->readingStarted(entryUuid);
-        until([&]{return callCount("begin-reading")==entriesBefore+1;});QTest::qWait(200);
-        controller->readingStopped();QTest::qWait(5300);
-        check(callCount("begin-reading")==entriesBefore+1); // A closed book cannot retry entry.
-        QFile::remove(temporary.path()+"/entry-always-fail");
+        tick();until([&]{return callCount("reading-tick")==entriesBefore+1 && reportTimer->isActive();});
+        check(reportTimer->interval()==60000);check(controller->readingSessionStatus().contains(QStringLiteral("0分0秒")));
+        tick();until([&]{return callCount("reading-tick")==entriesBefore+2 && reportTimer->isActive();});
+        check(controller->readingSessionStatus().contains(QStringLiteral("60")));
+        check(controller->readingSessionStatus().contains(QStringLiteral("1分0秒")));
+        controller->readingActivity();tick();until([&]{return callCount("reading-tick")==entriesBefore+3 && reportTimer->isActive();});
+        controller->setReadingWifiConnected(false);tick();QTest::qWait(200);check(callCount("reading-tick")==entriesBefore+3);
+        controller->setReadingDeviceSleeping(true);controller->setReadingWifiConnected(true);tick();QTest::qWait(200);
+        check(callCount("reading-tick")==entriesBefore+3);
+        controller->setReadingDeviceSleeping(false);check(reportTimer->isActive() && reportTimer->interval()==60000);
+        tick();until([&]{return callCount("reading-tick")==entriesBefore+4 && reportTimer->isActive();});
+        {QFile slowReport(temporary.path()+"/slow-report");check(slowReport.open(QIODevice::WriteOnly));}
+        tick();until([&]{return callCount("reading-tick")==entriesBefore+5 && controller->busy();});
+        controller->setReadingDeviceSleeping(true);until([&]{return !controller->busy();});
+        check(!reportTimer->isActive());QFile::remove(temporary.path()+"/slow-report");
+        controller->setReadingDeviceSleeping(false);check(reportTimer->isActive());
+        controller->readingStopped();tick();QTest::qWait(200);check(callCount("reading-tick")==entriesBefore+5);
+        until([&]{return controller->nativeBookBadge(entryUuid)=="weread" && !controller->busy();});
+        phase="native pull confirmation and submitted duration";
+        controller->readingStarted(entryUuid,1);tick();until([&]{return !controller->busy() && reportTimer->isActive();});
+        check(controller->readingSessionStatus().contains(QStringLiteral("1分0秒")));
+        check(!controller->readingSessionStatus().contains(QStringLiteral("计时")));
+        check(controller->nativePullAvailable());const auto appliesBefore=callCount("apply-native-restore");
+        controller->requestNativePull();until([&]{return controller->nativePullCanConfirm();});
+        check(controller->nativePullVisible() && controller->nativePullMessage().contains("synthetic snapshot") && controller->nativePullMessage().contains("2 / 4"));
+        QQmlComponent nativeDialogComponent(&engine,QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[1])).absolutePath()+"/NativeProgressDialog.qml"));
+        if(nativeDialogComponent.isError())std::cerr<<nativeDialogComponent.errorString().toStdString();
+        auto *nativeDialog=qobject_cast<QQuickItem*>(nativeDialogComponent.create());check(nativeDialog);
+        nativeDialog->setParentItem(window.contentItem());nativeDialog->setWidth(954);nativeDialog->setHeight(1696);nativeDialog->setZ(20000);window.resize(954,1696);
+        auto *pullCancel=visualChild(nativeDialog,"nativePullCancel");auto *pullConfirm=visualChild(nativeDialog,"nativePullConfirm");check(pullCancel && pullConfirm);
+        until([&]{return pullCancel->isVisible() && pullConfirm->isVisible() && pullCancel->width()>100 && pullCancel->height()==88 && pullConfirm->height()==88;});
+        check(qAbs(pullCancel->width()-pullConfirm->width())<1);
+        QTest::qWait(120);auto pullScreenshot=window.grabWindow();if(!pullScreenshot.isNull())check(pullScreenshot.save(QString::fromLocal8Bit(argv[2])+".native-pull.png"));
+        check(callCount("apply-native-restore")==appliesBefore);
+        QTest::mouseClick(&window,Qt::LeftButton,Qt::NoModifier,pullCancel->mapToScene(QPointF(pullCancel->width()/2,pullCancel->height()/2)).toPoint());
+        check(!controller->nativePullVisible());
+        check(callCount("apply-native-restore")==appliesBefore);
+        controller->requestNativePull();until([&]{return controller->nativePullCanConfirm();});
+        bool nativeJump=false;
+        auto nativeConnection=QObject::connect(controller,&DownloaderController::nativePullRestoreRequested,[&](const QString &uuid,int page,const QString &id){
+            check(uuid==entryUuid && page==2);nativeJump=true;controller->completeNativePullRestore(id,true);
+        });
+        QTest::mouseClick(&window,Qt::LeftButton,Qt::NoModifier,pullConfirm->mapToScene(QPointF(pullConfirm->width()/2,pullConfirm->height()/2)).toPoint());
+        until([&]{return !controller->nativePullBusy() && nativeJump;});
+        check(callCount("apply-native-restore")==appliesBefore+1 && controller->nativePullMessage().contains(QStringLiteral("已用")));
+        check(controller->readingSessionStatus().contains(QStringLiteral("1分0秒")));
+        controller->cancelNativePull();QObject::disconnect(nativeConnection);nativeDialog->setParentItem(nullptr);delete nativeDialog;
+        controller->readingStopped();until([&]{return !controller->busy() && controller->nativeBookBadge(entryUuid)=="weread";});
+        check(!controller->nativePullAvailable());
         phase="background exit upload and native book badges";
         const QString nativeUuid="12345678-1234-1234-1234-123456789abc";
         check(controller->nativeBookBadge("unknown").isEmpty());

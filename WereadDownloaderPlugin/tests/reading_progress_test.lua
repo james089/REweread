@@ -78,7 +78,7 @@ local P={FPDF_InitLibrary=function()end,FPDF_DestroyLibrary=function()end,FPDF_L
  FPDFText_LoadPage=function()return {}end,FPDFText_ClosePage=function()end,FPDFText_CountChars=function()return currentPage==1 and 120 or 0 end,
  FPDFText_GetUnicode=function(_,i)return 0x4e00+i+1 end}
 local settings={get=function(_,key)assert(key=='cookies');return {wr_vid='123'}end}
-local M=require('reading_progress').new(settings,scope,account,{root=work,library=work..'/library',pdf=P})
+local M=require('reading_progress').new(settings,scope,account,{root=work,library=work..'/library',pdf=P});M.timeUploadSleep=function(n)assert(n==1)end
 local rows={};M:refresh({{bookId=id},{bookId='not-imported'}},function(row)rows[#rows+1]=row end)
 assert(#rows==1 and rows[1].cloudProgress==0 and writes==0) -- raw 20 is ignored; content position is chapter start
 assert(M.cache.books[id].record.progress==20)
@@ -118,7 +118,7 @@ os.remove(sourceMapPath)
 local missingOk,missingErr=pcall(function()M:sync(id)end)
 assert(not missingOk and missingErr=='progress_source_map_missing' and chapterFetches==fetchesBeforeSync)
 assert(require('progress_source_store').save(account,id,'42',html))
--- Concurrent cloud movement wins, while current live-session time still sends.
+-- Concurrent cloud movement wins; duration backfill preserves that same coordinate.
 local originalSaved=J.decode(J.encode(saved));local beforeConflictEnters=enters
 saved.updateTime=30;saved.chapterOffset=0;saved.summary=middle:sub(1,18);saved.progress=50
 local expectedCloud=J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})
@@ -131,7 +131,7 @@ assert(result.state=='progress_synced' and result.cloudPositionPreserved and res
 assert(writes==2 and timeWrites==1 and enters==beforeConflictEnters)
 assert(lastPayload.elapsed_seconds==20 and lastPayload.chapter_offset==0 and lastPayload.summary==middle:sub(1,18))
 assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})==expectedCloud)
-assert(J.decode(read(account..'/uploaded-reading-time-v1.json')).books[id].confirmedSeconds==20)
+assert(J.decode(assert(io.open(account..'/uploaded-reading-time-v1.json')):read('*a')).books[id].confirmedSeconds==20)
 -- Restore independent fixtures so subsequent rejection/layout scenarios retain their counters.
 for _,name in ipairs({'local-reading-time-v1.json','uploaded-reading-time-v1.json','reading-session-v1.json'})do os.remove(account..'/'..name)end
 saved=originalSaved;writes=1;timeWrites=0
@@ -199,8 +199,8 @@ rejectEnter=false
 json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=5,days={[os.date('%Y-%m-%d')]=5}}}})
 M:refresh({{bookId=id}},function()end)
 local readsBeforeCombined=cloudReads
-result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==0 and lastPayload.elapsed_seconds==0,
- 'manual progress must not upload accumulated reading time')
+result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==1 and lastPayload.elapsed_seconds==5,
+ 'manual progress drains the recorded backlog')
 assert(cloudReads-readsBeforeCombined==2,'combined sync should perform one preflight cloud read and one final verification')
 -- Native cPages v2 must retain exact sync/restore without rewriting CRDT/annotations.
 local function cell(v)return {timestamp='1:1',value=v}end
@@ -246,4 +246,58 @@ ok,err=pcall(function()M:sync(id)end)
 assert(not ok and err=='progress_layout_unsupported' and writes==rejectedWrites)
 ok,err=pcall(function()M:restore(id)end)
 assert(not ok and err=='progress_layout_unsupported' and writes==rejectedWrites)
+-- Lightweight periodic reporting must not touch the native PDF or chapter map.
+second.redir.value=1;json(base..'.content',v2)
+local nativePages=currentPage;local oldPdfOpen=P.FPDF_LoadDocument
+P.FPDF_LoadDocument=function()error('periodic report must not parse native PDF')end
+os.remove(account..'/reading-session-v1.json');os.remove(account..'/uploaded-reading-time-v1.json');json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=120,days={}}}});local now=os.time();local oldTime=os.time;os.time=function()return now end
+local token='00000000-0000-4000-8000-000000000001'
+local oldChapterFetches=chapterFetches;local beforeEntries=enters;local beforeTime=timeWrites
+result=M:reportReading(id,token,'00000000-0000-4000-8000-000000000011')
+assert(result.state=='reading_session_reported' and result.timeUploadedSeconds==60 and timeWrites==beforeTime+1)
+assert(enters==beforeEntries+1 and currentPage==nativePages and chapterFetches==oldChapterFetches)
+-- A new worker reuses the persisted report context: no GET/PDF/chapter calls.
+local readsBeforeTick=cloudReads;local cachedOffset=lastPayload.chapter_offset
+now=now+60;M=require('reading_progress').new(settings,scope,account,{root=work,library=work..'/library',pdf=P});M.timeUploadSleep=function(n)assert(n==1)end
+result=M:reportReading(id,token,'00000000-0000-4000-8000-000000000012')
+assert(result.timeUploadedSeconds==60 and enters==beforeEntries+1 and lastPayload.chapter_offset==cachedOffset)
+assert(cloudReads==readsBeforeTick and chapterFetches==oldChapterFetches and currentPage==nativePages)
+os.time=oldTime;P.FPDF_LoadDocument=oldPdfOpen
+saved.updateTime=saved.updateTime+100;saved.progress=saved.progress+0.25;saved.summary=saved.summary..' normalized'
+result=M:sync(id)
+assert(result.state=='progress_synced' and not result.cloudPositionPreserved and lastPayload.elapsed_seconds==0,
+ 'periodic timestamp/summary/percentage normalization must not look like another reader moved chapter coordinates')
+-- Native preview captures cloud coordinates/catalog/summary without touching local progress.
+local pullToken='00000000-0000-4000-8000-000000000021'
+local localMetadata=read(base..'.metadata');local localContent=read(base..'.content');local initialWrites=writes
+local preview=M:previewNativeRestore(id,pullToken,uuid)
+assert(preview.state=='native_restore_preview' and preview.chapterIndex==1 and preview.chapterCount==1 and preview.snapshot==saved.summary)
+assert(read(base..'.metadata')==localMetadata and read(base..'.content')==localContent and writes==initialWrites)
+-- Cancel means no apply. Fetching another preview invalidates the old token.
+local pullToken2='00000000-0000-4000-8000-000000000022';M:previewNativeRestore(id,pullToken2,uuid)
+ok,err=pcall(M.applyNativeRestore,M,id,pullToken,uuid);assert(not ok and err=='progress_restore_expired')
+-- Cloud movement after confirmation preview cannot replace the captured record.
+local cloudBeforeApply=cloudReads;saved.chapterOffset=0;saved.summary=middle:sub(1,18);saved.progress=50
+result=M:applyNativeRestore(id,pullToken2,uuid)
+assert(result.state=='restore_position' and cloudReads==cloudBeforeApply and read(base..'.metadata')==localMetadata and read(base..'.content')==localContent)
+ok,err=pcall(M.applyNativeRestore,M,id,pullToken2,uuid);assert(not ok and err=='progress_restore_expired')
+-- A changed local position invalidates confirmation instead of silently applying.
+local pullToken3='00000000-0000-4000-8000-000000000023';M:previewNativeRestore(id,pullToken3,uuid)
+json(base..'.metadata',{lastOpenedPage=0,parent='',type='DocumentType'})
+ok,err=pcall(M.applyNativeRestore,M,id,pullToken3,uuid);assert(not ok and err=='progress_local_changed');write(base..'.metadata',localMetadata)
+local pullToken4='00000000-0000-4000-8000-000000000024';M:previewNativeRestore(id,pullToken4,uuid)
+local realNow=os.time;local expiredAt=realNow()+301;os.time=function()return expiredAt end
+ok,err=pcall(M.applyNativeRestore,M,id,pullToken4,uuid);os.time=realNow;assert(not ok and err=='progress_restore_expired')
+-- Foreground one-hour backfill performs one cloud GET/entry, no PDF/chapter work,
+-- and all 60 reports preserve the captured cloud coordinates.
+os.remove(account..'/uploaded-reading-time-v1.json')
+json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=3600,days={}}}})
+local beforeBackfillReads=cloudReads;local beforeBackfillWrites=timeWrites;local beforeBackfillEntries=enters
+local beforeBackfillPdf=pdfLoads;local beforeBackfillChapters=chapterFetches
+local oldCloudPosition=J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})
+result=M:uploadTime(id)
+assert(result.state=='time_uploaded' and result.uploadedSeconds==3600 and result.remainingSeconds==0)
+assert(cloudReads==beforeBackfillReads+1 and timeWrites==beforeBackfillWrites+60 and enters==beforeBackfillEntries+1)
+assert(pdfLoads==beforeBackfillPdf and chapterFetches==beforeBackfillChapters)
+assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})==oldCloudPosition)
 M:close();print('synthetic progress: imported-only reads, exact sync/zero time, conflict, rejection, restore and layout refusal passed')

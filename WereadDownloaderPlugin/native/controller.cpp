@@ -100,6 +100,8 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     if(QFileInfo(m_dataRoot).isDir())m_nativeBookWatcher.addPath(m_dataRoot);
     connect(&m_nativeBookWatcher,&QFileSystemWatcher::directoryChanged,this,[this]{reloadNativeBooks();});
     connect(&m_autoSyncProcess,&QProcess::readyReadStandardOutput,this,&DownloaderController::readExitSync);
+    m_exitTimeoutTimer.setSingleShot(true);m_exitTimeoutTimer.setInterval(180000);
+    connect(&m_exitTimeoutTimer,&QTimer::timeout,this,&DownloaderController::stopExitSync);
     connect(&m_autoSyncProcess,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,&DownloaderController::finishExitSync);
     connect(&m_autoSyncProcess,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
         if(error==QProcess::FailedToStart)finishExitSync(-1,QProcess::CrashExit);
@@ -111,12 +113,30 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
         m_statisticsStatus=good?QStringLiteral("云端统计已更新"):result.value("code")=="statistics_auth_failed"?QStringLiteral("统计 API 鉴权失败，请打开设置核对或更换 API Key；已有数据保留"):QStringLiteral("云端统计读取失败，请检查统计 API 配置；已有数据保留");emit readingStatsChanged();
     });
     connect(&m_statsProcess,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){if(error==QProcess::FailedToStart){m_statisticsStatus=QStringLiteral("统计组件无法启动");emit readingStatsChanged();}});
+    m_entryRetryTimer.setTimerType(Qt::PreciseTimer);m_entryRetryTimer.setParent(this);m_entryRetryTimer.setObjectName("readingReportTimer");
     m_entryRetryTimer.setSingleShot(true);m_entryTimeoutTimer.setSingleShot(true);
     connect(&m_entryRetryTimer,&QTimer::timeout,this,&DownloaderController::tryReadingEntry);
     connect(&m_entryTimeoutTimer,&QTimer::timeout,this,[this]{m_entryTimedOut=true;m_entryProcess.kill();});
     connect(&m_entryProcess,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,&DownloaderController::finishReadingEntry);
     connect(&m_entryProcess,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
         if(error==QProcess::FailedToStart)finishReadingEntry(-1,QProcess::CrashExit);
+    });
+    connect(&m_nativePullProcess,&QProcess::readyReadStandardOutput,this,&DownloaderController::readNativePull);
+    connect(&m_nativePullProcess,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int code,QProcess::ExitStatus status){
+        readNativePull();m_nativePullBusy=false;
+        if(!m_nativePullVisible)return;
+        if(m_nativePullApplying) {
+            m_nativePullReady=false;
+            if(code==0 && status==QProcess::NormalExit && m_nativePullSuccess) {
+                m_nativePullMessage=QStringLiteral("已用这次获取的云端快照覆盖本地进度。");
+                m_readingSession=QUuid::createUuid().toString(QUuid::WithoutBraces);
+                m_readingOpeningSignature.clear();
+            } else if(m_nativePullMessage==QStringLiteral("正在定位并覆盖本地进度…"))m_nativePullMessage=QStringLiteral("未能完成覆盖，本地位置请以当前页面为准。");
+        } else if(!m_nativePullReady && m_nativePullMessage==QStringLiteral("正在获取云端进度与章节快照…"))m_nativePullMessage=QStringLiteral("云端进度获取失败，请检查登录和网络后重试。");
+        m_nativePullApplying=false;emit nativePullChanged();emit changed();emit readingSessionChanged();
+    });
+    connect(&m_nativePullProcess,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
+        if(error==QProcess::FailedToStart){m_nativePullBusy=false;m_nativePullReady=false;m_nativePullMessage=QStringLiteral("无法启动进度组件。");emit nativePullChanged();emit changed();}
     });
     m_readingTimer.setInterval(5000);
     connect(&m_readingTimer,&QTimer::timeout,this,&DownloaderController::checkpointReadingTime);
@@ -136,6 +156,7 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     });
 }
 DownloaderController::~DownloaderController() {
+    disconnect(&m_nativePullProcess,nullptr,this,nullptr);m_nativePullProcess.kill();m_nativePullProcess.waitForFinished(1000);
     m_entryNeeded=false;m_entryRetryTimer.stop();m_entryTimeoutTimer.stop();disconnect(&m_entryProcess,nullptr,this,nullptr);
     checkpointReadingTime();m_readingTime.close();
     disconnect(&m_autoSyncProcess,nullptr,this,nullptr);
@@ -172,7 +193,7 @@ QString DownloaderController::nativeBookBadge(const QString &uuid) const {
     return m_exitErrors.contains(key)?"error":"weread";
 }
 void DownloaderController::processExitQueue(){
-    if(busy() || m_entryProcess.state()!=QProcess::NotRunning || !m_readingAppActive || m_readingLocked || m_deviceSleeping || m_exitQueue.isEmpty())return;
+    if(busy() || m_nativePullVisible || m_entryProcess.state()!=QProcess::NotRunning || !m_readingAppActive || m_readingLocked || m_deviceSleeping || m_exitQueue.isEmpty())return;
     const auto remaining=m_exitNotBefore.value(m_exitQueue.first())-m_exitClock.elapsed();
     if(remaining>0){QTimer::singleShot(int(qMin<qint64>(remaining,1500)),this,&DownloaderController::processExitQueue);return;}
     stopProgress();reloadNativeBooks();
@@ -187,11 +208,11 @@ void DownloaderController::processExitQueue(){
     m_autoSyncProcess.setProcessEnvironment(env);m_autoSyncProcess.setStandardErrorFile(QProcess::nullDevice());
     qInfo("WereadDownloaderPlugin: exit-sync started");
     m_autoSyncProcess.start(m_workerProgram,QStringList{"exit-sync",job.value("bookId").toString(),job.value("accountScope").toString(),uuid,QString::number(job.value("expectedPage").toInt(-1)),job.value("openingSignature").toString()});
-    const auto generation=++m_exitGeneration;
-    QTimer::singleShot(180000,this,[this,generation]{if(generation==m_exitGeneration && m_autoSyncProcess.state()!=QProcess::NotRunning)stopExitSync();});
+    ++m_exitGeneration;m_exitTimeoutTimer.start();
     notifyNativeBooks();emit changed();
 }
 void DownloaderController::stopExitSync(){
+    m_exitTimeoutTimer.stop();
     m_autoSyncProcess.terminate();const auto generation=m_exitGeneration;
     QTimer::singleShot(2000,this,[this,generation]{if(generation==m_exitGeneration && m_autoSyncProcess.state()!=QProcess::NotRunning)m_autoSyncProcess.kill();});
 }
@@ -211,10 +232,12 @@ void DownloaderController::readExitSync(){
             m_syncNotice=row.value("cloudPositionPreserved").toBool()
                 ? (row.value("timeUploadedSeconds").toInt()>0 ? QStringLiteral("云端位置已保留；本次阅读时长已提交") : QStringLiteral("云端位置已保留；本次无可提交时长")) : QString();
             if(!m_syncNotice.isEmpty()) {m_status=m_syncNotice;qInfo("WereadDownloaderPlugin: exit-sync cloud-position-preserved");}
-        }else if(row.value("state")=="error")m_exitSuccess=false;
+        }else if(row.value("state")=="time_upload_progress" && row.value("bookId")==m_exitJob.value("bookId") && row.value("accountScope")==m_exitJob.value("accountScope"))m_exitTimeoutTimer.start();
+        else if(row.value("state")=="error")m_exitSuccess=false;
     }
 }
 void DownloaderController::finishExitSync(int code,QProcess::ExitStatus status){
+    m_exitTimeoutTimer.stop();
     if(m_exitUuid.isEmpty())return;
     readExitSync();const auto uuid=m_exitUuid;
     const bool success=code==0 && status==QProcess::NormalExit && m_exitSuccess && !m_exitCanceled;
@@ -240,15 +263,81 @@ void DownloaderController::finishExitSync(int code,QProcess::ExitStatus status){
 QString DownloaderController::readingSessionStatus() const {
     if(m_readingUuid.isEmpty() || !m_readingTracked)return {};
     QString entry;
-    if(!m_entryNeeded)entry=QStringLiteral("开始阅读已上传");
-    else if(m_entryTerminal)entry=QStringLiteral("开始阅读上传失败，请检查登录或书籍状态");
+    if(m_entryTerminal)entry=QStringLiteral("阅读上报已停止，请检查登录或书籍状态");
     else if(!m_readingWifiConnected)entry=QStringLiteral("等待 Wi-Fi 联网，上传已暂停");
-    else if(m_entryProcess.state()!=QProcess::NotRunning)entry=QStringLiteral("正在上传开始阅读（第 %1 次）").arg(m_entryAttempts);
-    else if(m_deviceSleeping || m_readingSuspended || !m_readingAppActive || m_readingLocked || !m_readingTime.active())entry=QStringLiteral("开始阅读上传等待恢复阅读");
-    else entry=m_entryAttempts?QStringLiteral("开始阅读上传失败，等待重试"):QStringLiteral("等待上传开始阅读");
-    const auto seconds=qMax<qint64>(0,m_readingTime.totalSeconds()-m_readingStartSeconds);
-    return entry+QStringLiteral("\n本次本机阅读 %1分%2秒 · %3").arg(seconds/60).arg(seconds%60)
-        .arg(m_readingTime.active()?QStringLiteral("计时中"):QStringLiteral("计时暂停"));
+    else if(m_entryProcess.state()!=QProcess::NotRunning)entry=QStringLiteral("正在上报阅读进度与时长");
+    else if(m_deviceSleeping || m_readingSuspended || !m_readingAppActive || m_readingLocked || !m_readingTime.active())entry=QStringLiteral("阅读上报已暂停");
+    else if(m_reportFailed)entry=QStringLiteral("本次上报失败，下一间隔再尝试");
+    else entry=m_reportCount?QStringLiteral("每 60 秒上报 · 已提交 %1 次").arg(m_reportCount):QStringLiteral("每 60 秒上报 · 等待首次提交");
+    return entry+QStringLiteral("\n本次已成功提交 %1分%2秒（回执累计）").arg(m_reportSeconds/60).arg(m_reportSeconds%60);
+}
+void DownloaderController::requestNativePull() {
+    if(!nativePullAvailable() || busy() || m_nativePullVisible)return;
+    reloadNativeBooks();const auto book=m_nativeBooks.value(m_readingUuid);if(book.isEmpty())return;
+    checkpointReadingTime();m_nativePullVisible=true;m_nativePullReady=false;m_nativePullSuccess=false;
+    m_nativePullUuid=m_readingUuid;m_nativePullBook=book.value("bookId").toString();m_nativePullScope=book.value("accountScope").toString();
+    m_nativePullToken=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_nativePullMessage=QStringLiteral("正在获取云端进度与章节快照…");updateReadingTimer();
+    if(!m_readingWifiConnected){m_nativePullMessage=QStringLiteral("尚未联网，请连接 Wi-Fi 后重试。");emit nativePullChanged();return;}
+    stopProgress();startNativePullWorker(false);
+}
+void DownloaderController::startNativePullWorker(bool apply) {
+    m_nativePullApplying=apply;m_nativePullBusy=true;m_nativePullBuffer.clear();
+    QProcessEnvironment env;env.insert("PATH","/usr/bin:/bin:/usr/sbin:/sbin");env.insert("HOME","/home/root");
+    env.insert("LANG","C.UTF-8");env.insert("LC_ALL","C.UTF-8");env.insert("WEREAD_TIME_ZONE",m_readingTimeZoneId);
+    env.insert("WEREAD_NATIVE_PULL_TOKEN",m_nativePullToken);env.insert("WEREAD_NATIVE_PULL_UUID",m_nativePullUuid);env.insert("WEREAD_NATIVE_PULL_SCOPE",m_nativePullScope);
+    m_nativePullProcess.setProcessEnvironment(env);m_nativePullProcess.setStandardErrorFile(QProcess::nullDevice());
+    m_nativePullProcess.start(m_workerProgram,{apply?QStringLiteral("apply-native-restore"):QStringLiteral("preview-native-restore"),m_nativePullBook});
+    const auto generation=++m_nativePullGeneration;
+    QTimer::singleShot(180000,this,[this,generation]{if(generation==m_nativePullGeneration && m_nativePullProcess.state()!=QProcess::NotRunning){m_nativePullMessage=QStringLiteral("操作超时，请重新获取云端进度。");m_nativePullReady=false;m_nativePullProcess.kill();}});
+    emit nativePullChanged();emit changed();
+}
+void DownloaderController::readNativePull() {
+    m_nativePullBuffer+=m_nativePullProcess.readAllStandardOutput();
+    if(m_nativePullBuffer.size()>1024*1024){m_nativePullBuffer.clear();m_nativePullProcess.kill();return;}
+    int end;
+    while((end=m_nativePullBuffer.indexOf('\n'))>=0) {
+        const auto row=QJsonDocument::fromJson(m_nativePullBuffer.left(end)).object();m_nativePullBuffer.remove(0,end+1);
+        if(!m_nativePullVisible || m_readingUuid!=m_nativePullUuid)continue;
+        const auto state=row.value("state").toString();
+        if(state=="error" || state=="login_required") {
+            m_nativePullReady=false;
+            const auto code=row.value("code").toString();
+            m_nativePullMessage=state=="login_required" || code=="login_required"?QStringLiteral("请先在下载插件中登录微信读书。"):
+                code=="progress_local_changed"?QStringLiteral("本地书籍位置或内容已变化，请重新获取后确认。"):
+                code=="progress_restore_expired"?QStringLiteral("这次云端快照已过期，请重新获取。"):
+                code=="progress_not_located" || code=="progress_offset_unsupported"?QStringLiteral("云端快照暂时无法唯一匹配到本地正文，未覆盖进度。"):
+                QStringLiteral("进度操作未完成，请检查网络、账号或书籍状态。");
+        } else if(state=="native_restore_preview" && !m_nativePullApplying && row.value("bookId")==m_nativePullBook
+            && row.value("accountScope")==m_nativePullScope && row.value("uuid")==m_nativePullUuid && row.value("token")==m_nativePullToken) {
+            m_nativePullReady=true;
+            m_nativePullMessage=QStringLiteral("云端章节：%1 / %2\n%3\n\n匹配快照：\n%4\n\n是否用这次云端进度覆盖本地进度？")
+                .arg(row.value("chapterIndex").toInt()).arg(row.value("chapterCount").toInt())
+                .arg(row.value("chapterName").toString().left(256),row.value("snapshot").toString().left(512));
+        } else if(state=="restore_position" && m_nativePullApplying && row.value("uuid")==m_nativePullUuid
+            && row.value("bookId")==m_nativePullBook && row.value("accountScope")==m_nativePullScope) {
+            const int page=row.value("page").toInt(-1),count=row.value("pageCount").toInt();
+            if(page>=0 && page<count && count<=5000)emit nativePullRestoreRequested(m_nativePullUuid,page,m_nativePullBook);
+            else completeNativePullRestore(m_nativePullBook,false);
+        } else if(state=="progress_restored" && m_nativePullApplying && row.value("bookId")==m_nativePullBook && row.value("accountScope")==m_nativePullScope) {
+            m_nativePullSuccess=true;applyProgress(row);
+        }
+        emit nativePullChanged();
+    }
+}
+void DownloaderController::confirmNativePull() {
+    if(!m_nativePullVisible || !nativePullCanConfirm() || m_readingUuid!=m_nativePullUuid)return;
+    m_nativePullReady=false;m_nativePullSuccess=false;m_nativePullMessage=QStringLiteral("正在定位并覆盖本地进度…");startNativePullWorker(true);
+}
+void DownloaderController::cancelNativePull() {
+    if(!m_nativePullVisible)return;
+    ++m_nativePullGeneration;m_nativePullVisible=false;m_nativePullReady=false;
+    m_nativePullProcess.kill();m_nativePullProcess.waitForFinished(1000);m_nativePullBusy=false;m_nativePullBuffer.clear();
+    updateReadingTimer();emit nativePullChanged();emit changed();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);
+}
+void DownloaderController::completeNativePullRestore(const QString &id,bool ok) {
+    if(!m_nativePullApplying || !m_nativePullVisible || id!=m_nativePullBook || m_readingUuid!=m_nativePullUuid)return;
+    m_nativePullProcess.write(ok?"ok\n":"no\n");
 }
 void DownloaderController::checkpointReadingTime() {
     if(m_readingClock.isValid())m_readingTime.advance(m_readingClock.restart());
@@ -257,26 +346,31 @@ void DownloaderController::checkpointReadingTime() {
     if(m_opened)emit readingStatsChanged();
 }
 void DownloaderController::updateReadingTimer() {
-    m_readingTime.paused(m_opened || m_readingSuspended || !m_readingAppActive || m_readingLocked);
+    m_readingTime.paused(m_opened || m_nativePullVisible || m_readingSuspended || !m_readingAppActive || m_readingLocked);
     m_readingClock.start();
     if(m_readingTime.active())m_readingTimer.start();else m_readingTimer.stop();
     updateReadingEntry();
 }
 void DownloaderController::updateReadingEntry() {
     emit readingSessionChanged();
-    if(!m_entryNeeded || m_entryTerminal || m_readingUuid.isEmpty() || m_readingSession.isEmpty()
-       || !m_readingWifiConnected || m_opened || m_deviceSleeping || m_readingSuspended || !m_readingAppActive || m_readingLocked || !m_readingTime.active()) {
-        m_entryRetryTimer.stop();return;
+    if(!m_readingTracked || m_entryTerminal || m_readingUuid.isEmpty() || m_readingSession.isEmpty()
+       || !m_readingWifiConnected || m_nativePullVisible || m_opened || m_deviceSleeping || m_readingSuspended || !m_readingAppActive || m_readingLocked || !m_readingTime.active()) {
+        m_entryRetryTimer.stop();
+        if(m_entryProcess.state()!=QProcess::NotRunning) {
+            m_entryProcess.terminate();
+            if(!m_entryTimeoutTimer.isActive() || m_entryTimeoutTimer.remainingTime()>2000)m_entryTimeoutTimer.start(2000);
+        }
+        return;
     }
     if(m_entryProcess.state()!=QProcess::NotRunning || m_entryRetryTimer.isActive())return;
-    const int delays[]={0,5000,15000,30000,60000};
-    m_entryRetryTimer.start(delays[qMin(m_entryAttempts,4)]);
+    m_entryRetryTimer.start(60000);
 }
 void DownloaderController::tryReadingEntry() {
-    if(!m_entryNeeded || m_entryTerminal || m_readingUuid.isEmpty() || !m_readingWifiConnected || m_opened || m_deviceSleeping
+    if(!m_readingTracked || m_entryTerminal || m_readingUuid.isEmpty() || !m_readingWifiConnected || m_opened || m_deviceSleeping
        || m_readingSuspended || !m_readingAppActive || m_readingLocked || !m_readingTime.active())return;
     if(m_entryProcess.state()!=QProcess::NotRunning)return;
-    if(busy()){m_entryRetryTimer.start(5000);return;}
+    if(busy()){m_entryRetryTimer.start(60000);return;}
+    checkpointReadingTime();stopProgress();
     reloadNativeBooks();const auto book=m_nativeBooks.value(m_readingUuid);
     if(book.value("bookId").toString().isEmpty()){m_entryTerminal=true;return;}
     m_entryAttemptSession=m_readingSession;m_entryBookId=book.value("bookId").toString();
@@ -284,32 +378,37 @@ void DownloaderController::tryReadingEntry() {
     QProcessEnvironment env;env.insert("PATH","/usr/bin:/bin:/usr/sbin:/sbin");env.insert("HOME","/home/root");
     env.insert("LANG","C.UTF-8");env.insert("LC_ALL","C.UTF-8");
     env.insert("WEREAD_TIME_ZONE",m_readingTimeZoneId);env.insert("WEREAD_READING_SESSION",m_readingSession);
+    env.insert("WEREAD_READING_REPORT_ID",QUuid::createUuid().toString(QUuid::WithoutBraces));
     m_entryProcess.setProcessEnvironment(env);m_entryProcess.setStandardErrorFile(QProcess::nullDevice());
-    m_entryTimeoutTimer.start(25000);
-    m_entryProcess.start(m_workerProgram,QStringList{"begin-reading",m_entryBookId});
-    emit readingSessionChanged();
+    m_entryTimeoutTimer.start(180000);
+    m_entryProcess.start(m_workerProgram,QStringList{"reading-tick",m_entryBookId,book.value("accountScope").toString(),m_readingUuid});
+    emit readingSessionChanged();emit changed();
 }
 void DownloaderController::finishReadingEntry(int code,QProcess::ExitStatus status) {
     m_entryTimeoutTimer.stop();const auto session=m_entryAttemptSession;m_entryAttemptSession.clear();
     const auto output=m_entryProcess.readAllStandardOutput().trimmed();
     if(session.isEmpty() || session!=m_readingSession){QTimer::singleShot(0,this,&DownloaderController::processExitQueue);return;}
-    const auto result=output.size()<=4096?QJsonDocument::fromJson(output.split('\n').last()).object():QJsonObject();
-    const bool success=code==0 && status==QProcess::NormalExit && result.value("state")=="reading_session_started"
-        && result.value("bookId")==m_entryBookId;
+    const auto result=output.size()<=65536?QJsonDocument::fromJson(output.split('\n').last()).object():QJsonObject();
+    const bool success=code==0 && status==QProcess::NormalExit && result.value("state")=="reading_session_reported"
+        && result.value("bookId")==m_entryBookId && result.value("timeUploaded").toBool()
+        && result.value("timeUploadedSeconds").toInt()==60;
     const auto reason=result.value("code").toString();
-    m_entryTerminal=reason=="login_required" || reason=="account_changed" || reason=="progress_not_located"
+    m_entryTerminal=reason=="login_required" || reason=="account_changed"
         || reason=="time_cache_unavailable" || reason=="progress_cache_unavailable";
-    if(success)m_entryNeeded=false;
+    if(success){m_entryNeeded=false;++m_reportCount;m_reportSeconds+=result.value("timeUploadedSeconds").toInt();}
+    m_reportFailed=!success;
     const char *kind=success?"ready":m_entryTimedOut?"timeout":m_entryTerminal?"blocked":"request-failed";
     const QStringList safeCodes={"login_required","account_changed","progress_not_located","time_cache_unavailable",
         "progress_cache_unavailable","progress_network_failed","cloud_progress_unavailable","time_upload_rejected",
-        "helper_timeout","progress_failed","operation_failed","registry_busy"};
+        "helper_timeout","progress_failed","operation_failed","registry_busy","time_upload_rejected","time_upload_uncertain",
+        "time_report_duplicate","time_report_not_due"};
     const auto safeCode=safeCodes.contains(reason)?reason.toLatin1():QByteArray("unknown");
-    qInfo("WereadDownloaderPlugin: entry attempt=%d result=%s code=%s retry=%d",m_entryAttempts,kind,
-        success?"none":safeCode.constData(),!success && !m_entryTerminal && m_entryNeeded);
-    updateReadingEntry();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);
+    qInfo("WereadDownloaderPlugin: periodic-report attempt=%d result=%s code=%s",m_entryAttempts,kind,
+        success?"none":safeCode.constData());
+    updateReadingEntry();emit changed();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);
 }
 void DownloaderController::readingStarted(const QString &uuid,int page) {
+    cancelNativePull();
     m_syncNotice.clear();
     checkpointReadingTime();
     const auto books=privateObject(m_dataRoot+"/imports.json").value("books").toObject();
@@ -334,13 +433,14 @@ void DownloaderController::readingStarted(const QString &uuid,int page) {
     m_readingSession=QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_entryRetryTimer.stop();m_entryTimeoutTimer.stop();m_entryAttemptSession.clear();
     if(m_entryProcess.state()!=QProcess::NotRunning){m_entryProcess.kill();m_entryProcess.waitForFinished(500);}
-    m_readingTracked=matched;m_readingStartSeconds=m_readingTime.totalSeconds();
+    m_readingTracked=matched;m_readingStartSeconds=m_readingTime.totalSeconds();m_reportCount=0;m_reportSeconds=0;m_reportFailed=false;
     m_entryNeeded=matched;m_entryTerminal=false;m_entryAttempts=0;
     m_readingSuspended=false;updateReadingTimer();
     qInfo("WereadDownloaderPlugin: reading-clock matched=%d active=%d app=%d locked=%d",matched,m_readingTime.active(),m_readingAppActive,m_readingLocked);
 }
 void DownloaderController::readingStopped(int expectedPage){
-    m_entryRetryTimer.stop();m_entryNeeded=false;
+    cancelNativePull();
+    m_entryRetryTimer.stop();m_entryNeeded=false;m_readingTracked=false;updateReadingEntry();
     checkpointReadingTime();m_readingTime.close();m_readingTimer.stop();emit readingStatsChanged();
     reloadNativeBooks();
     const auto uuid=m_readingUuid;m_readingUuid.clear();emit readingSessionChanged();
@@ -490,6 +590,10 @@ void DownloaderController::refreshCloudStatistics() {
 }
 QVariantList DownloaderController::readingStats() const {
     const auto local=privateObject(m_dataRoot+"/accounts/"+m_scope+"/local-reading-time-v1.json").value("books").toObject();
+    const auto journalPath=m_dataRoot+"/accounts/"+m_scope+"/uploaded-reading-time-v1.json";
+    const auto journal=privateObject(journalPath);
+    const bool journalValid=!QFileInfo::exists(journalPath) || (journal.value("version").toInt()==1 && journal.value("books").isObject());
+    const auto receipts=journal.value("books").toObject();
     QVariantList result;
     for(const auto &v:m_books){
         auto row=v.toMap();if(row.value("importState")!="imported")continue;
@@ -497,6 +601,15 @@ QVariantList DownloaderController::readingStats() const {
         const auto value=m_readingDate.isEmpty()?record.value("seconds"):record.value("days").toObject().value(m_readingDate);
         const double seconds=value.toDouble(-1);
         if(!value.isDouble() || seconds<=0 || seconds>315360000 || seconds!=qint64(seconds))continue;
+        const auto receipt=receipts.value(row.value("bookId").toString()).toObject();
+        const double total=record.value("seconds").toDouble(-1);
+        const double confirmed=receipt.value("confirmedSeconds").toDouble(receipt.isEmpty()?0:-1);
+        const bool valid=journalValid && total>=0 && total<=315360000 && total==qint64(total)
+            && confirmed>=0 && confirmed<=total && confirmed==qint64(confirmed);
+        const bool uncertain=receipt.contains("pending") && !receipt.value("pending").isNull() && receipt.value("pending")!=QJsonValue(false);
+        row["pendingSeconds"]=valid?int(total-confirmed):-1;
+        row["timeUploadUncertain"]=uncertain;
+        row["canUploadTime"]=valid && !uncertain && total>confirmed;
         row["localSeconds"]=int(seconds);result.append(row);
     }
     std::stable_sort(result.begin(),result.end(),[](const QVariant &a,const QVariant &b){
@@ -505,7 +618,12 @@ QVariantList DownloaderController::readingStats() const {
     return result;
 }
 void DownloaderController::uploadReadingTime(const QString &id) {
-    Q_UNUSED(id);m_status=QStringLiteral("手动上传阅读时长已停用");emit changed();
+    if(busy())return;
+    checkpointReadingTime();
+    bool allowed=false;
+    for(const auto &value:readingStats())if(value.toMap().value("bookId").toString()==id){allowed=value.toMap().value("canUploadTime").toBool();break;}
+    if(!allowed){m_status=QStringLiteral("没有可补传时长，或有回执需要核对");emit changed();return;}
+    stopProgress();start(QStringLiteral("upload-time"),id);
 }
 void DownloaderController::attachSettings(QObject *settings) {
     if (m_settings || !settings || !settings->property("webInterfaceEnabled").isValid()) return;
@@ -689,6 +807,7 @@ void DownloaderController::start(const QString &operation, const QString &id) {
     if(operation=="sync-progress")for(auto i=m_nativeBooks.begin();i!=m_nativeBooks.end();++i)
         if(i.value().value("bookId").toString()==id && i.value().value("accountScope").toString()==m_scope){m_exitQueue.removeAll(i.key());m_exitJobs.remove(i.key());m_exitNotBefore.remove(i.key());}
     ++m_generation;
+    m_timeUploadDone=0;m_timeUploadTotal=0;
     m_operation = operation; m_currentId = id; m_error = false; m_final = false; m_loginRequired = false; m_refreshNeeded = false; m_buffer.clear();
     m_status = operation == "login" ? QStringLiteral("正在创建登录二维码…")
         : operation == "shelf" ? QStringLiteral("正在同步书库和导入状态…")
@@ -770,12 +889,21 @@ void DownloaderController::readOutput() {
                 if(row.value("timeRemainingSeconds").toInt()>0)
                     m_status+=QStringLiteral("；还有 %1 秒阅读时长待上传").arg(row.value("timeRemainingSeconds").toInt());
             }
+        } else if(state=="time_upload_progress" && m_operation=="upload-time" && row.value("bookId").toString()==m_currentId && row.value("accountScope").toString()==m_scope) {
+            const int done=row.value("uploadedSeconds").toInt(-1),total=row.value("totalSeconds").toInt(-1);
+            if(done>=m_timeUploadDone && total>=done && total<=315360000){
+                m_timeUploadDone=done;m_timeUploadTotal=total;
+                m_status=QStringLiteral("补传时长：已提交 %1分%2秒 / %3分%4秒（%5%）")
+                    .arg(done/60).arg(done%60).arg(total/60).arg(total%60).arg(total?int(qint64(done)*100/total):100);
+                emit readingStatsChanged();
+            }
         } else if(state=="time_uploaded") {
             m_final=true;
             const auto uploaded=qMax(0,row.value("uploadedSeconds").toInt());
+            if(m_readingTracked && m_currentId==m_nativeBooks.value(m_readingUuid).value("bookId").toString() && row.value("accountScope").toString()==m_scope){m_reportSeconds+=uploaded;emit readingSessionChanged();}
             const auto deferred=qMax(0,row.value("deferredSeconds").toInt());
             const auto today=qMax(0,row.value("remainingSeconds").toInt()-deferred);
-            m_status=QStringLiteral("本次已提交 %1分%2秒；当日剩余 %3分%4秒")
+            m_status=QStringLiteral("本次已提交 %1分%2秒；剩余待传 %3分%4秒")
                 .arg(uploaded/60).arg(uploaded%60).arg(today/60).arg(today%60);
             if(deferred>0)m_status+=QStringLiteral("；往日未传 %1分%2秒（暂不支持补传）").arg(deferred/60).arg(deferred%60);
             emit readingStatsChanged();

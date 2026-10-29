@@ -82,12 +82,58 @@ END AFFECT
 AFFECT /qml/device/view/documentview/DocumentView.qml
     IMPORT org.reweread.Downloader 1.0
     TRAVERSE FocusScope#root
+        REPLACE subDialogOpen WITH { property bool subDialogOpen: pages.visible || formatSettings.visible || Downloader.nativePullVisible }
+        REPLACE fullscreenSubDialogOpen WITH { property bool fullscreenSubDialogOpen: pages.visible || Downloader.nativePullVisible }
         LOCATE BEFORE ALL
         INSERT {
             Item {
                 id: wereadReadingTimeTracker
+                anchors.fill: parent
+                z: 9998
                 property string uuid: ""
                 property int lastPage: -1
+                property string pendingPullBook: ""
+                property int pendingPullPage: -1
+                property int pendingPullAttempts: 0
+                PenInputBlocker {
+                    anchors.fill: parent
+                    manager: root.penInput.surfaceManager
+                    visible: Downloader.nativePullVisible
+                }
+                Loader {
+                    anchors.fill: parent
+                    active: Downloader.nativePullVisible
+                    source: "qrc:/weread-downloader/NativeProgressDialog.qml"
+                }
+                Connections {
+                    target: Downloader
+                    function onNativePullRestoreRequested(uuid, page, bookId) {
+                        if (!root.document || String(root.document.id) !== uuid || page < 0 || page >= root.pageCount) {
+                            Downloader.completeNativePullRestore(bookId, false);
+                            return;
+                        }
+                        wereadReadingTimeTracker.pendingPullBook = bookId;
+                        wereadReadingTimeTracker.pendingPullPage = page;
+                        wereadReadingTimeTracker.pendingPullAttempts = 0;
+                        root.openPage(page, DocumentView.ScrollPosition.SaveAndRestore);
+                    }
+                }
+                Timer {
+                    interval: 100
+                    repeat: true
+                    running: wereadReadingTimeTracker.pendingPullBook !== ""
+                    onTriggered: {
+                        const tracker = wereadReadingTimeTracker;
+                        if (!Downloader.nativePullVisible || !root.document || String(root.document.id) !== tracker.uuid || ++tracker.pendingPullAttempts > 30) {
+                            Downloader.completeNativePullRestore(tracker.pendingPullBook, false);
+                            tracker.pendingPullBook = "";
+                        } else if (root.currentPage === tracker.pendingPullPage) {
+                            LibraryController.setLastOpenedPage(root.document.id, tracker.pendingPullPage);
+                            Downloader.completeNativePullRestore(tracker.pendingPullBook, true);
+                            tracker.pendingPullBook = "";
+                        }
+                    }
+                }
                 function updatePause() {
                     Downloader.setReadingDeviceSleeping(root.inSuspend);
                     Downloader.setReadingSuspended(root.inSuspend || !root.documentLoaded || !root.visible || root.subDialogOpen || root.fullscreenSubDialogOpen);
@@ -112,6 +158,30 @@ AFFECT /qml/device/view/documentview/DocumentView.qml
                     function onFullscreenSubDialogOpenChanged() { wereadReadingTimeTracker.updatePause(); }
                     function onSubDialogOpenChanged() { wereadReadingTimeTracker.updatePause(); }
                     function onVisibleChanged() { wereadReadingTimeTracker.updatePause(); }
+                }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qt/qml/xofm/libs/toolbar/qml/SettingsMenu.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE ToolbarTool#root > Component#settingsComponent > ColumnLayout#content
+        LOCATE AFTER ALL
+        INSERT {
+            ToolbarTool {
+                objectName: "wereadNativePullMenu"
+                toolbar: root.toolbar
+                type: ToolbarTool.Type.FoldoutButton
+                label: "拉取微信读书进度"
+                iconSource: "qrc:/ark/icons/import"
+                Layout.fillWidth: true
+                shouldShow: Downloader.nativePullAvailable
+                visible: shouldShow
+                enabled: !Downloader.busy
+                onClicked: {
+                    root.toolbar.closeFoldout();
+                    Downloader.requestNativePull();
                 }
             }
         }

@@ -73,9 +73,18 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
     env.insert("HOME", "/home/root");
     env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
     env.insert("WEREAD_TIME_ZONE",configuredTimeZone());env.insert("TZ",helperTimeZone(configuredTimeZone()));
-    if (operation=="begin-reading" || operation=="close-reading" || operation=="sync-progress") {
+    if (operation=="begin-reading" || operation=="close-reading" || operation=="sync-progress" || operation=="report-reading") {
         const auto session=qgetenv("WEREAD_READING_SESSION");
         if(QRegularExpression("^[0-9a-f-]{36}$").match(QString::fromUtf8(session)).hasMatch())env.insert("WEREAD_READING_SESSION",QString::fromUtf8(session));
+    }
+    if(operation=="report-reading") {
+        const auto report=qgetenv("WEREAD_READING_REPORT_ID");
+        if(QRegularExpression("^[0-9a-f-]{36}$").match(QString::fromUtf8(report)).hasMatch()) {
+            env.insert("WEREAD_READING_REPORT_ID",QString::fromUtf8(report));
+        }
+    }
+    if(operation=="preview-native-restore" || operation=="apply-native-restore") {
+        for(const auto &key:{"WEREAD_NATIVE_PULL_TOKEN","WEREAD_NATIVE_PULL_UUID","WEREAD_NATIVE_PULL_SCOPE"})env.insert(key,QString::fromUtf8(qgetenv(key)));
     }
     env.insert("WEREAD_STATISTICS_BASE_TIME",QString::fromUtf8(qgetenv("WEREAD_STATISTICS_BASE_TIME")));
     env.insert("RM_WEREAD_APP_DIR", "/home/root/weread-downloader/helper");
@@ -90,6 +99,7 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
     process.setArguments(args);
     process.start(); need(process.waitForStarted(5000), "helper_unavailable");
     QElapsedTimer elapsed; elapsed.start();
+    QElapsedTimer activity; activity.start();
     QByteArray pending;
     QJsonObject final;
     bool protocolError = false;
@@ -113,7 +123,10 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
                     object["localProgress"] = nativeReadingPercent(readJson(libraryRoot+'/'+uuid+".metadata"),readJson(libraryRoot+'/'+uuid+".content",8*1024*1024));
                     emitRow(object);
                 } catch (const std::exception &) {}
-            } else if (state == "qr" || state == "progress") emitRow(object);
+            } else if (state == "qr" || state == "progress" || state == "time_upload_progress") {
+                if(state=="time_upload_progress")activity.restart();
+                emitRow(object);
+            }
             else if (!state.isEmpty()) final = object;
         }
     };
@@ -121,7 +134,8 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
         process.waitForReadyRead(250); consume();
         if (canceled) { process.kill(); process.waitForFinished(1000); throw std::runtime_error("operation_canceled"); }
         const qint64 maximum = (operation == "download" || operation == "reading-progress") ? 2 * 60 * 60 * 1000 : 4 * 60 * 1000;
-        if (elapsed.elapsed() > maximum) { process.kill(); process.waitForFinished(3000); throw std::runtime_error("helper_timeout"); }
+        const bool timeDrain=operation=="upload-time" || operation=="sync-progress" || operation=="close-reading";
+        if ((timeDrain?activity.elapsed():elapsed.elapsed()) > maximum) { process.kill(); process.waitForFinished(3000); throw std::runtime_error("helper_timeout"); }
     }
     consume();
     need(!protocolError && pending.trimmed().isEmpty() && process.exitStatus() == QProcess::NormalExit
@@ -184,8 +198,8 @@ QByteArray coverImage(const QString &scope, const QString &id, const QString &ur
     need(image.startsWith(QByteArray::fromHex("89504e470d0a1a0a")) || image.startsWith(QByteArray::fromHex("ffd8ff")), "cover_unavailable");
     return image;
 }
-bool restoreProgress(const QString &id, bool afterImport) {
-    auto result = helper("restore-progress", id);
+bool restoreProgress(const QString &id, bool afterImport, const QString &operation = QStringLiteral("restore-progress")) {
+    auto result = helper(operation, id);
     auto failed = [&] {
         if (afterImport) emitRow({{"state","restore_skipped"}});
         else emitRow({{"state","error"},{"code","progress_not_located"}});
@@ -254,19 +268,24 @@ int main(int argc, char **argv) {
         need(argc == 2 || argc == 3 || argc == 5 || argc == 6 || argc == 7, "invalid_command");
         const auto requested = QString::fromLocal8Bit(argv[1]);
         const bool exitSync=requested=="exit-sync";
-        need(exitSync?(argc>=5 && argc<=7):argc<=3,"invalid_command");
-        const auto expectedScope=exitSync?QString::fromLocal8Bit(argv[3]):QString();
-        const auto expectedUuid=exitSync?QString::fromLocal8Bit(argv[4]):QString();
-        bool pageValid=true;const int expectedPage=exitSync && argc>=6?QString::fromLocal8Bit(argv[5]).toInt(&pageValid):-1;
+        const bool periodic=requested=="reading-tick";
+        const bool nativeSync=exitSync || periodic;
+        need(nativeSync?(argc>=5 && argc<=7):argc<=3,"invalid_command");
+        const auto expectedScope=nativeSync?QString::fromLocal8Bit(argv[3]):QString();
+        const auto expectedUuid=nativeSync?QString::fromLocal8Bit(argv[4]):QString();
+        bool pageValid=true;const int expectedPage=nativeSync && argc>=6?QString::fromLocal8Bit(argv[5]).toInt(&pageValid):-1;
         need(pageValid && expectedPage>=-1 && expectedPage<5000,"invalid_command");
         const auto openingSignature=exitSync && argc==7?QString::fromLocal8Bit(argv[6]):QString();
         need(openingSignature.isEmpty() || QRegularExpression("\\A[a-f0-9]{64}\\z").match(openingSignature).hasMatch(),"invalid_command");
-        if(exitSync)need(QRegularExpression("\\A[a-f0-9]{64}\\z").match(expectedScope).hasMatch()
+        if(nativeSync)need(QRegularExpression("\\A[a-f0-9]{64}\\z").match(expectedScope).hasMatch()
             && QRegularExpression("\\A[0-9a-f-]{36}\\z").match(expectedUuid).hasMatch(),"invalid_command");
-        const auto operation = exitSync?QStringLiteral("sync-progress"):requested;
+        const auto operation = periodic?QStringLiteral("report-reading"):exitSync?QStringLiteral("sync-progress"):requested;
+        if(periodic) {
+            need(argc==5,"invalid_command");
+            need(QRegularExpression("^[0-9a-f-]{36}$").match(QString::fromUtf8(qgetenv("WEREAD_READING_REPORT_ID"))).hasMatch(),"invalid_command");
+        }
         need(QDir().mkpath(root) && !QFileInfo(root).isSymLink(), "private_root_unavailable");
         need(::chmod(QFile::encodeName(root).constData(), 0700) == 0, "private_root_unavailable");
-        need(operation!="upload-time","manual_time_upload_disabled");
         if (operation == "reading-progress" || operation == "cloud-time") { emitRow(helper(operation)); return 0; }
         ImportRegistry registry(root); // One foreground operation, including login.
         need(NativeAddress::recover(root), "address_restore_failed");
@@ -293,22 +312,44 @@ int main(int argc, char **argv) {
             }
             row["books"] = books; emitRow(row); return 0;
         }
-        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress" || operation == "begin-reading") && (exitSync || argc == 3), "invalid_command");
+        need((operation == "upload-time" || operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress" || operation == "begin-reading" || operation == "report-reading" || operation == "preview-native-restore" || operation == "apply-native-restore") && (nativeSync || argc == 3), "invalid_command");
         const auto id = QString::fromLocal8Bit(argv[2]);
         need(Epub::validBookId(id), "invalid_book_id");
         auto identity = helper("status");
         need(identity.value("state") == "authenticated", "login_required");
-        if(exitSync)need(identity.value("accountScope")==expectedScope,"account_changed");
-        registry.reconcile(scan(registry));
-        if(operation=="begin-reading") {
+        if(nativeSync)need(identity.value("accountScope")==expectedScope,"account_changed");
+        if(periodic) {
+            const auto metadata=readJson(libraryRoot+'/'+expectedUuid+".metadata");
+            need(metadata.value("type")=="DocumentType" && !metadata.value("deleted").toBool()
+                && metadata.value("parent")!="trash","progress_not_located");
+        } else registry.reconcile(scan(registry));
+        if(operation=="upload-time") {
+            const auto record=registry.record(id);
+            need(record.value("accountScope")==identity.value("accountScope") && !record.value("uuid").toString().isEmpty(),"progress_not_located");
+            emitRow(helper(operation,id));return 0;
+        }
+        if(operation=="begin-reading" || operation=="report-reading") {
             const auto record=registry.record(id);
             need(record.value("state")=="imported" && record.value("accountScope")==identity.value("accountScope"),"progress_not_located");
-            emitRow(helper(operation,id));return 0;
+            if(periodic)need(record.value("uuid")==expectedUuid,"account_changed");
+            emitRow(helper(operation,id,periodic?expectedScope:QString()));return 0;
+        }
+        if(operation=="preview-native-restore" || operation=="apply-native-restore") {
+            const auto record=registry.record(id);const auto uuid=QString::fromUtf8(qgetenv("WEREAD_NATIVE_PULL_UUID"));
+            need(record.value("state")=="imported" && record.value("accountScope")==identity.value("accountScope")
+                && identity.value("accountScope").toString()==QString::fromUtf8(qgetenv("WEREAD_NATIVE_PULL_SCOPE"))
+                && record.value("uuid")==uuid && QRegularExpression("^[0-9a-f-]{36}$").match(uuid).hasMatch()
+                && QRegularExpression("^[0-9a-f-]{36}$").match(QString::fromUtf8(qgetenv("WEREAD_NATIVE_PULL_TOKEN"))).hasMatch(),"account_changed");
+            const auto epubPath=libraryRoot+'/'+uuid+".epub";
+            need(!QFileInfo(epubPath).isSymLink() && Epub(epubPath).sourceBookId()==id,"progress_not_located");
+            if(operation=="preview-native-restore")emitRow(helper(operation,id));
+            else restoreProgress(id,false,operation);
+            return 0;
         }
         if (operation == "sync-progress" || operation == "restore-progress") {
             const auto record = registry.record(id);
             need(record.value("state") == "imported" && record.value("accountScope") == identity.value("accountScope"), "progress_not_located");
-            if(exitSync)need(record.value("uuid")==expectedUuid && record.value("accountScope")==expectedScope,"account_changed");
+            if(nativeSync)need(record.value("uuid")==expectedUuid && record.value("accountScope")==expectedScope,"account_changed");
             const auto path = libraryRoot + '/' + record.value("uuid").toString() + ".epub";
             need(!QFileInfo(path).isSymLink() && Epub(path).sourceBookId() == id, "progress_not_located");
             if(exitSync && expectedPage>=0){

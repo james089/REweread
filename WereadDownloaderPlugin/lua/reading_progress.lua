@@ -36,8 +36,9 @@ end
 local function elapsedMs(s)return math.max(0,math.floor(monotonicMs()-s))end
 local function signature(v)
  if type(v)~='table' then return '' end
- return table.concat({tostring(v.chapterUid or ''),tostring(v.chapterIdx or ''),tostring(v.chapterOffset or ''),
- tostring(v.progress or ''),tostring(v.summary or ''),tostring(v.updateTime or '')},'\31')
+ -- Periodic reports may normalize percentage/summary and always update time.
+ -- Compare actual chapter coordinates, not those report-derived fields.
+ return table.concat({tostring(v.chapterUid or ''),tostring(v.chapterIdx or ''),tostring(v.chapterOffset or '')},'\31')
 end
 local function atomic(path,data)
  need(canonical(path:match('^(.*)/[^/]+$')),'progress_cache_unavailable')
@@ -249,16 +250,16 @@ function M.new(settings,scope,account,environment)
   local entry=self.cache.books[id] or {};entry.restorePending=true;entry.restoreAutomatic=true
   self.cache.books[id]=entry;self:save();return {state='restore_prepared'}
  end
- function self:restore(id)
+ function self:restore(id,prepared)
   need(valid(id),'invalid_book_id')
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
   need(row and row.state=='imported' and row.accountScope==scope and type(row.uuid)=='string' and #row.uuid==36 and row.uuid:match('^[%x-]+$'),'progress_not_located')
   local old=self.cache.books[id] or {}
   local snapshotAt=tonumber(old.downloadSnapshotAt)
-  local useSnapshot=old.restorePending==true and old.restoreAutomatic==true and snapshotAt
+  local useSnapshot=not prepared and old.restorePending==true and old.restoreAutomatic==true and snapshotAt
       and type(old.record)=='table' and percent(old.record.progress)~=nil
   old.restorePending=true;old.restoreAutomatic=false;self.cache.books[id]=old;self:save()
-  local record=useSnapshot and old.record or self:fetch(id)
+  local record=prepared and prepared.record or useSnapshot and old.record or self:fetch(id)
   self.cache.books[id]={record=record,fetchedAt=useSnapshot and snapshotAt or os.time(),
       restorePending=true,restoreAutomatic=false}
   self:save()
@@ -272,7 +273,7 @@ function M.new(settings,scope,account,environment)
   local display
   if tonumber(record.progress)==0 and (tonumber(record.chapterOffset) or 0)==0 then target=0
   else
-   local Content=require('lib.content');local catalog=self:displayCatalog(id);local chapter,chapterIndex
+   local Content=require('lib.content');local catalog=prepared and prepared.catalog or self:displayCatalog(id);local chapter,chapterIndex
    for i,c in ipairs(catalog) do if tostring(c.chapterUid)==tostring(record.chapterUid) then need(not chapter,'progress_not_located');chapter=c;chapterIndex=i end end
    need(chapter and chapterIndex and type(record.summary)=='string' and #record.summary>0,'progress_not_located')
    local html
@@ -328,6 +329,33 @@ function M.new(settings,scope,account,environment)
    localProgress=count>1 and target*100/(count-1) or 0,cloudProgress=percent(display) or -1,
    metadataHash=require('progress_hash').hex(mb),contentHash=require('progress_hash').hex(cb)}
  end
+ function self:previewNativeRestore(id,token,expectedUuid)
+  need(valid(id) and type(token)=='string' and #token==36 and token:match('^[%x-]+$'),'progress_not_located')
+  local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
+  need(row and row.state=='imported' and row.accountScope==scope and row.uuid==expectedUuid,'account_changed')
+  local base=library..'/'..row.uuid;local mb=need(read(base..'.metadata'),'progress_not_located');local cb=need(read(base..'.content'),'progress_not_located')
+  local meta=J.decode(mb);need(not meta.deleted and meta.parent~='trash','progress_not_located')
+  local record=self:fetch(id);local catalog=self:displayCatalog(id);local chapterIndex,chapterName
+  for i,c in ipairs(catalog)do if tostring(c.chapterUid)==tostring(record.chapterUid)then need(not chapterIndex,'progress_not_located');chapterIndex=i;chapterName=c.title end end
+  need(type(record.summary)=='string' and (chapterIndex or (tonumber(record.progress)==0 and (tonumber(record.chapterOffset) or 0)==0)),'progress_not_located')
+  local Hash=require('progress_hash');local preview={version=1,bookId=id,uuid=row.uuid,accountScope=scope,token=token,createdAt=os.time(),
+   record=record,catalog=catalog,metadataHash=Hash.hex(mb),contentHash=Hash.hex(cb),chapterIndex=chapterIndex or 0,
+   chapterCount=#catalog,chapterName=chapterName or '',snapshot=record.summary}
+  atomic(account..'/native-restore-preview-v1.json',preview)
+  return {state='native_restore_preview',bookId=id,uuid=row.uuid,accountScope=scope,token=token,
+   chapterIndex=preview.chapterIndex,chapterCount=preview.chapterCount,chapterName=preview.chapterName,snapshot=preview.snapshot}
+ end
+ function self:applyNativeRestore(id,token,expectedUuid)
+  local preview=need(json(account..'/native-restore-preview-v1.json'),'progress_restore_expired')
+  need(preview.version==1 and preview.bookId==id and preview.uuid==expectedUuid and preview.accountScope==scope
+   and preview.token==token and not preview.used and type(preview.record)=='table' and type(preview.catalog)=='table'
+   and os.time()>=(preview.createdAt or 0) and os.time()-(preview.createdAt or 0)<=300,'progress_restore_expired')
+  local base=library..'/'..expectedUuid;local Hash=require('progress_hash')
+  need(Hash.hex(need(read(base..'.metadata'),'progress_not_located'))==preview.metadataHash
+   and Hash.hex(need(read(base..'.content'),'progress_not_located'))==preview.contentHash,'progress_local_changed')
+  preview.used=true;atomic(account..'/native-restore-preview-v1.json',preview)
+  return self:restore(id,preview)
+ end
  function self:restored(id)
   need(self.cache.books[id]~=nil,'cloud_progress_unavailable')
   self.cache.books[id].restorePending=false;self.cache.books[id].restoreAutomatic=false;self:save()
@@ -362,11 +390,42 @@ function M.new(settings,scope,account,environment)
   self.lastMarkedPosition={record=after,html=afterHtml}
   return {state='recent_marked',bookId=id,uuid=row.uuid,accountScope=scope}
  end
- function self:uploadTime()error('manual_time_upload_disabled',0)end
+ function self:uploadTime(id)
+  local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
+  need(row and row.accountScope==scope and row.uuid,'progress_not_located')
+  local Time=require('reading_time_sync');local W=require('lib.weread')
+  -- A unique session initializes cloud coordinates/reader context exactly once.
+  local token=require('sha256').hex(tostring(os.time())..tostring({}))
+  token=token:sub(1,8)..'-'..token:sub(9,12)..'-'..token:sub(13,16)..'-'..token:sub(17,20)..'-'..token:sub(21,32)
+  Time.begin(self,id,account,row.uuid,token,true)
+  local context=self.reportContext;local record=context.record
+  local result=Time.upload(self,id,account,row.uuid,function(delta)
+   return self.client:report_read(W.make_read_payload({book_id=id,chapter_uid=record.chapterUid,chapter_idx=record.chapterIdx,
+    chapter_offset=record.chapterOffset,progress=record.progress,summary=record.summary,
+    psvts=context.psvts,pclts=context.pclts,token=context.token,elapsed_seconds=delta}),W.reader_url(id))
+  end)
+  return {state='time_uploaded',bookId=id,accountScope=scope,timeUploaded=true,timeUploadedSeconds=result.uploaded,uploadedSeconds=result.uploaded,remainingSeconds=result.remaining}
+ end
  function self:beginReading(id,token)
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
   need(row and row.state=='imported' and row.accountScope==scope,'progress_not_located')
   return require('reading_time_sync').begin(self,id,account,row.uuid,token)
+ end
+ function self:reportReading(id,token,reportId)
+  local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]
+  need(row and row.state=='imported' and row.accountScope==scope,'progress_not_located')
+  local Time=require('reading_time_sync');Time.begin(self,id,account,row.uuid,token)
+  local context=need(self.reportContext,'time_cache_unavailable');local before=context.record
+  local W=require('lib.weread')
+  local result=Time.uploadCombined(self,id,account,row.uuid,{record=before,sessionToken=token,reportId=reportId},function(delta,retry)
+   local record=retry and retry.record or before;local state=retry and retry.state or context
+   local payload=W.make_read_payload({book_id=id,chapter_uid=record.chapterUid,chapter_idx=record.chapterIdx,
+    chapter_offset=record.chapterOffset,progress=record.progress,summary=record.summary,
+    psvts=state.psvts,pclts=state.pclts,token=state.token,elapsed_seconds=delta})
+   return self.client:report_read(payload,W.reader_url(id))
+  end)
+  return {state='reading_session_reported',bookId=id,accountScope=scope,uuid=row.uuid,
+   timeUploaded=not result.skipped,timeUploadedSeconds=result.uploaded}
  end
  function self:closeReading(id,token)
   local row=need((json(root..'/imports.json') or {}).books,'progress_not_located')[id]

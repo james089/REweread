@@ -29,8 +29,17 @@ private:
 class DownloaderController : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString readingSessionStatus READ readingSessionStatus NOTIFY readingSessionChanged)
+    Q_PROPERTY(bool nativePullAvailable READ nativePullAvailable NOTIFY readingSessionChanged)
+    Q_PROPERTY(bool nativePullVisible READ nativePullVisible NOTIFY nativePullChanged)
+    Q_PROPERTY(bool nativePullBusy READ nativePullBusy NOTIFY nativePullChanged)
+    Q_PROPERTY(bool nativePullApplying READ nativePullApplying NOTIFY nativePullChanged)
+    Q_PROPERTY(bool nativePullCanConfirm READ nativePullCanConfirm NOTIFY nativePullChanged)
+    Q_PROPERTY(QString nativePullMessage READ nativePullMessage NOTIFY nativePullChanged)
     Q_PROPERTY(bool opened READ opened NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(bool timeUploadActive READ timeUploadActive NOTIFY changed)
+    Q_PROPERTY(int timeUploadDone READ timeUploadDone NOTIFY changed)
+    Q_PROPERTY(int timeUploadTotal READ timeUploadTotal NOTIFY changed)
     Q_PROPERTY(int nativeBookRevision READ nativeBookRevision NOTIFY nativeBooksChanged)
     Q_PROPERTY(bool canQueue READ canQueue NOTIFY changed)
     Q_PROPERTY(bool loggedIn READ loggedIn NOTIFY changed)
@@ -61,13 +70,26 @@ public:
         const QString &coverRoot = QStringLiteral("/home/root/.local/share/weread-downloader"));
     ~DownloaderController() override;
     QString readingSessionStatus() const;
+    bool nativePullAvailable() const { return m_readingTracked && !m_readingUuid.isEmpty(); }
+    bool nativePullVisible() const { return m_nativePullVisible; }
+    bool nativePullBusy() const { return m_nativePullBusy; }
+    bool nativePullApplying() const { return m_nativePullApplying; }
+    bool nativePullCanConfirm() const { return m_nativePullReady && !m_nativePullBusy; }
+    QString nativePullMessage() const { return m_nativePullMessage; }
+    Q_INVOKABLE void requestNativePull();
+    Q_INVOKABLE void confirmNativePull();
+    Q_INVOKABLE void cancelNativePull();
+    Q_INVOKABLE void completeNativePullRestore(const QString &id, bool ok);
     bool opened() const { return m_opened; }
-    bool busy() const { return m_process.state() != QProcess::NotRunning || m_autoSyncProcess.state() != QProcess::NotRunning; }
+    bool busy() const { return m_process.state() != QProcess::NotRunning || m_autoSyncProcess.state() != QProcess::NotRunning || m_entryProcess.state() != QProcess::NotRunning || m_nativePullBusy; }
     int nativeBookRevision() const { return m_nativeBookRevision; }
     Q_INVOKABLE QString nativeBookBadge(const QString &uuid) const;
     bool canQueue() const { return m_loggedIn && (!busy() || (m_process.state()!=QProcess::NotRunning && m_operation == "import" && !m_error)); }
     bool loggedIn() const { return m_loggedIn; }
     QString status() const { return m_autoSyncProcess.state()!=QProcess::NotRunning ? QStringLiteral("正在后台上传微信读书进度…") : m_status; }
+    bool timeUploadActive() const { return m_operation=="upload-time" && m_process.state()!=QProcess::NotRunning; }
+    int timeUploadDone() const { return m_timeUploadDone; }
+    int timeUploadTotal() const { return m_timeUploadTotal; }
     QString accountName() const { return m_accountName; }
     QString qrImage() const { return m_qrImage; }
     QVariantList books() const { return m_books; }
@@ -120,6 +142,8 @@ public:
     Q_INVOKABLE void setReadingApplicationActive(bool active);
     Q_INVOKABLE void setReadingLocked(bool locked);
 signals:
+    void nativePullChanged();
+    void nativePullRestoreRequested(const QString &uuid, int page, const QString &bookId);
     void readingSessionChanged();
     void changed();
     void coversChanged();
@@ -132,6 +156,8 @@ signals:
     void readingClockChanged();
     void nativeBooksChanged();
 private:
+    void startNativePullWorker(bool apply);
+    void readNativePull();
     void start(const QString &operation, const QString &id = {});
     void readOutput();
     void startProgress();
@@ -172,7 +198,7 @@ private:
     QSet<QString> m_exitErrors;
     QString m_readingUuid,m_exitUuid,m_readingOpeningSignature,m_readingSession;
     QString m_entryAttemptSession,m_entryBookId;
-    QTimer m_entryRetryTimer,m_entryTimeoutTimer;
+    QTimer m_entryRetryTimer,m_entryTimeoutTimer,m_exitTimeoutTimer;
     int m_entryAttempts=0;
     bool m_entryNeeded=false,m_entryTerminal=false,m_entryTimedOut=false;
     QString m_readingTimeZoneId=QStringLiteral("UTC");
@@ -209,5 +235,14 @@ private:
     QElapsedTimer m_readingClock;
     bool m_readingWifiConnected=false,m_readingTracked=false;
     qint64 m_readingStartSeconds=0;
+    int m_reportCount=0;
+    qint64 m_reportSeconds=0;
+    int m_timeUploadDone=0,m_timeUploadTotal=0;
+    QProcess m_nativePullProcess;
+    QByteArray m_nativePullBuffer;
+    QString m_nativePullUuid,m_nativePullBook,m_nativePullScope,m_nativePullToken,m_nativePullMessage;
+    bool m_nativePullVisible=false,m_nativePullBusy=false,m_nativePullReady=false,m_nativePullApplying=false,m_nativePullSuccess=false;
+    quint64 m_nativePullGeneration=0;
+    bool m_reportFailed=false;
     bool m_deviceSleeping=false,m_readingSuspended=true,m_readingAppActive=true,m_readingLocked=false;
 };

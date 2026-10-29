@@ -1,4 +1,132 @@
+## 2026-10-29 Authorized cached-position / one-second spacing test
+
+User asked to pause the proposed pacing change and test one-second spacing.
+Same recent backfill book, one initial reader GET/entry, exactly three rt=60
+reports with one-second waits before reports two/three. All ct values differed.
+Receipts succeeded; cloud delta was +180 immediately and at approximately
+19/41/72 seconds. No retries, per-report GETs, local ledger edits or app changes.
+This is a successful three-report sample, not a one-hour scale validation.
+
+## 2026-10-29 Authorized cached-position / two-second spacing test
+
+User authorized exactly three rt=60 reports reusing the initial cloud reader
+context, waiting two seconds before reports two and three. Same recent backfill
+book; one initial GET and one entry report. All three ct values differed and
+all three receipts succeeded. Saved coordinates remained unchanged. Cloud
+readingTime increased by 180 seconds immediately and remained +180 at about
+21/43/74 seconds from test start. No per-report GETs, retries, or local
+acknowledgement/backlog ledger edits occurred; private intents remain outside
+the repository on-device. This validates cached context with two-second spacing
+for this three-report sample, not arbitrary bulk duration or daily attribution.
+No application pacing code or installed build was changed by this test.
+
+## 2026-10-29 Authorized three-report pacing comparison
+
+User explicitly authorized two groups of exactly three rt=60 submissions on the
+same most-recent backfill book. Each group sent one entry report. Group A fetched
+reader context once then sent three reports without GETs between them. Group B
+fetched reader context before each report. Exactly six duration POSTs were sent,
+with no retries and no local acknowledgement/backlog ledger changes. Private
+write-intent records remain on-device outside the repository. Saved chapter
+coordinates remained unchanged.
+
+| Group | Duration receipts | Distinct integer ct values | Observed cloud increase |
+| --- | --- | --- | --- |
+| A cached context, consecutive POSTs | 3 accepted | 2 (two reports shared one second) | 120 seconds |
+| B GET before each POST | 3 accepted | 3 | 180 seconds |
+
+A retained +120 at immediate and approximately 14/35/67-second reads; B retained
++180 at immediate and approximately 16/37/69-second reads. This strongly supports
+same-second report deduplication as an explanation. It does not identify the
+server's exact key or prove that GET itself is required. Cached-context reports
+paced into distinct real clock seconds remain an untested candidate fix; never
+fabricate future timestamps or replay historical acknowledged differences.
+
+## 2026-10-29 Rapid backfill credit shortfall
+
+User reports more than an hour acknowledged but roughly 16 minutes displayed
+in cloud statistics. Read-only inspection confirms the acknowledgement ledger
+is advanced per positive receipt, without proving corresponding cloud credit.
+A fresh saved-record GET for the latest backfill context shows only a small
+increase relative to its captured entry baseline, far below submitted duration.
+No additional POST, account change, or acknowledgement reset was performed.
+
+The installed upstream constructor sets `ct` to integer `os.time()`, while
+`ts` and `rn` vary separately. A synthetic batch of 60 payloads produced one
+unique `ct`. This establishes a same-second field collision, not the server's
+deduplication key or a proven fix. The previous per-chunk reader GET loop also
+introduced network pacing that the new fast POST-only loop lacks. Neither the
+single rt=60 experiment nor accepted batch receipts establish full batch credit.
+A controlled small-batch pacing comparison remains necessary; do not blindly
+replay acknowledged records or claim a one-second sleep is sufficient.
+
+## 2026-10-29 Restore chunked backlog uploads
+
+User requested restoring the downloader's prior sequential <=60-second backlog
+reporter, reusing the initial cloud position. This is distinct from KOReader's
+periodic reporter and the independent app's one-shot duration submission.
+The downloader now initializes one cloud reader context for foreground backfill,
+then signs each chunk independently without per-chunk GET/verification or sleeps.
+A batch stops after 60 chunks or approximately 90 seconds of work. Exit/progress
+sync also drains recorded unacknowledged time using its existing captured target;
+foreground time-only backfill preserves captured cloud coordinates throughout.
+The API still requires coordinate fields; it is not a position-free endpoint.
+
+Periodic reports and backfill share the durable acknowledgement ledger to avoid
+counting the same local seconds twice. Unknown outcomes remain reserved and block
+replay; explicit rejection releases the reservation. Older-day durations are
+eligible, but requests cannot backdate service-side daily attribution. Synthetic
+one-hour backfill verifies exactly 60 reports and one cloud GET, unchanged saved
+coordinates, and no PDF/chapter work. No new real-account writes were performed.
+Positive receipts remain evidence of submission, not equal verified cloud credit.
+
 # WeRead Web reading-time reporting audit
+
+## 2026-10-29 Authorized 20-second / 65-second follow-up
+
+On the same requested book and independent desktop session, the user authorized
+one further entry, 20 seconds of actual waiting, and exactly one rt=65 report.
+The same Lua constructors and project acknowledgement guard were used. Both
+requests returned succ=1. Saved readingTime showed zero increase at approximately
+22, 39 and 71 seconds after entry acknowledgement; saved position was unchanged.
+No write was retried and no tablet connection or historical ledger change occurred.
+
+Compared with the preceding 20-second/rt=60 success, this is consistent with a
+per-report duration boundary near 60 seconds. It does not prove an exact cap:
+other server-side state and reporting cadence may differ, and the readback window
+is finite. Do not call the positive receipt verified credit or infer a universal
+limit from these two samples. Private intent and results remain outside Git.
+
+## 2026-10-29 Independent desktop 20-second / 60-second comparison
+
+The user explicitly authorized one entry, 20 seconds of actual waiting, and one
+rt=60 report on the requested book, using an independently scanned desktop
+session without contacting the tablet. Request construction used the plugin's
+upstream Lua make_enter_read_payload / make_read_payload, with the local
+read_sync_protocol.lua acknowledgement guard. Desktop Node provided HTTPS,
+monotonic waiting, private storage and hash primitives. The external Lua source
+was pinned to cc100e0de301ef973d3195afeb47c04931b0b261 and kept ignored; the
+tablet's dependency hash was not read, so binary/runtime identity is not claimed.
+
+Entry and duration both returned succ=1. The controlled wait was 20 seconds;
+the first readback at approximately 22 seconds after entry acknowledgement
+showed readingTime increased by 60 seconds. Further read-only checks near
+39 and 71 seconds retained the same 60-second increase. Saved chapter/offset,
+progress and summary stayed unchanged. Exactly one duration write was made;
+no historical ledger was replayed or altered, and no tablet data was touched.
+
+This observation disproves a blanket claim that credited duration must always
+be no greater than actual time since entry. It does not show arbitrary one-hour
+backlog acceptance, establish server thresholds, prove daily attribution or
+explain every prior failure. Earlier 10-second/3600-second non-credit results
+remain distinct observations. No additional exploratory write was authorized.
+
+The first desktop implementation incorrectly forwarded SSR pclts=0 instead of
+performing the Web reader's client-timestamp initialization. It also discarded
+outer business flags when unwrapping response.data and lacked safe receipt
+diagnostics, so its earlier entry failure cannot be assigned a precise server
+code. The tool now uses the Lua constructor and retains only numeric/boolean
+receipt fields, distinguishing explicit rejection from an unconfirmed response.
 
 Reviewed 2026-10-26. This is protocol research, not an official API contract.
 No authenticated writes were made during this audit. Public frontend assets

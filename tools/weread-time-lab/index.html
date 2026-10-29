@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微信读书 · 独立时长实验</title><link rel="stylesheet" href="/style.css"><script type="module" src="/ui.js"></script></head>
+<body><main>
+<header><span class="eyebrow">REWEREAD / LOCAL LAB</span><h1>独立时长实验</h1><p>直接验证云端入账，不连接 reMarkable。</p></header>
+<section id="loginPanel"><h2>01 · 独立登录</h2><p id="loginStatus">正在检查本机登录状态…</p>
+<button id="login">显示登录二维码</button><img id="qr" alt="用微信扫描此登录二维码" hidden width="300" height="300">
+<p class="hint">二维码在本机生成。凭据仅保存在本机私有目录，不会显示在页面中。</p></section>
+<section id="testPanel" hidden><h2>02 · 选择实验</h2>
+<div class="row"><label>书架中的书<select id="books"><option value="">先读取书架，或在下方输入书籍 ID</option></select></label><button id="shelf">读取书架</button></div>
+<label>书籍 ID（选书后自动填写）<input id="bookId" autocomplete="off" maxlength="128" placeholder="书架读取不可用时，可手动填写 bookId"></label>
+<label>实际等待并提交的时长<select id="seconds"><option value="30">30 秒 · 快速验证</option><option value="120">2 分钟</option><option value="600">10 分钟</option><option value="3600">1 小时</option></select></label>
+<p class="hint">先发送一次进入阅读，再实际等待所选时长，最后只提交一次时长。提交前检查位置冲突；随后立即、15 秒及45秒回读总时长。保持电脑唤醒，并停止其他设备阅读同一本书。</p>
+<label class="consent"><input type="checkbox" id="consent">我确认：开始后会更新该账号的最近阅读，并可能增加所选书籍的云端时长。</label>
+<div class="row"><button id="start" class="primary">开始测试</button><button id="cancel" disabled>停止等待</button></div>
+</section>
+<section><h2>03 · 观察结果</h2><p id="phase">尚未开始测试</p><progress id="progress" max="30" value="0"></progress>
+<div class="metrics"><div><span>进入阅读回执</span><strong id="entryAck">—</strong></div><div><span>时长上传回执</span><strong id="durationAck">—</strong></div><div><span>云端实际增加</span><strong id="increase">—</strong></div></div>
+<p id="result" class="hint">回执成功与实际入账分开显示。网络结果不明时不自动重发。</p><ol id="checks"></ol></section>
+<p id="error" role="alert"></p><footer>本机服务 · 127.0.0.1 · 登录与插件完全分开<br>关闭启动终端可停止服务；关闭浏览器标签页不会停止正在运行的测试。</footer>
+</main></body></html>

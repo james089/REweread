@@ -117,7 +117,6 @@ end
 local authenticationExpired = false
 local function execute()
     local operation = arg[1]
-    if operation == "upload-time" then emit({state="error",code="manual_time_upload_disabled"});return end
     if operation == "login" then
         -- C++ launcher clears every login-debug/logging environment variable.
         dofile(app .. "/tools/login-qr.lua")
@@ -145,22 +144,29 @@ local function execute()
         return
     end
     local settings, scope, account_root = context()
-    if arg[3] then assert((operation == "sync-progress" or operation == "close-reading") and scope == arg[3], "account_changed") end
+    if arg[3] then assert((operation == "sync-progress" or operation == "close-reading" or operation == "report-reading" or operation == "preview-native-restore" or operation == "apply-native-restore") and scope == arg[3], "account_changed") end
     if operation=="cloud-time" then
         local ok,result=pcall(function()return require("cloud_reading_stats").fetch(settings,scope,account_root,tonumber(os.getenv("WEREAD_STATISTICS_BASE_TIME")) or 0)end)
         emit(ok and result or {state="statistics_error",code=result=="statistics_auth_failed" and "statistics_auth_failed" or "statistics_unavailable",accountScope=scope});return
     end
     local ShelfCache = require("shelf_cache")
     local shelf = ShelfCache:new(account_root)
-    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "begin-reading" or operation == "close-reading" then
+    if operation == "upload-time" or operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "begin-reading" or operation == "close-reading" or operation == "report-reading" or operation == "preview-native-restore" or operation == "apply-native-restore" then
         local progress = require("reading_progress").new(settings, scope, account_root)
+        progress.onTimeChunk=function(done,total,remaining)
+            emit({state="time_upload_progress",accountScope=scope,bookId=arg[2],uploadedSeconds=done,totalSeconds=total,remainingSeconds=remaining})
+        end
         local ok, result = pcall(function()
             if operation == "reading-progress" then
                 progress:refresh((shelf:load_shelf() or {}).books or {}, emit)
                 return {state="reading_progress_done", accountScope=scope}
             end
+            if operation == "upload-time" then return progress:uploadTime(arg[2]) end
             if operation == "prepare-restore" then return progress:prepareRestore(arg[2]) end
             if operation == "mark-recent" then return progress:markRecent(arg[2]) end
+            if operation == "preview-native-restore" then return progress:previewNativeRestore(arg[2],os.getenv("WEREAD_NATIVE_PULL_TOKEN"),os.getenv("WEREAD_NATIVE_PULL_UUID")) end
+            if operation == "apply-native-restore" then return progress:applyNativeRestore(arg[2],os.getenv("WEREAD_NATIVE_PULL_TOKEN"),os.getenv("WEREAD_NATIVE_PULL_UUID")) end
+            if operation == "report-reading" then return progress:reportReading(arg[2],os.getenv("WEREAD_READING_SESSION"),os.getenv("WEREAD_READING_REPORT_ID")) end
             if operation == "begin-reading" then return progress:beginReading(arg[2],os.getenv("WEREAD_READING_SESSION")) end
             if operation == "close-reading" then return progress:closeReading(arg[2],os.getenv("WEREAD_READING_SESSION")) end
             if operation == "restore-progress" then return progress:restore(arg[2]) end
@@ -171,8 +177,8 @@ local function execute()
         if not ok then
             local codes={progress_not_located=true,progress_layout_unsupported=true,progress_network_failed=true,progress_source_map_missing=true,
                 progress_cache_changed=true,progress_offset_unsupported=true,cloud_progress_unavailable=true,
-                cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true,
-                time_cache_unavailable=true,time_cloud_unavailable=true,time_upload_rejected=true,time_upload_uncertain=true}
+                cloud_progress_changed=true,progress_local_changed=true,progress_weight_unavailable=true,progress_sync_unconfirmed=true,progress_restore_pending=true,progress_restore_expired=true,
+                time_cache_unavailable=true,time_cloud_unavailable=true,time_upload_rejected=true,time_upload_uncertain=true,time_report_duplicate=true,time_report_not_due=true}
             emit({state="error", code=codes[result] and result or "progress_failed"})
             return
         end

@@ -37,6 +37,13 @@ for token in ['wereadReadingSessionFooter', 'Downloader.readingSessionStatus', '
         raise SystemExit('Reading session footer replay is incomplete')
 if 'Downloader.setReadingWifiConnected(readingWifiConnected)' not in main or 'LinkProvider.isOnline' not in main:
     raise SystemExit('Native Wi-Fi signal binding is missing')
+menu = (root / 'build/replay/qt/qml/xofm/libs/toolbar/qml/SettingsMenu.qml').read_text()
+for token in ['wereadNativePullMenu', 'Downloader.nativePullAvailable', 'Downloader.requestNativePull()']:
+    if token not in menu:
+        raise SystemExit('Native manual progress menu is missing')
+for token in ['NativeProgressDialog.qml', 'onNativePullRestoreRequested', 'root.openPage', 'Downloader.nativePullVisible', 'PenInputBlocker']:
+    if token not in reader:
+        raise SystemExit('Native progress confirmation or live restore hooks are missing')
 record = root / 'build/replayed-patch.sha256'
 if not record.exists() or record.read_text().strip() != hashlib.sha256(patch).hexdigest():
     raise SystemExit('Replay this exact patch again before installation')
