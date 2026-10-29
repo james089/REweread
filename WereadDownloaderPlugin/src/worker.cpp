@@ -1,6 +1,7 @@
 #include "epub.h"
 #include "cache_cleanup.h"
 #include "reading_progress.h"
+#include "reading_time_zone.h"
 #include "exit_sync_state.h"
 #include "import_registry.h"
 #include "native_address.h"
@@ -48,10 +49,6 @@ QString configuredTimeZone() {
     const QTimeZone zone(id);
     return !id.isEmpty() && zone.isValid()?QString::fromUtf8(id):QStringLiteral("UTC");
 }
-QString currentReadingDay() {
-    const QTimeZone zone(configuredTimeZone().toUtf8());
-    return QDateTime::currentDateTimeUtc().toTimeZone(zone).date().toString(Qt::ISODate);
-}
 void need(bool value, const char *code) { if (!value) throw std::runtime_error(code); }
 void emitRow(const QJsonObject &row) {
     const auto b = QJsonDocument(row).toJson(QJsonDocument::Compact) + '\n';
@@ -75,7 +72,12 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
     env.insert("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
     env.insert("HOME", "/home/root");
     env.insert("LANG", "C.UTF-8"); env.insert("LC_ALL", "C.UTF-8");
-    env.insert("WEREAD_TIME_ZONE",configuredTimeZone());env.insert("TZ",configuredTimeZone());
+    env.insert("WEREAD_TIME_ZONE",configuredTimeZone());env.insert("TZ",helperTimeZone(configuredTimeZone()));
+    if (operation=="begin-reading" || operation=="close-reading" || operation=="sync-progress") {
+        const auto session=qgetenv("WEREAD_READING_SESSION");
+        if(QRegularExpression("^[0-9a-f-]{36}$").match(QString::fromUtf8(session)).hasMatch())env.insert("WEREAD_READING_SESSION",QString::fromUtf8(session));
+    }
+    env.insert("WEREAD_STATISTICS_BASE_TIME",QString::fromUtf8(qgetenv("WEREAD_STATISTICS_BASE_TIME")));
     env.insert("RM_WEREAD_APP_DIR", "/home/root/weread-downloader/helper");
     env.insert("KO_DIR", "/home/root/xovi/exthome/appload/koreader");
     env.insert("RM_WEREAD_LOGIN_TIMEOUT", "180");
@@ -264,7 +266,8 @@ int main(int argc, char **argv) {
         const auto operation = exitSync?QStringLiteral("sync-progress"):requested;
         need(QDir().mkpath(root) && !QFileInfo(root).isSymLink(), "private_root_unavailable");
         need(::chmod(QFile::encodeName(root).constData(), 0700) == 0, "private_root_unavailable");
-        if (operation == "reading-progress") { emitRow(helper(operation)); return 0; }
+        need(operation!="upload-time","manual_time_upload_disabled");
+        if (operation == "reading-progress" || operation == "cloud-time") { emitRow(helper(operation)); return 0; }
         ImportRegistry registry(root); // One foreground operation, including login.
         need(NativeAddress::recover(root), "address_restore_failed");
         if (operation == "status" || operation == "login" || operation == "logout") {
@@ -290,17 +293,16 @@ int main(int argc, char **argv) {
             }
             row["books"] = books; emitRow(row); return 0;
         }
-        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress" || operation == "upload-time") && (exitSync || argc == 3), "invalid_command");
+        need((operation == "import" || operation == "repair-cover" || operation == "clear-cache" || operation == "sync-progress" || operation == "restore-progress" || operation == "begin-reading") && (exitSync || argc == 3), "invalid_command");
         const auto id = QString::fromLocal8Bit(argv[2]);
         need(Epub::validBookId(id), "invalid_book_id");
         auto identity = helper("status");
         need(identity.value("state") == "authenticated", "login_required");
         if(exitSync)need(identity.value("accountScope")==expectedScope,"account_changed");
         registry.reconcile(scan(registry));
-        if(operation=="upload-time") {
+        if(operation=="begin-reading") {
             const auto record=registry.record(id);
-            need((record.value("state")=="imported" || record.value("state")=="removed")
-                && record.value("accountScope")==identity.value("accountScope"),"progress_not_located");
+            need(record.value("state")=="imported" && record.value("accountScope")==identity.value("accountScope"),"progress_not_located");
             emitRow(helper(operation,id));return 0;
         }
         if (operation == "sync-progress" || operation == "restore-progress") {
@@ -326,13 +328,8 @@ int main(int argc, char **argv) {
             // old upload receipt happens to match it.
             const bool unchanged=exitSync && !signature.isEmpty() && signature==openingSignature;
             if(unchanged){
-                const auto localPath=account+"/local-reading-time-v1.json",sentPath=account+"/uploaded-reading-time-v1.json";
-                const auto local=QFileInfo::exists(localPath)?readJson(localPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
-                const auto sent=QFileInfo::exists(sentPath)?readJson(sentPath,8*1024*1024).value("books").toObject().value(id).toObject():QJsonObject();
-                const auto date=currentReadingDay();
-                const auto pending=local.value("days").toObject().value(date).toDouble()-sent.value("confirmedDays").toObject().value(date).toDouble();
-                bool timeOk=!sent.value("pending").isObject();
-                if(pending>0 && timeOk)timeOk=helper("upload-time",id,expectedScope).value("state")=="time_uploaded";
+                const auto closed=helper("close-reading",id,expectedScope);
+                const bool timeOk=closed.value("state")=="reading_session_closed" && closed.value("timeUploaded").toBool();
                 emitRow({{"state","exit_sync_skipped"},{"bookId",id},{"uuid",record.value("uuid")},
                     {"accountScope",identity.value("accountScope")},{"timeUploaded",timeOk},{"recentMarked",false}});return 0;
             }

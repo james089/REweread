@@ -36,3 +36,36 @@ x=clone(legacy);x.formatVersion=2;assert(L.identityCount(x)==nil)
 x=clone(v2);x.cPages.original.value=2;x.pageCount=2;x.cPages.pages[3]=nil;assert(L.identityCount(x)==2)
 assert(L.identityCount(nil)==nil and L.identityCount({})==nil)
 print('native layout: legacy/cPages identity mapping and malformed/reordered/deleted page refusal passed')
+
+-- CRDT history: removed records, storage order differing from idx, repeated PDF
+-- pages and an omitted original page. Only active native order determines sync.
+local history=clone(v2)
+history.cPages.pages[3].redir.value=1
+local tomb=clone(history.cPages.pages[1]);tomb.id='00000000-0000-4000-8000-000000000004';tomb.deleted=cell(true)
+tomb.idx=nil;tomb.redir=nil
+history.cPages.pages={history.cPages.pages[3],tomb,history.cPages.pages[1],history.cPages.pages[2]}
+local map=assert(L.resolve(history))
+assert(map.pageCount==3 and map.originalCount==3)
+assert(L.originalPage(map,0)==0 and L.originalPage(map,1)==1 and L.originalPage(map,2)==1)
+assert(L.nativePage(map,1,2)==2 and L.nativePage(map,1,0)==1 and L.nativePage(map,2,0)==nil)
+assert(L.originalPage(map,-1)==nil and L.originalPage(map,3)==nil)
+assert(L.originalPage(map,0.5)==nil and L.nativePage(map,3)==nil)
+assert(L.resolve(legacy).originalCount==3)
+local reordered=clone(v2);reordered.cPages.pages[2].redir.value=2;reordered.cPages.pages[3].redir.value=1
+assert(L.originalPage(assert(L.resolve(reordered)),1)==2)
+local blank=clone(v2);blank.cPages.pages[2].redir.value=-1
+map=assert(L.resolve(blank));assert(L.originalPage(map,1)==nil and L.nativePage(map,1)==nil)
+for _,change in ipairs({
+ function(x)x.pageCount=4 end,
+ function(x)x.cPages.pages[1].redir.value=3 end,
+ function(x)x.cPages.pages[1].redir.value=0.5 end,
+ function(x)x.cPages.pages[1].deleted=cell('true') end,
+ function(x)x.cPages.pages[1].idx.value=x.cPages.pages[2].idx.value end,
+ function(x)x.cPages.pages[1].id=x.cPages.pages[2].id end,
+})do local x=clone(v2);change(x);assert(L.resolve(x)==nil)end
+assert(L.resolve(history) and history.cPages.pages[1].idx.value=='c','resolver must not reorder input records')
+print('native layout: tombstones, active ordering, duplicate/omitted/blank PDF pages and inverse mapping passed')
+
+local tied=clone(v2);tied.cPages.pages[3].idx.value='b';tied.cPages.pages[3].redir.value=1
+map=assert(L.resolve(tied));assert(L.originalPage(map,2)==1)
+tied.cPages.pages[3].redir.value=2;assert(L.resolve(tied)==nil)

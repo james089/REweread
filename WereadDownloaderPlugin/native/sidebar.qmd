@@ -27,13 +27,17 @@ AFFECT /qml/device/view/main/MainView.qml
             Item {
                 id: wereadDownloaderHost
                 anchors.fill: parent
-                z: 10000
+                // Native VirtualKeyboardWindow uses z=10000 in the same scene.
+                z: 9999
                 visible: Downloader.opened
+                property bool readingWifiConnected: LinkProvider.isOnline
+                onReadingWifiConnectedChanged: Downloader.setReadingWifiConnected(readingWifiConnected)
                 property bool readingLocked: root.passcodeHandler?.userLocked ?? true
                 onReadingLockedChanged: Downloader.setReadingLocked(readingLocked)
                 onVisibleChanged: { if (!visible && Downloader.opened) Downloader.closePage() }
                 Component.onCompleted: {
                     Downloader.attachSettings(Settings);
+                    Downloader.setReadingWifiConnected(readingWifiConnected);
                     Downloader.setReadingApplicationActive(Qt.application.state === Qt.ApplicationActive);
                     Downloader.setReadingLocked(readingLocked);
                 }
@@ -66,7 +70,8 @@ AFFECT /qml/device/view/main/MainView.qml
                     target: Qt.application
                     function onStateChanged() {
                         Downloader.setReadingApplicationActive(Qt.application.state === Qt.ApplicationActive);
-                        if (Qt.application.state !== Qt.ApplicationActive) Downloader.closePage()
+                        // A system input-method window can temporarily deactivate Xochitl.
+                        if (Qt.application.state === Qt.ApplicationHidden || Qt.application.state === Qt.ApplicationSuspended) Downloader.closePage()
                     }
                 }
             }
@@ -193,6 +198,52 @@ AFFECT /qml/device/view/syncserviceexplorer/ContentListItem.qml
                     item.badgeStatus = Qt.binding(function() { return wereadCurrentListBadge.badgeStatus; });
                     console.info("WereadDownloaderPlugin: current-library-badge-ready");
                 }
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+
+AFFECT /qml/device/view/documentview/DocumentPageSlider.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE PageSlider#pageSlider
+        REPLACE anchors WITH { anchors {
+        left: parent.left
+        leftMargin: toolbar.shown && toolbar.position === ToolbarPositioner.Position.Left ? toolbar.innerWidth : 0
+        rightMargin: toolbar.shown && toolbar.position === ToolbarPositioner.Position.Right ? toolbar.innerWidth : 0
+        right: parent.right
+        bottom: parent.bottom
+        alignWhenCentered: true
+        bottomMargin: {
+            let margin = 50;
+            // Add space for the page label if the notification bar and page label are visible
+            if (documentView.notificationBar && documentView.pageLabel &&
+                    documentView.notificationBar.visible && documentView.pageLabel.visible) {
+                margin += documentView.pageLabel.height;
+            }
+
+            // Add space for the toolbar if it's shown at the bottom
+            if (toolbar && toolbar.position === ToolbarPositioner.Position.Bottom && toolbar.shown) {
+                margin += toolbar.innerHeight;
+            }
+            return margin + (Downloader.readingSessionStatus !== "" ? 104 : 0);
+        }
+    } }
+        LOCATE BEFORE ALL
+        INSERT {
+            Text {
+                objectName: "wereadReadingSessionFooter"
+                anchors.top: parent.bottom
+                anchors.topMargin: 20
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: ArkControls.Values.spacing.xlarge
+                anchors.rightMargin: ArkControls.Values.spacing.xlarge
+                text: Downloader.readingSessionStatus
+                visible: text !== "" && !pageSlider.pageThumbnailVisible
+                font.pixelSize: 24
+                color: "black"
+                wrapMode: Text.WordWrap
             }
         }
     END TRAVERSE

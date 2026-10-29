@@ -50,6 +50,7 @@ public:
     void setTimeZone(const QTimeZone &zone){if(zone.isValid())m_timeZone=zone;}
     void paused(bool value){m_paused=value;}
     void activity(){m_idleMs=0;}
+    qint64 totalSeconds()const{return qint64(m_books.value(m_id).toObject().value("seconds").toDouble());}
     bool active()const{return !m_id.isEmpty() && !m_paused && m_idleMs<300000;}
     void advance(qint64 ms){advanceAt(ms,QDateTime::currentMSecsSinceEpoch());}
     void advance(qint64 ms,qint64 now){advanceAt(ms,now*1000);}

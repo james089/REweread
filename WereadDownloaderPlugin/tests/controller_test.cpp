@@ -9,6 +9,7 @@
 #include <QQmlEngine>
 #include <QQuickWindow>
 #include <QtTest/qtesttouch.h>
+#include <QtTest/qtestmouse.h>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtQml/qqml.h>
@@ -43,11 +44,16 @@ script_root=${0%/*}
 printf '%s\n' "$1" >> "$script_root/calls"
 if [ "$1" = reading-progress ] && [ -f "$script_root/slow-progress" ]; then exec /bin/sleep 5; fi
 case "$1" in
+cloud-time) printf '%s\n' '{"state":"cloud_time_ready","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' ;;
+begin-reading)
+ if [ -f "$script_root/entry-fail-once" ]; then rm "$script_root/entry-fail-once"; printf '%s\n' '{"state":"error","code":"progress_network_failed"}'; exit 1; fi
+ if [ -f "$script_root/entry-always-fail" ]; then printf '%s\n' '{"state":"error","code":"progress_network_failed"}'; exit 1; fi
+ printf '%s\n' '{"state":"reading_session_started","bookId":"'"$2"'"}' ;;
 exit-sync)
  printf '%s\n' "$*" >> "$script_root/exit-args"
  /bin/sleep 0.3
  if [ -f "$script_root/exit-rejected" ]; then printf '%s\n' '{"state":"error","code":"login_required"}'; exit 1; fi
- printf '%s\n' '{"state":"progress_synced","bookId":"'"$2"'","accountScope":"'"$3"'","uuid":"'"$4"'","recentMarked":false,"timeUploaded":true}' ;;
+ printf '%s\n' '{"state":"progress_synced","bookId":"'"$2"'","accountScope":"'"$3"'","uuid":"'"$4"'","recentMarked":false,"timeUploaded":true,"cloudPositionPreserved":true,"timeUploadedSeconds":20}' ;;
 status) if [ -f "$script_root/authenticated" ]; then printf '%s\n' '{"state":"authenticated","accountName":"synthetic account"}'; else printf '%s\n' '{"state":"login_required"}'; fi ;;
 logout) rm -f "$script_root/authenticated"; printf '%s\n' '{"state":"logged_out"}' ;;
 login)
@@ -84,7 +90,7 @@ restore-progress)
 clear-cache) printf '%s\n' '{"state":"cache_cleared"}' ;;
 upload-time)
  printf '%s\n' '{"version":1,"books":{"synthetic-2":{"confirmedSeconds":125,"confirmedDays":{"'"$(date +%Y-%m-%d)"'":125}}}}' > "$script_root/covers/accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/uploaded-reading-time-v1.json"
- printf '%s\n' '{"state":"time_uploaded","bookId":"synthetic-2","remainingSeconds":0}' ;;
+ printf '%s\n' '{"state":"time_uploaded","bookId":"synthetic-2","uploadedSeconds":125,"remainingSeconds":25,"deferredSeconds":25}' ;;
 import)
  printf '%s\n' "$2" >> "$script_root/imports"
  printf '%s\n' '{"state":"progress","done":5,"total":10}'
@@ -235,35 +241,80 @@ ColumnLayout {
         const auto readingToday=QDateTime::currentDateTimeUtc().date().toString(Qt::ISODate);
         {QFile stats(timeDir+"/local-reading-time-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(QJsonDocument(QJsonObject{{"version",1},{"books",QJsonObject{{"synthetic-2",QJsonObject{{"seconds",150},{"lastRead",100},{"title","Synthetic timed book"},{"uuid","12345678-1234-1234-1234-123456789abc"},{"days",QJsonObject{{readingToday,125},{"2000-01-01",20}}}}}}}}).toJson());}
         {QFile stats(timeDir+"/reading-progress-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(R"({"version":1,"books":{"synthetic-2":{"record":{"readingTime":3600,"updateTime":100}}}})");}
+        {QFile stats(timeDir+"/cloud-reading-time-v1.json");check(stats.open(QIODevice::WriteOnly));stats.write(QJsonDocument(QJsonObject{{"version",1},{"accountScope",QString(64,'a')},{"totalSeconds",86400},{"timeZone","UTC"},{"days",QJsonObject{{readingToday,240},{"2000-01-01",42}}}}).toJson());}
         QMetaObject::invokeMethod(controller,"readingStatsChanged");
         check(QMetaObject::invokeMethod(visualChild(item,"readingTimeTabButton"),"clicked"));
         until([&]{return item->property("activeTab").toInt()==1 && visualChild(item,"readingTimeList")->isVisible();});
         check(controller->readingStats().size()==1);
-        check(controller->readingWeekStats().size()==7 && controller->readingWeekTotalSeconds()==125);
-        check(controller->readingWeekMaximumSeconds()==125 && controller->readingWeekPeakLabel()!="暂无阅读");
-        check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==150);
-        check(controller->readingStats()[0].toMap().value("uploadableSeconds").toInt()==125);
-        check(controller->readingStats()[0].toMap().value("heldSeconds").toInt()==25);
-        controller->setReadingDate("2000-01-01");check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==20);
-        check(!controller->readingStats()[0].toMap().value("canUploadDate").toBool());
-        controller->setReadingDate("undated");check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==5);
+        check(controller->readingWeekStats().size()==7 && controller->readingWeekTotalSeconds()==240);
+        check(controller->readingWeekMaximumSeconds()==240 && controller->readingWeekPeakLabel()!="暂无阅读");
+        check(controller->cloudReadingTotalSeconds()==86400 && controller->readingDateTotalSeconds()==240);
+        check(!controller->readingStats()[0].toMap().contains("pendingSeconds"));
+        check(controller->readingStats()[0].toMap().value("localSeconds").toInt()==125);
+        controller->setReadingDate("2000-01-01");check(controller->readingDateTotalSeconds()==42);
+        check(controller->readingStats().size()==1 && controller->readingStats()[0].toMap().value("localSeconds").toInt()==20);
+        controller->setReadingDate("1999-12-31");check(controller->readingStats().isEmpty());
         controller->setReadingDate("");
+        check(controller->readingStats().size()==1 && controller->readingStats()[0].toMap().value("localSeconds").toInt()==150);
         check(QMetaObject::invokeMethod(visualChild(item,"nextReadingDate"),"clicked"));
         check(controller->readingDate()==QDate::fromString(readingToday,Qt::ISODate).addDays(1).toString(Qt::ISODate));
         check(QMetaObject::invokeMethod(visualChild(item,"previousReadingDate"),"clicked"));check(controller->readingDate()==readingToday);
         const auto currentWeek=controller->readingWeekLabel();controller->shiftReadingWeek(-1);check(controller->readingWeekLabel()!=currentWeek);
         controller->shiftReadingWeek(1);
-        auto *timeUpload=visualChild(item,"uploadReadingTimeButton");check(timeUpload && timeUpload->isVisible());
-        check(qAbs(timeUpload->height()-58)<1);
+        check(!visualChild(item,"uploadReadingTimeButton"));
+        check(visualChild(item,"statisticsApiButton"));
+        check(QMetaObject::invokeMethod(visualChild(item,"statisticsApiButton"),"clicked"));
+        auto *apiDialog=item->findChild<QObject *>("statisticsApiDialog");
+        check(apiDialog);until([&]{return apiDialog->property("visible").toBool();});
+        auto *apiContent=visualChild(item,"statisticsApiContent");check(apiContent);
+        auto *apiCancel=visualChild(apiContent,"statisticsApiCancel");
+        auto *apiSave=visualChild(apiContent,"statisticsApiSave");check(apiCancel && apiSave);
+        check(qAbs(apiCancel->width()-apiSave->width())<1 && qAbs(apiCancel->height()-88)<1);
+        check(apiCancel->mapToItem(apiContent,QPointF(0,apiCancel->height())).y()<=apiContent->height()+1);
+        auto *apiPanel=visualChild(item,"statisticsApiPanel");check(apiPanel);
+        check(qAbs(apiPanel->height()-apiContent->height()-80)<1);
+        auto *apiInput=item->findChild<QQuickItem *>("statisticsApiInput");check(apiInput);
+        auto *revealButton=visualChild(item,"statisticsApiReveal");check(revealButton);
+        apiInput->setProperty("text","synthetic-display-check");
+        check(apiInput->property("echoMode").toInt()==2);
+        check(QMetaObject::invokeMethod(revealButton,"clicked"));QCoreApplication::processEvents();
+        check(apiInput->property("echoMode").toInt()==0 && apiInput->property("text").toString()=="synthetic-display-check");
+        check(QMetaObject::invokeMethod(revealButton,"clicked"));QCoreApplication::processEvents();
+        check(apiInput->property("echoMode").toInt()==2);
+        apiInput->forceActiveFocus();QCoreApplication::processEvents();
+        check(apiDialog->property("visible").toBool() && controller->opened());
+        // Match the stock keyboard's scene stacking; taps must bypass our shade.
+        QQmlComponent keyboardProbe(&engine);
+        keyboardProbe.setData("import QtQuick 2.15; Rectangle { width: 160; height: 80; z: 10000; property int taps: 0; MouseArea { anchors.fill: parent; onClicked: parent.taps++ } }",QUrl());
+        QScopedPointer<QObject> keyboardObject(keyboardProbe.create());
+        auto *keyboardItem=qobject_cast<QQuickItem *>(keyboardObject.data());check(keyboardItem);
+        keyboardItem->setParentItem(window.contentItem());keyboardItem->setY(window.height()-100);
+        QTest::mouseClick(&window,Qt::LeftButton,Qt::NoModifier,QPoint(40,window.height()-60));
+        QCoreApplication::processEvents();check(keyboardItem->property("taps").toInt()==1);
+        check(apiDialog->property("visible").toBool());
+        keyboardItem->setParentItem(nullptr);
+
+        check(QMetaObject::invokeMethod(apiDialog,"reject"));
+        check(apiInput->property("text").toString().isEmpty() && !apiDialog->property("revealKey").toBool());
+
         for(const auto *name:{"previousReadingWeek","nextReadingWeek","previousReadingDate","nextReadingDate"}) {
             auto *button=visualChild(item,name);check(button && qAbs(button->height()-58)<1);
         }
         auto *zoneSelector=visualChild(item,"readingTimeZoneSelector");check(zoneSelector && qAbs(zoneSelector->height()-58)<1);
-        auto timeBeforeScreenshot=window.grabWindow();if(!timeBeforeScreenshot.isNull())check(timeBeforeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.before.png"));
-        const auto beforeTimeShelf=callCount("shelf");
-        check(QMetaObject::invokeMethod(timeUpload,"clicked"));
-        until([&]{return !controller->busy() && callCount("shelf")==beforeTimeShelf+1;});
-        check(callCount("upload-time")==1 && controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==25 && controller->readingStats()[0].toMap().value("uploadableSeconds").toInt()==0);
+        controller->uploadReadingTime("synthetic-2");QCoreApplication::processEvents();
+        check(callCount("upload-time")==0 && controller->status().contains(QStringLiteral("已停用")));
+        check(!controller->statisticsConfigured());
+        controller->setStatisticsApiKey("synthetic-independent-statistics-key");
+        until([&]{return controller->statisticsConfigured() && controller->statisticsStatus()==QStringLiteral("云端统计已更新");});
+        check(QMetaObject::invokeMethod(visualChild(item,"statisticsApiButton"),"clicked"));
+        check(apiInput->property("text").toString()=="synthetic-independent-statistics-key");
+        check(apiInput->property("echoMode").toInt()==2);
+        check(QMetaObject::invokeMethod(apiDialog,"reject"));
+        QFile privateConfig(timeDir+"/statistics-api-v1.json");check(privateConfig.open(QIODevice::ReadOnly));
+        const auto config=QJsonDocument::fromJson(privateConfig.readAll()).object();
+        check(config.value("apiKey")=="synthetic-independent-statistics-key" && config.value("accountScope")==QString(64,'a'));
+        check(!(privateConfig.permissions()&(QFileDevice::ReadGroup|QFileDevice::WriteGroup|QFileDevice::ReadOther|QFileDevice::WriteOther)));
+        check(controller->cloudReadingTotalSeconds()==86400 && callCount("upload-time")==0);
         auto timeScreenshot=window.grabWindow();if(!timeScreenshot.isNull())check(timeScreenshot.save(QString::fromLocal8Bit(argv[2])+".time.png"));
         check(QMetaObject::invokeMethod(visualChild(item,"shelfTabButton"),"clicked"));
         phase="rendering";
@@ -421,7 +472,7 @@ ColumnLayout {
         until([] { return !controller->busy() && controller->books().size() == 2; });
         QElapsedTimer cacheWait; cacheWait.start(); until([&] { return cacheWait.elapsed() > 100; });
         QFile calls(temporary.path() + "/calls"); check(calls.open(QIODevice::ReadOnly));
-        auto history=calls.readAll(); history.replace("reading-progress\n", ""); check(history.endsWith("status\ncached-shelf\n"));
+        auto history=calls.readAll(); history.replace("reading-progress\n", ""); history.replace("cloud-time\n", ""); check(history.endsWith("status\ncached-shelf\n"));
         QFile networkFailed(temporary.path() + "/network-failed"); check(networkFailed.open(QIODevice::WriteOnly)); networkFailed.close();
         controller->refresh(); until([] { return !controller->busy(); });
         check(controller->loggedIn() && controller->books().size() == 2);
@@ -431,6 +482,36 @@ ColumnLayout {
         controller->refresh();
         until([&] { return returnedToLogin && controller->loggedIn() && !controller->busy() && controller->books().size() == 2; });
         controller->closePage();
+        phase="entry recovery, wifi gate, sleep gate and close cancellation";
+        const QString entryUuid="12345678-1234-1234-1234-123456789abc";
+        controller->setReadingLocked(false);controller->setReadingApplicationActive(true);controller->setReadingDeviceSleeping(false);
+        {QFile fail(temporary.path()+"/entry-fail-once");check(fail.open(QIODevice::WriteOnly));}
+        auto entriesBefore=callCount("begin-reading");controller->setReadingWifiConnected(false);controller->readingStarted(entryUuid);
+        QTest::qWait(600);check(callCount("begin-reading")==entriesBefore);
+        check(controller->readingSessionStatus().contains(QStringLiteral("等待 Wi-Fi")));
+        check(controller->readingSessionStatus().contains(QStringLiteral("本次本机阅读")));
+        controller->setReadingWifiConnected(true);
+        until([&]{return callCount("begin-reading")==entriesBefore+2;},10000);
+        QTest::qWait(400);controller->readingActivity();QTest::qWait(200);
+        check(callCount("begin-reading")==entriesBefore+2); // Success stops entry retries.
+        check(controller->readingSessionStatus().contains(QStringLiteral("开始阅读已上传")));
+        controller->readingStopped();until([&]{return controller->nativeBookBadge(entryUuid)=="weread" && !controller->busy();});
+        {QFile fail(temporary.path()+"/entry-always-fail");check(fail.open(QIODevice::WriteOnly));}
+        entriesBefore=callCount("begin-reading");controller->readingStarted(entryUuid);
+        until([&]{return callCount("begin-reading")==entriesBefore+1;});QTest::qWait(200);
+        controller->setReadingWifiConnected(false);QTest::qWait(5300);
+        check(callCount("begin-reading")==entriesBefore+1);
+        controller->setReadingDeviceSleeping(true);controller->setReadingWifiConnected(true);QTest::qWait(600);
+        check(callCount("begin-reading")==entriesBefore+1);
+        QFile::remove(temporary.path()+"/entry-always-fail");controller->setReadingDeviceSleeping(false);
+        until([&]{return callCount("begin-reading")==entriesBefore+2;},10000);QTest::qWait(200);
+        controller->readingStopped();until([&]{return controller->nativeBookBadge(entryUuid)=="weread" && !controller->busy();});
+        {QFile fail(temporary.path()+"/entry-always-fail");check(fail.open(QIODevice::WriteOnly));}
+        entriesBefore=callCount("begin-reading");controller->readingStarted(entryUuid);
+        until([&]{return callCount("begin-reading")==entriesBefore+1;});QTest::qWait(200);
+        controller->readingStopped();QTest::qWait(5300);
+        check(callCount("begin-reading")==entriesBefore+1); // A closed book cannot retry entry.
+        QFile::remove(temporary.path()+"/entry-always-fail");
         phase="background exit upload and native book badges";
         const QString nativeUuid="12345678-1234-1234-1234-123456789abc";
         check(controller->nativeBookBadge("unknown").isEmpty());
@@ -445,6 +526,7 @@ ColumnLayout {
         until([&]{return controller->busy();});check(controller->nativeBookBadge(nativeUuid)=="sync");
         until([&]{return !controller->busy() && controller->nativeBookBadge(nativeUuid)=="weread";});
         check(callCount("exit-sync")==autoBefore+1 && callCount("login")==loginBeforeAuto && !controller->opened());
+        check(controller->status().contains(QStringLiteral("云端位置已保留")));
         {QFile args(temporary.path()+"/exit-args");check(args.open(QIODevice::ReadOnly));check(args.readAll().contains(("exit-sync synthetic-2 "+QString(64,'a')+" "+nativeUuid+" 42").toUtf8()));}
         controller->readingStopped();QTest::qWait(1600);check(callCount("exit-sync")==autoBefore+1); // Duplicate close is a no-op.
         {QFile reject(temporary.path()+"/exit-rejected");check(reject.open(QIODevice::WriteOnly));}

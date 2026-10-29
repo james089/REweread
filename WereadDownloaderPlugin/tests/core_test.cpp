@@ -1,3 +1,7 @@
+#include "reading_time_zone.h"
+#include <QDateTime>
+#include <QTimeZone>
+#include <ctime>
 #include "epub.h"
 #include "cache_cleanup.h"
 #include "reading_progress.h"
@@ -22,6 +26,20 @@ int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
         check(argc == 2);
+        const auto previousTZ=qgetenv("TZ");const bool hadTZ=qEnvironmentVariableIsSet("TZ");
+        const std::time_t epoch=1793066400; // A UTC instant near a calendar boundary.
+        for(int offset=-12;offset<=14;++offset) {
+            const auto id=QStringLiteral("UTC%1%2:00").arg(offset<0?"-":"+").arg(qAbs(offset),2,10,QChar('0'));
+            qputenv("TZ",helperTimeZone(id).toUtf8());::tzset();
+            const auto local=*std::localtime(&epoch);
+            const auto expected=QDateTime::fromSecsSinceEpoch(epoch,Qt::UTC).addSecs(offset*3600);
+            check(local.tm_year+1900==expected.date().year() && local.tm_mon+1==expected.date().month()
+                && local.tm_mday==expected.date().day() && local.tm_hour==expected.time().hour());
+        }
+        check(helperTimeZone("UTC+05:30")=="UTC-05:30");
+        check(helperTimeZone("America/Chicago")=="America/Chicago" && helperTimeZone("UTC")=="UTC");
+        if(hadTZ)qputenv("TZ",previousTZ);else qunsetenv("TZ");::tzset();
+
         QJsonObject progressMetadata{{"lastOpenedPage",1}};
         QJsonObject progressContent{{"pageCount",3},{"pages",QJsonArray{"a","b","c"}}};
         check(nativeReadingPercent(progressMetadata,progressContent)==50);
@@ -36,6 +54,15 @@ int main(int argc, char **argv) {
         check(nativeReadingPercent(progressMetadata,v2Content)==50);
         progressMetadata["lastOpenedPage"]=2; check(nativeReadingPercent(progressMetadata,v2Content)==100);
         progressMetadata["lastOpenedPage"]=0; check(nativeReadingPercent(progressMetadata,v2Content)==0);
+        auto historical=cPages.value("pages").toArray();
+        historical.append(QJsonObject{{"id","deleted-history"},{"deleted",QJsonObject{{"value",true}}}});
+        v2Content["cPages"]=QJsonObject{{"pages",historical}};
+        progressMetadata["lastOpenedPage"]=1;
+        check(nativeReadingPercent(progressMetadata,v2Content)==50);
+        historical[historical.size()-1]=QJsonObject{{"deleted",QJsonObject{{"value","invalid"}}}};
+        v2Content["cPages"]=QJsonObject{{"pages",historical}};
+        check(nativeReadingPercent(progressMetadata,v2Content)<0);
+        v2Content["cPages"]=cPages;
         v2Content["pageCount"]=4; check(nativeReadingPercent(progressMetadata,v2Content)<0);
         v2Content["pageCount"]=3;v2Content["cPages"]=QJsonObject{};
         check(nativeReadingPercent(progressMetadata,v2Content)<0);

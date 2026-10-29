@@ -7,6 +7,7 @@ Rectangle {
     id: page
     color: "white"
     property int activeTab: 0
+    onActiveTabChanged: if (activeTab === 1) Downloader.refreshCloudStatistics()
     function duration(seconds) {
         if (typeof seconds !== "number" || seconds < 0) return "—"
         var n = Math.floor(seconds)
@@ -85,7 +86,7 @@ Rectangle {
         }
         RowLayout {
             Layout.fillWidth: true
-            visible: Downloader.loggedIn
+            visible: Downloader.loggedIn && page.activeTab === 0
             RoundedButton { visible: Downloader.loggedIn; objectName: "refreshButton"; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumHeight: 72; Layout.preferredHeight: 72; Layout.maximumHeight: 72; font.pixelSize: 26; text: "刷新"; enabled: !Downloader.busy; onClicked: { page.selectedIds = []; Downloader.refresh() } }
             RoundedButton {
                 visible: Downloader.loggedIn && page.multiSelect && page.activeTab === 0
@@ -321,7 +322,13 @@ Rectangle {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#555555"
-                text: "按所选时区分日；退出、休眠和静置5分钟暂停。更改时区只影响之后的记录。"
+                text: Downloader.statisticsStatus || "云端统计；请配置插件独立的统计 API"
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 16
+                Label { Layout.fillWidth: true; text: "账号云端累计 " + page.duration(Downloader.cloudReadingTotalSeconds); font.pixelSize: 26; font.bold: true }
+                RoundedButton { objectName: "statisticsApiButton"; text: Downloader.statisticsConfigured ? "统计 API 设置" : "配置统计 API"; font.pixelSize: 22; Layout.preferredHeight: 58; onClicked: statisticsApiDialog.open() }
+                RoundedButton { text: "刷新统计"; font.pixelSize: 22; Layout.preferredHeight: 58; onClicked: Downloader.refreshCloudStatistics() }
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 16
@@ -434,45 +441,40 @@ Rectangle {
                     visible: Downloader.readingDate !== ""
                     onClicked: Downloader.readingDate = ""
                 }
-                RoundedButton {
-                    objectName: "undatedReadingDates"; text: "历史"; font.pixelSize: 20
-                    Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
-                    visible: Downloader.readingDates.indexOf("undated") >= 0 && Downloader.readingDate !== "undated"
-                    onClicked: Downloader.readingDate = "undated"
-                }
+
             }
             Label {
                 Layout.fillWidth: true; font.pixelSize: 22; font.bold: true; color: "black"
-                text: (Downloader.readingDate === "" ? "累计" : "当日") + "阅读 " + page.duration(Downloader.readingDateTotalSeconds)
+                text: (Downloader.readingDate === "" ? "云端累计" : "云端当日") + "阅读 " + page.duration(Downloader.readingDateTotalSeconds)
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap
+                text: (Downloader.readingDate === "" ? "本机逐书累计" : "本机当天逐书记录") + " · 仅本机记录，不含其他设备"
+                font.pixelSize: 22; color: "#555555"
             }
             ListView {
                 objectName: "readingTimeList"
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8
                 model: Downloader.readingStats
                 delegate: Rectangle {
-                    width: ListView.view.width; height: 176; radius: 12
+                    width: ListView.view.width; height: 136; radius: 12
                     border.color: "#aaaaaa"; color: "white"
                     RowLayout {
                         anchors.fill: parent; anchors.margins: 20; spacing: 16
                         ColumnLayout {
                             Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 10
                             Label { text: modelData.title; textFormat: Text.PlainText; font.pixelSize: 24; Layout.fillWidth: true; elide: Text.ElideRight }
-                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: (Downloader.readingDate === "" ? "本地累计 " : (Downloader.readingDate === "undated" ? "无日期累计 " : "本地当日 ")) + page.duration(modelData.localSeconds) + "    云端累计 " + page.duration(modelData.cloudSeconds); font.pixelSize: 20; color: "#444444" }
-                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "当日待传 " + page.duration(modelData.uploadableSeconds) + (modelData.heldSeconds > 0 ? " · 历史保留 " + page.duration(modelData.heldSeconds) : "") + (modelData.timeUncertain ? " · 上传结果待核对，已暂停重传" : ""); font.pixelSize: 20; color: modelData.timeUncertain ? "black" : "#555555" }
-                        }
-                        RoundedButton {
-                            objectName: "uploadReadingTimeButton"
-                            text: "上传时长"; font.pixelSize: 24
-                            leftPadding: 20; rightPadding: 20; topPadding: 8; bottomPadding: 8
-                            visible: modelData.uploadableSeconds > 0 && !modelData.timeUncertain && modelData.canUploadDate
-                            enabled: !Downloader.busy
-                            Layout.minimumWidth: 144; Layout.preferredWidth: 144; Layout.maximumWidth: 144
-                            Layout.minimumHeight: 58; Layout.preferredHeight: 58; Layout.maximumHeight: 58
-                            onClicked: Downloader.uploadReadingTime(modelData.bookId)
+                            Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: (Downloader.readingDate === "" ? "本机累计 " : "本机当天 ") + page.duration(modelData.localSeconds); font.pixelSize: 22; color: "#444444" }
                         }
                     }
                 }
-                Label { anchors.centerIn: parent; visible: parent.count === 0; text: "暂无阅读记录"; font.pixelSize: 26; color: "#555555" }
+                Label {
+                    anchors.centerIn: parent; width: parent.width - 40
+                    visible: parent.count === 0
+                    text: Downloader.readingDate === "" ? "暂无本机阅读记录" : "当天暂无本机阅读记录"
+                    wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: 24; color: "#555555"
+                }
             }
         }
     }
@@ -483,6 +485,55 @@ Rectangle {
             anchors.centerIn: parent; spacing: 32
             RoundedButton { objectName: "shelfTabButton"; width: 240; height: 58; topPadding: 8; bottomPadding: 8; text: "书架"; font.pixelSize: 24; font.bold: page.activeTab === 0; checked: page.activeTab === 0; onClicked: page.activeTab = 0 }
             RoundedButton { objectName: "readingTimeTabButton"; width: 240; height: 58; topPadding: 8; bottomPadding: 8; text: "阅读时间统计"; font.pixelSize: 24; font.bold: page.activeTab === 1; checked: page.activeTab === 1; onClicked: { page.multiSelect = false; page.activeTab = 1 } }
+        }
+    }
+    Item {
+        id: statisticsApiDialog
+        objectName: "statisticsApiDialog"
+        anchors.fill: parent
+        z: 100
+        visible: false
+        readonly property string title: "独立统计 API 配置"
+        property bool revealKey: false
+        function open() { revealKey = false; statisticsApiInput.text = Downloader.statisticsApiKeyForEditing(); visible = true; statisticsApiInput.forceActiveFocus() }
+        function close() { statisticsApiInput.focus = false; Qt.inputMethod.hide(); statisticsApiInput.text = ""; revealKey = false; visible = false }
+        function reject() { close() }
+        function accept() { Downloader.setStatisticsApiKey(statisticsApiInput.text); close() }
+        Rectangle { anchors.fill: parent; color: "#80000000"; MouseArea { anchors.fill: parent } }
+        Rectangle {
+            id: apiPanel
+            objectName: "statisticsApiPanel"
+            width: Math.min(760, page.width - 64)
+            height: apiContent.implicitHeight + 80
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 32
+            color: "white"; radius: 18; border.color: "black"
+            MouseArea { anchors.fill: parent }
+            ColumnLayout {
+                id: apiContent
+                objectName: "statisticsApiContent"
+                x: 40; y: 40; width: parent.width - 80
+                spacing: 24
+                Label { Layout.fillWidth: true; text: statisticsApiDialog.title; font.pixelSize: 28 }
+                Label { Layout.fillWidth: true; text: "在微信读书官方统计 API 页面获取当前账号的 API Key：weread.qq.com/r/weread-skills。仅保存在本插件内。"; font.pixelSize: 22; wrapMode: Text.Wrap }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 16
+                TextField { id: statisticsApiInput; objectName: "statisticsApiInput"; Layout.fillWidth: true; Layout.preferredHeight: 88; font.pixelSize: 24; echoMode: statisticsApiDialog.revealKey ? TextInput.Normal : TextInput.Password; inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText; placeholderText: "输入 API Key"; background: Rectangle { radius: 12; color: "white"; border.color: "black" } }
+                    RoundedButton {
+                        objectName: "statisticsApiReveal"
+                        text: statisticsApiDialog.revealKey ? "隐藏" : "显示"
+                        Layout.preferredWidth: 112; Layout.preferredHeight: 88
+                        font.pixelSize: 24
+                        focusPolicy: Qt.NoFocus
+                        onClicked: { statisticsApiDialog.revealKey = !statisticsApiDialog.revealKey; statisticsApiInput.forceActiveFocus() }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; Layout.topMargin: 8; spacing: 20
+                    RoundedButton { objectName: "statisticsApiCancel"; text: "取消"; font.pixelSize: 26; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; onClicked: statisticsApiDialog.reject() }
+                    RoundedButton { objectName: "statisticsApiSave"; text: "保存"; font.pixelSize: 26; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 88; enabled: statisticsApiInput.text.trim().length >= 8; onClicked: statisticsApiDialog.accept() }
+                }
+            }
         }
     }
     Dialog {

@@ -31,6 +31,12 @@ for name, token in [('ContentGridItem.qml','wereadCurrentGridBadge'),('ContentLi
     if token not in current or 'entityId' not in current or 'nativeBookBadge' not in current:
         raise SystemExit('Current native library badge replay is incomplete')
 patch = (root / 'native/sidebar.qmd').read_bytes()
+slider = (root / 'build/replay/qml/device/view/documentview/DocumentPageSlider.qml').read_text()
+for token in ['wereadReadingSessionFooter', 'Downloader.readingSessionStatus', '? 104 : 0']:
+    if token not in slider:
+        raise SystemExit('Reading session footer replay is incomplete')
+if 'Downloader.setReadingWifiConnected(readingWifiConnected)' not in main or 'LinkProvider.isOnline' not in main:
+    raise SystemExit('Native Wi-Fi signal binding is missing')
 record = root / 'build/replayed-patch.sha256'
 if not record.exists() or record.read_text().strip() != hashlib.sha256(patch).hexdigest():
     raise SystemExit('Replay this exact patch again before installation')

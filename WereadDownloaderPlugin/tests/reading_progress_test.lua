@@ -118,8 +118,24 @@ os.remove(sourceMapPath)
 local missingOk,missingErr=pcall(function()M:sync(id)end)
 assert(not missingOk and missingErr=='progress_source_map_missing' and chapterFetches==fetchesBeforeSync)
 assert(require('progress_source_store').save(account,id,'42',html))
-saved.updateTime=30
-local ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='cloud_progress_changed' and writes==1)
+-- Concurrent cloud movement wins, while current live-session time still sends.
+local originalSaved=J.decode(J.encode(saved));local beforeConflictEnters=enters
+saved.updateTime=30;saved.chapterOffset=0;saved.summary=middle:sub(1,18);saved.progress=50
+local expectedCloud=J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})
+local liveToken='00000000-0000-4000-8000-000000000001';local day=os.date('%Y-%m-%d')
+json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=20,days={[day]=20}}}})
+json(account..'/reading-session-v1.json',{version=1,books={[id]={uuid=uuid,token=liveToken,enteredAt=os.time()-20,startTotal=0,startDays={}}}})
+local oldGetenv=os.getenv;os.getenv=function(key)if key=='WEREAD_READING_SESSION' then return liveToken end;return oldGetenv(key)end
+result=M:sync(id);os.getenv=oldGetenv
+assert(result.state=='progress_synced' and result.cloudPositionPreserved and result.timeUploadedSeconds==20)
+assert(writes==2 and timeWrites==1 and enters==beforeConflictEnters)
+assert(lastPayload.elapsed_seconds==20 and lastPayload.chapter_offset==0 and lastPayload.summary==middle:sub(1,18))
+assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})==expectedCloud)
+assert(J.decode(read(account..'/uploaded-reading-time-v1.json')).books[id].confirmedSeconds==20)
+-- Restore independent fixtures so subsequent rejection/layout scenarios retain their counters.
+for _,name in ipairs({'local-reading-time-v1.json','uploaded-reading-time-v1.json','reading-session-v1.json'})do os.remove(account..'/'..name)end
+saved=originalSaved;writes=1;timeWrites=0
+local ok,err
 -- Refresh establishes the new baseline, then a business rejection never reports success.
 M:refresh({{bookId=id}},function()end);rejected=true
 ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='progress_sync_unconfirmed' and writes==2)
@@ -174,15 +190,17 @@ json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a
 ok,err=pcall(function()M:sync(id)end);assert(not ok and err=='progress_layout_unsupported' and writes==2)
 json(base..'.content',{fileType='epub',pageCount=2,originalPageCount=2,pages={'a','b'},redirectionPageMap={0,1}})
 M:refresh({{bookId=id}},function()end);rejectEnter=true
+local getenv=os.getenv;local entersBeforeExit=enters
+os.getenv=function(name)if name=='WEREAD_READING_SESSION' then return '00000000-0000-0000-0000-000000000000' end;return getenv(name)end
 result=M:sync(id);assert(result.state=='progress_synced' and not result.recentMarked and writes==3)
+assert(enters==entersBeforeExit,'native exit must not send a second enter-read')
+os.getenv=getenv
 rejectEnter=false
 json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=5,days={[os.date('%Y-%m-%d')]=5}}}})
 M:refresh({{bookId=id}},function()end)
 local readsBeforeCombined=cloudReads
-result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==1 and lastPayload.elapsed_seconds==5,
- 'combined exit report state='..tostring(result.state)..' time='..tostring(result.timeUploaded)..' uploaded='..tostring(result.timeUploadedSeconds)
- ..' remaining='..tostring(result.timeRemainingSeconds)..' deferred='..tostring(result.timeDeferredSeconds)..' writes='..writes..' timeWrites='..timeWrites..' elapsed='..tostring(lastPayload and lastPayload.elapsed_seconds))
-assert(J.decode(read(account..'/uploaded-reading-time-v1.json')).books[id].confirmedSeconds==5)
+result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==0 and lastPayload.elapsed_seconds==0,
+ 'manual progress must not upload accumulated reading time')
 assert(cloudReads-readsBeforeCombined==2,'combined sync should perform one preflight cloud read and one final verification')
 -- Native cPages v2 must retain exact sync/restore without rewriting CRDT/annotations.
 local function cell(v)return {timestamp='1:1',value=v}end
@@ -201,8 +219,29 @@ assert(read(base..'.content')==preservedContent and read(base..'.metadata')==pre
 result=M:restore(id)
 assert(result.state=='restore_position' and result.page==1 and writes==v2Writes+1)
 assert(read(base..'.content')==preservedContent and read(base..'.metadata')==preservedMetadata)
+-- Nonidentity visible mapping with a tombstone and two occurrences of PDF 1.
+local first,second=v2.cPages.pages[1],v2.cPages.pages[2]
+local repeated={id='00000000-0000-4000-8000-000000000003',idx=cell('b'),redir=cell(1)}
+local deleted={id='00000000-0000-4000-8000-000000000004',deleted=cell(true)}
+v2.pageCount=3;v2.cPages.pages={repeated,deleted,first,second}
+json(base..'.metadata',{lastOpenedPage=2,parent='',type='DocumentType'})
+json(base..'.content',v2)
+preservedContent=read(base..'.content');preservedMetadata=read(base..'.metadata')
+local historyWrites=writes
+assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic')
+result=M:sync(id)
+assert(result.state=='progress_synced' and currentPage==1 and writes==historyWrites+1
+ and lastPayload.chapter_offset==position.codepoints)
+result=M:restore(id)
+assert(result.state=='restore_position' and result.page==2 and result.pageCount==3 and result.localProgress==100)
+assert(read(base..'.content')==preservedContent and read(base..'.metadata')==preservedMetadata)
+-- A PDF page omitted from native layout cannot be restored to a guessed page.
+first.redir.value=1;json(base..'.content',v2)
+local old=saved;saved={chapterUid=42,chapterIdx=0,chapterOffset=0,progress=0,summary='',updateTime=10}
+ok,err=pcall(function()M:restore(id)end);assert(not ok and err=='progress_not_located')
+saved=old;first.redir.value=0
 local rejectedWrites=writes
-v2.cPages.pages[2].redir.value=0;json(base..'.content',v2)
+second.redir.value=2;json(base..'.content',v2)
 ok,err=pcall(function()M:sync(id)end)
 assert(not ok and err=='progress_layout_unsupported' and writes==rejectedWrites)
 ok,err=pcall(function()M:restore(id)end)

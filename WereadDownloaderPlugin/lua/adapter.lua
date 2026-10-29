@@ -117,6 +117,7 @@ end
 local authenticationExpired = false
 local function execute()
     local operation = arg[1]
+    if operation == "upload-time" then emit({state="error",code="manual_time_upload_disabled"});return end
     if operation == "login" then
         -- C++ launcher clears every login-debug/logging environment variable.
         dofile(app .. "/tools/login-qr.lua")
@@ -124,6 +125,11 @@ local function execute()
     end
     if operation == "logout" then
         local settings = Config:new()
+        local vid=settings:get("cookies",{}).wr_vid
+        if type(vid)=="string" and vid~="" then
+            local oldScope=Sha256.hex("weread-downloader-account-v1\31"..vid)
+            os.remove(root.."/accounts/"..oldScope.."/statistics-api-v1.json")
+        end
         settings:set("cookies", {}); settings:set("wr_ticket", ""); settings:set("wr_wrpa", "")
         settings:set("account_name", ""); settings:set("auth_renewed_at", 0); settings:set("logged_out", true); settings:flush()
         emit({state = "logged_out"}); return
@@ -139,10 +145,14 @@ local function execute()
         return
     end
     local settings, scope, account_root = context()
-    if arg[3] then assert((operation == "sync-progress" or operation == "upload-time") and scope == arg[3], "account_changed") end
+    if arg[3] then assert((operation == "sync-progress" or operation == "close-reading") and scope == arg[3], "account_changed") end
+    if operation=="cloud-time" then
+        local ok,result=pcall(function()return require("cloud_reading_stats").fetch(settings,scope,account_root,tonumber(os.getenv("WEREAD_STATISTICS_BASE_TIME")) or 0)end)
+        emit(ok and result or {state="statistics_error",code=result=="statistics_auth_failed" and "statistics_auth_failed" or "statistics_unavailable",accountScope=scope});return
+    end
     local ShelfCache = require("shelf_cache")
     local shelf = ShelfCache:new(account_root)
-    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "upload-time" then
+    if operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "begin-reading" or operation == "close-reading" then
         local progress = require("reading_progress").new(settings, scope, account_root)
         local ok, result = pcall(function()
             if operation == "reading-progress" then
@@ -151,7 +161,8 @@ local function execute()
             end
             if operation == "prepare-restore" then return progress:prepareRestore(arg[2]) end
             if operation == "mark-recent" then return progress:markRecent(arg[2]) end
-            if operation == "upload-time" then return progress:uploadTime(arg[2]) end
+            if operation == "begin-reading" then return progress:beginReading(arg[2],os.getenv("WEREAD_READING_SESSION")) end
+            if operation == "close-reading" then return progress:closeReading(arg[2],os.getenv("WEREAD_READING_SESSION")) end
             if operation == "restore-progress" then return progress:restore(arg[2]) end
             if operation == "restore-complete" then return progress:restored(arg[2]) end
             return progress:sync(arg[2])

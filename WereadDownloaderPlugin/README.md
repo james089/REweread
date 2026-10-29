@@ -44,10 +44,54 @@ bash WereadDownloaderPlugin/scripts/build-sdk.sh
 ## 原生分页格式兼容
 
 上传和下载进度同时支持旧式页码映射，以及 `formatVersion: 2` / `cPages`。
-对于 cPages，原始页数、唯一页面 ID、有序 CRDT 索引和每页重定向必须证明
-页面与 PDF 一一对应。只读取这些结构，不改写页面记录或批注；重排、增删或
-格式异常仍会在云端写入前停止。本地百分比显示也支持读取 cPages。
+对于 cPages，过滤已删除的历史记录、按 CRDT 索引排列有效页，再通过 redir
+转换 PDF 页码；支持重复页和已移除的原始页。索引相同的记录只有都指向同一
+PDF 页才允许，冲突/异常结构仍拒绝。不会改写原生页面或批注。
 
 `tests/native_page_layout_test.lua` 覆盖两种结构及异常映射；
 `tests/reading_progress_test.lua` 使用合成 cPages 文件验证精确上传、下载进度，
 并确认原生元数据逐字节保持不变。
+
+Native cPages progress mapping filters deleted CRDT records and orders active
+pages by `idx`, then uses `redir` to address the original PDF. Historical records,
+repeated pages, and omitted source pages do not require deleting or redownloading
+books. Inverse restore chooses the nearest active occurrence of a matched PDF
+page; an omitted target or a current blank page cannot yield a guessed position.
+Tied `idx` values are accepted only when they all point to the same PDF page.
+Native book/annotation files are never rewritten by this mapping.
+
+Fixed-offset time zones are converted from Qt ISO signs to POSIX `TZ` signs
+before launching Lua, so UI and upload workers agree on the current date.
+Manual duration upload is disabled in both UI and worker/adapter entry points.
+Manual progress sync sends no accumulated duration. Only native reader close
+may submit the current live session, once: opening the book performs enter-read;
+closing uses locally observed active seconds since that acknowledged entry,
+bounded by actual elapsed time. Old backlogs are never included. Missing entry,
+a consumed session, or an uncertain receipt will not replay time. Entry failures
+retry after 5, 15, 30, then 60 seconds while the same book remains actively read;
+closing/changing books cancels retries, and sleep/lock/background pause them.
+Authentication/source/storage errors stop retries until reopening. An acknowledged
+entry is persisted before baseline refresh, so retrying a failed refresh never
+re-enters or resets the duration start. Time before acknowledged entry is not
+replayed as a new live session.
+Local counters and old receipt journals remain intact. If cloud position changes
+during reading, exit sync preserves the newly fetched cloud location and reports
+only the current eligible session duration at those coordinates. It verifies the
+cloud location after the report and does not issue another enter-read on exit.
+
+## 云端阅读统计
+
+统计页上方显示账号云端总时长、每日统计及周图。下方独立标注“本机逐书记录”，
+按所选日期显示已导入书籍在本机的阅读秒数，“全部日期”显示本机累计；仅列有
+正时长的书籍，按时长降序排列，不含其他设备阅读记录。云端与本机统计分别标注，
+不互相替代。没有待传/历史保留或手动上传时长按钮。
+
+在统计页“配置统计 API”中输入当前微信读书账号的官方 API Key，可在
+https://weread.qq.com/r/weread-skills 获取。配置独立保存在插件当前账号目录的
+`statistics-api-v1.json`（0600），不读取独立 App 的配置；设置框回填已保存值，默认隐藏并可切换显示。显式
+退出登录时移除该统计凭据。云端数据来自 `/readdata/detail` 的 overall 总量与
+monthly 每日桶，不从限长的书籍排行推算账号总量。日期桶按所选时区显示，切换
+时区后重新获取；缓存和凭据均按账号隔离。统计 API 未配置或出错时保留已有云端
+缓存并明确提示；不替代独立扫码登录。
+
+阅读入场请求仅在系统报告 Wi-Fi 联网时执行；未联网暂停，联网状态恢复后继续退避重试，不通过反复请求微信读书探测网络。休眠、锁定和关闭书籍仍会暂停或取消重试。
