@@ -30,6 +30,13 @@ for name, token in [('ContentGridItem.qml','wereadCurrentGridBadge'),('ContentLi
     current = (root / 'build/replay/qml/device/view/syncserviceexplorer' / name).read_text()
     if token not in current or 'entityId' not in current or 'nativeBookBadge' not in current:
         raise SystemExit('Current native library badge replay is incomplete')
+for name in ['ContentGridItem.qml','ContentListItem.qml']:
+    current = (root / 'build/replay/qml/device/view/syncserviceexplorer' / name).read_text()
+    for token in ['NativeBookCover.qml', 'nativeBookCover', 'passwordProtected']:
+        if token not in current:
+            raise SystemExit('Original native cover replay is incomplete')
+if 'NativeBookCover.qml' not in grid or 'lockedByPassword' not in grid:
+    raise SystemExit('Legacy original native cover replay is incomplete')
 patch = (root / 'native/sidebar.qmd').read_bytes()
 slider = (root / 'build/replay/qml/device/view/documentview/DocumentPageSlider.qml').read_text()
 for token in ['wereadReadingSessionFooter', 'Downloader.readingSessionStatus', '? 104 : 0']:

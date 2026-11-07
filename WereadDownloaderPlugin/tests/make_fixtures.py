@@ -38,3 +38,27 @@ damaged[damaged.index(b"application/epub+zip")] ^= 1
 encrypted = bytearray(make("encrypted").read_bytes())
 struct.pack_into("<H", encrypted, 6, 1)
 (root / "encrypted.epub").write_bytes(encrypted)
+
+def rewrite_fixture(name, chapter, *, extra_items='', extra_files=None, extra_spine=''):
+    with zipfile.ZipFile(root / 'valid.epub') as source:
+        files = {n: source.read(n) for n in source.namelist()}
+    files['OEBPS/chapter.xhtml'] = chapter.encode()
+    opf = files['OEBPS/content.opf'].decode().replace('</manifest>', extra_items+'</manifest>').replace('</spine>',extra_spine+'</spine>')
+    files['OEBPS/content.opf'] = opf.encode()
+    files.update(extra_files or {})
+    with zipfile.ZipFile(root / (name+'.epub'),'w') as target:
+        for path, data in files.items():
+            target.writestr(path,data,compress_type=zipfile.ZIP_STORED if path=='mimetype' else zipfile.ZIP_DEFLATED)
+
+xhtml=lambda body: '<html xmlns="http://www.w3.org/1999/xhtml"><body>'+body+'</body></html>'
+rewrite_fixture('duplicate-attributes',xhtml('<p>完整合成正文</p><img data-w="1" data-w="2"/>'))
+rewrite_fixture('malformed-chapter',xhtml('<p>合成正文</div>'))
+rewrite_fixture('missing-inline-image',xhtml('<img src="images/missing.png"/>'))
+rewrite_fixture('missing-inline-style',xhtml('<link rel="stylesheet" href="missing.css"/>'))
+rewrite_fixture('missing-css-asset',xhtml('<p>合成正文</p>'),extra_items='<item id="style" href="style.css" media-type="text/css"/>',extra_files={'OEBPS/style.css':b'p{background:url("images/missing.png");}'})
+rewrite_fixture('duplicate-spine',xhtml('<p>合成正文</p>'),extra_spine='<itemref idref="chapter"/>')
+rewrite_fixture('valid-doctype','<!DOCTYPE html>'+xhtml('<p title="a &gt; b">合成正文</p>'))
+rewrite_fixture('valid-links',xhtml('<a href="#part">链接</a><a href="https://example.test/">外部链接</a><p id="part">合成正文</p>'))
+
+rewrite_fixture('missing-inline-css-image',xhtml('<p style="background:url(missing.png)">合成正文</p>'))
+rewrite_fixture('missing-style-element-image',xhtml('<style>p{background:url(missing.png)}</style><p>合成正文</p>'))

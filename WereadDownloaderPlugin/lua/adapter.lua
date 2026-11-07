@@ -153,8 +153,8 @@ local function execute()
     local shelf = ShelfCache:new(account_root)
     if operation == "upload-time" or operation == "reading-progress" or operation == "sync-progress" or operation == "restore-progress" or operation == "restore-complete" or operation == "prepare-restore" or operation == "mark-recent" or operation == "begin-reading" or operation == "close-reading" or operation == "report-reading" or operation == "preview-native-restore" or operation == "apply-native-restore" then
         local progress = require("reading_progress").new(settings, scope, account_root)
-        progress.onTimeChunk=function(done,total,remaining)
-            emit({state="time_upload_progress",accountScope=scope,bookId=arg[2],uploadedSeconds=done,totalSeconds=total,remainingSeconds=remaining})
+        progress.onTimeChunk=function(done,total,remaining,skipped)
+            emit({state="time_upload_progress",accountScope=scope,bookId=arg[2],uploadedSeconds=done,totalSeconds=total,remainingSeconds=remaining,skippedSeconds=skipped or 0})
         end
         local ok, result = pcall(function()
             if operation == "reading-progress" then
@@ -302,6 +302,9 @@ if not ok then
         if authSettings then authSettings:set("logged_out", true); authSettings:flush() end
         emit({state = "login_required"}); return
     end
+    local chapter=tostring(failure):match("epub_invalid_xhtml:(%d+)")
+    if chapter then emit({state="error",code="epub_invalid_xhtml",chapterIndex=tonumber(chapter)});return end
+    if tostring(failure):find("epub_invalid_chapter_list",1,true)then emit({state="error",code="epub_invalid_chapter_list"});return end
     emit({state = "error", code = "operation_failed"})
     os.exit(1)
 end

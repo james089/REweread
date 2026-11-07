@@ -8,6 +8,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QUrl>
+#include <QXmlStreamReader>
 #include <QtEndian>
 #include <algorithm>
 #include <stdexcept>
@@ -60,7 +61,7 @@ QByteArray resolve(const QByteArray &base, const QString &href) {
 bool Epub::validBookId(const QString &id) {
     return QRegularExpression(QStringLiteral("\\A[A-Za-z0-9_-]{1,128}\\z")).match(id).hasMatch();
 }
-Epub::Epub(const QString &path) {
+Epub::Epub(const QString &path, bool strictContent) {
     QFileInfo info(path);
     need(info.isFile() && !info.isSymLink() && info.size() > 0 && info.size() <= limit, "invalid EPUB file");
     QFile f(path); need(f.open(QIODevice::ReadOnly), "cannot open EPUB");
@@ -113,7 +114,7 @@ Epub::Epub(const QString &path) {
         && regions.first().first == 0, "EPUB mimetype must be first and stored");
     // Verify CRCs for every entry, not just the XML metadata being edited.
     for (const auto &entry : m_entries) unpack(entry);
-    validate();
+    validate(strictContent);
 }
 QByteArray Epub::unpack(const Entry &e) const {
     QByteArray result;
@@ -148,28 +149,85 @@ QByteArray Epub::packagePath() const {
     need(safeName(path), "invalid EPUB package path");
     return path;
 }
-void Epub::validate() const {
+void Epub::validate(bool strictContent) const {
     need(read("mimetype") == "application/epub+zip", "invalid EPUB mimetype");
     const auto path = packagePath();
     const auto base = path.left(path.lastIndexOf('/') + 1);
     auto doc = xml(read(path));
     need(doc.documentElement().localName() == "package" && doc.documentElement().namespaceURI() == opf, "invalid EPUB package");
     QMap<QString, QString> items;
+    QMap<QString,QByteArray> paths;
+    QMap<QByteArray,QString> resources;
     auto manifest = doc.elementsByTagNameNS(opf, QStringLiteral("item"));
     for (int i = 0; i < manifest.size(); ++i) {
         auto item = manifest.at(i).toElement();
-        auto id = item.attribute(QStringLiteral("id"));
-        need(!id.isEmpty() && !items.contains(id), "invalid manifest id");
-        const auto href = item.attribute(QStringLiteral("href"));
-        need(!href.isEmpty(), "empty manifest href");
-        read(resolve(base, href));
-        items.insert(id, item.attribute(QStringLiteral("media-type")));
+        const auto id=item.attribute("id"),href=item.attribute("href"),mime=item.attribute("media-type");
+        need(!id.isEmpty() && !items.contains(id),"epub_invalid_spine");
+        const auto name=resolve(base,href);
+        need(!href.isEmpty() && (!strictContent || !resources.contains(name)),"epub_invalid_spine");
+        need(!strictContent || !mime.isEmpty(),"epub_missing_resource");
+        try { read(name); }catch(const std::exception &){throw std::runtime_error("epub_missing_resource");}
+        items[id]=mime;paths[id]=name;resources[name]=mime;
     }
-    auto spine = doc.elementsByTagNameNS(opf, QStringLiteral("itemref"));
-    need(!spine.isEmpty(), "empty EPUB spine");
-    for (int i = 0; i < spine.size(); ++i) {
-        auto id = spine.at(i).toElement().attribute(QStringLiteral("idref"));
-        need(items.value(id) == QStringLiteral("application/xhtml+xml"), "invalid EPUB spine resource");
+    QSet<QString> spineIds;QSet<QByteArray> spinePaths;
+    const auto spine=doc.elementsByTagNameNS(opf,"itemref");
+    need(!spine.isEmpty(),"epub_invalid_spine");
+    for(int i=0;i<spine.size();++i){
+        const auto id=spine.at(i).toElement().attribute("idref");
+        need(items.value(id)=="application/xhtml+xml" && (!strictContent || !spineIds.contains(id)),"epub_invalid_spine");
+        spineIds.insert(id);spinePaths.insert(paths.value(id));
+    }
+    // Reading source identity of an existing book must not parse every chapter
+    // or reject a historical package; deep checks are a new-import boundary.
+    if(!strictContent)return;
+    const auto checkReference=[&](const QByteArray &document,const QString &ref,bool navigation){
+        const auto value=ref.trimmed();need(!value.isEmpty(),"epub_missing_resource");
+        const QUrl url(value);
+        if(!url.isRelative()){
+            const auto scheme=url.scheme().toLower();
+            if(navigation && (scheme=="https" || scheme=="http" || scheme=="mailto" || scheme=="tel"))return QByteArray();
+            need(scheme=="data","epub_missing_resource");return QByteArray();
+        }
+        if(url.path().isEmpty())return document;
+        QByteArray target;
+        try { target=resolve(document.left(document.lastIndexOf('/')+1),value); }
+        catch(const std::exception &){throw std::runtime_error("epub_missing_resource");}
+        need(resources.contains(target),"epub_missing_resource");return target;
+    };
+    const auto checkStyle=[&](const QByteArray &document,const QString &css){
+        if(!css.contains("url",Qt::CaseInsensitive) && !css.contains("@import",Qt::CaseInsensitive))return;
+        const QRegularExpression urls(R"css(url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s)]+))\s*\))css",QRegularExpression::CaseInsensitiveOption);
+        auto matches=urls.globalMatch(css);
+        while(matches.hasNext()){const auto m=matches.next();const auto ref=!m.captured(1).isNull()?m.captured(1):!m.captured(2).isNull()?m.captured(2):m.captured(3);checkReference(document,ref,false);}
+        const QRegularExpression imports(R"css(@import\s+["']([^"']+)["'])css",QRegularExpression::CaseInsensitiveOption);
+        auto directives=imports.globalMatch(css);while(directives.hasNext())checkReference(document,directives.next().captured(1),false);
+    };
+    for(auto it=resources.cbegin();it!=resources.cend();++it){
+        if(it.value()!="text/css" && it.value()!="application/xhtml+xml" && it.value()!="image/svg+xml" && it.value()!="application/x-dtbncx+xml")continue;
+        const auto bytes=read(it.key());
+        if(it.value()=="text/css"){checkStyle(it.key(),QString::fromUtf8(bytes));continue;}
+        if(it.value()!="application/xhtml+xml" && it.value()!="image/svg+xml" && it.value()!="application/x-dtbncx+xml")continue;
+        QXmlStreamReader reader(bytes);bool rootSeen=false,bodySeen=false;
+        while(!reader.atEnd()){
+            reader.readNext();
+            if(reader.isDTD())need(reader.entityDeclarations().isEmpty(),"epub_invalid_xhtml");
+            if(!reader.isStartElement())continue;
+            if(!rootSeen){
+                rootSeen=true;
+                if(it.value()=="application/xhtml+xml")need(reader.name()==QStringLiteral("html") && reader.namespaceUri()==QStringLiteral("http://www.w3.org/1999/xhtml"),"epub_invalid_xhtml");
+            }
+            if(reader.name()==QStringLiteral("body"))bodySeen=true;
+            for(const auto &attribute:reader.attributes()){
+                const auto name=attribute.name();
+                if(name==QStringLiteral("style"))checkStyle(it.key(),attribute.value().toString());
+                if(name!=QStringLiteral("src") && name!=QStringLiteral("href") && name!=QStringLiteral("poster") && !(name==QStringLiteral("data") && reader.name()==QStringLiteral("object")))continue;
+                const bool navigation=reader.name()==QStringLiteral("a");
+                const auto target=checkReference(it.key(),attribute.value().toString(),navigation);
+                if(it.value()=="application/x-dtbncx+xml" && reader.name()==QStringLiteral("content") && !target.isEmpty())need(spinePaths.contains(target),"epub_invalid_spine");
+            }
+            if(reader.name()==QStringLiteral("style"))checkStyle(it.key(),reader.readElementText());
+        }
+        need(rootSeen && !reader.hasError() && (it.value()!="application/xhtml+xml" || bodySeen),"epub_invalid_xhtml");
     }
 }
 QString Epub::sourceBookId() const {

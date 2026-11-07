@@ -33,7 +33,9 @@ now=now+60;assert(T.begin(p,id,work,uuid,token).state=='reading_session_started'
 r=T.uploadCombined(p,id,work,uuid,pos(report(2)),send);assert(r.uploaded==60 and posts==2)
 -- With no outstanding local time, exit sends only position.
 write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=120,days={}}}})
+local actualBackfill=T.upload;T.upload=function()error('position sync must not call backfill')end
 r=T.uploadCombined(p,id,work,uuid,pos(nil),send);assert(r.uploaded==0 and posts==2 and positionOnly==1)
+T.upload=actualBackfill
 write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=7200,days={}}}})
 -- Definite rejection refreshes context/entry and retries the interval.
 now=now+60;replies={{errCode=1},{succ=1}};local prior=entries
@@ -42,19 +44,18 @@ r=T.uploadCombined(p,id,work,uuid,pos(report(3)),send);assert(r.uploaded==60 and
 now=now+60;replies={{errCode=1},{errCode=1},{succ=1}}
 r=T.uploadCombined(p,id,work,uuid,pos(report(4)),send);assert(r.uploaded==60 and posts==7 and renewals==1)
 -- Transport/unknown receipt is not replayed; next interval is a new report.
-now=now+60;lost=true;ok,err=pcall(T.uploadCombined,p,id,work,uuid,pos(report(5)),send)
-assert(not ok and err=='time_upload_uncertain' and posts==8)
+now=now+60;lost=true;r=T.uploadCombined(p,id,work,uuid,pos(report(5)),send)
+assert(r.uploaded==0 and r.skippedSeconds==60 and posts==8)
 lost=false;ok,err=pcall(T.uploadCombined,p,id,work,uuid,pos(report(5)),send);assert(not ok and err=='time_report_duplicate' and posts==8)
-now=now+60;ok,err=pcall(T.uploadCombined,p,id,work,uuid,pos(report(6)),send);assert(not ok and err=='time_upload_uncertain' and posts==8)
--- Synthetic operator reconciliation only; production never clears uncertainty.
-local ledger=read('uploaded-reading-time-v1.json');ledger.books[id].pending=nil;write('uploaded-reading-time-v1.json',ledger)
+now=now+60;r=T.uploadCombined(p,id,work,uuid,pos(report(6)),send);assert(r.uploaded==60 and posts==9)
+assert(read('uploaded-reading-time-v1.json').books[id].skippedSeconds==60)
 now=now+60;replies={{}};local count=posts;prior=entries
-ok,err=pcall(T.uploadCombined,p,id,work,uuid,pos(report(7)),send);assert(not ok and err=='time_upload_uncertain' and posts==count+1 and entries==prior)
+r=T.uploadCombined(p,id,work,uuid,pos(report(7)),send);assert(r.skippedSeconds==60 and posts==count+1 and entries==prior)
 -- Stale context is refreshed after 15 minutes, preserving interval intent.
 now=now+901;prior=entries;T.begin(p,id,work,uuid,token);assert(entries==prior+1)
 local session=read('reading-session-v1.json').books[id];assert(session.lastReportId==report(7))
 count=posts;ok,err=pcall(T.uploadCombined,p,id,work,uuid,pos(report(5)),send)
-assert(not ok and err=='time_report_duplicate' and posts==count and session.reportIntents[report(5)]=='pending')
+assert(not ok and err=='time_report_duplicate' and posts==count and session.reportIntents[report(5)]=='skipped')
 -- More than two hours drain in one operation, beyond 60 reports/90 seconds.
 os.remove(work..'/uploaded-reading-time-v1.json')
 write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=7265,days={['1970-01-01']=7200,['1970-01-02']=65}}}})
@@ -70,8 +71,16 @@ local ledger=read('uploaded-reading-time-v1.json').books[id];assert(ledger.confi
 write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=7325,days={['1970-01-01']=7200,['1970-01-02']=125}}}})
 ok,err=pcall(T.upload,p,id,work,uuid,function()return {succ=0}end);assert(not ok and err=='time_upload_rejected')
 assert(not read('uploaded-reading-time-v1.json').books[id].pending)
-ok,err=pcall(T.upload,p,id,work,uuid,function()error('disconnect')end);assert(not ok and err=='time_upload_uncertain')
-local before=calls;ok,err=pcall(T.upload,p,id,work,uuid,backfill);assert(not ok and err=='time_upload_uncertain' and calls==before)
+r=T.upload(p,id,work,uuid,function()error('disconnect')end);assert(r.skippedSeconds==60 and r.uploaded==0)
+local before=calls;r=T.upload(p,id,work,uuid,backfill);assert(r.uploaded==0 and calls==before)
+assert(read('uploaded-reading-time-v1.json').books[id].skippedSeconds==60)
+write('local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=180,days={['1970-01-01']=180}}}})
+write('uploaded-reading-time-v1.json',{version=1,books={[id]={confirmedSeconds=60,confirmedDays={['1970-01-01']=60},pending={seconds=60,localThrough=120,days={['1970-01-01']=60}}}}})
+assert(T.recoverPending(work,id,uuid)==60)
+local migrated=read('uploaded-reading-time-v1.json').books[id]
+assert(migrated.confirmedSeconds==60 and migrated.skippedSeconds==60 and not migrated.pending)
+assert(T.recoverPending(work,id,uuid)==60,'migration must be idempotent')
+r=T.upload(p,id,work,uuid,backfill);assert(r.uploaded==60 and r.remaining==0)
 os.time=realTime
 -- Exercise the production nanosleep path once, with synthetic POSTs only.
 p.timeUploadSleep=nil;p.onTimeChunk=nil;os.remove(work..'/uploaded-reading-time-v1.json')

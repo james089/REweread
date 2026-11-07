@@ -69,3 +69,11 @@ print('native layout: tombstones, active ordering, duplicate/omitted/blank PDF p
 local tied=clone(v2);tied.cPages.pages[3].idx.value='b';tied.cPages.pages[3].redir.value=1
 map=assert(L.resolve(tied));assert(L.originalPage(map,2)==1)
 tied.cPages.pages[3].redir.value=2;assert(L.resolve(tied)==nil)
+
+-- Added native notebook pages legitimately omit the PDF redirection field.
+local added=clone(v2);added.pageCount=4
+local extra=clone(added.cPages.pages[3]);extra.id='00000000-0000-4000-8000-000000000004';extra.idx=cell('d');extra.redir=nil
+added.cPages.pages[4]=extra
+map=assert(L.resolve(added));assert(map.pageCount==4 and map.originalCount==3)
+assert(L.originalPage(map,3)==nil and L.originalPage(map,2)==2)
+extra.redir=cell('bad');assert(L.resolve(added)==nil)

@@ -2,6 +2,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QDir>
 #include <QCryptographicHash>
 #include <QGuiApplication>
@@ -128,7 +129,26 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         controller = new DownloaderController(image, &engine, program, coverRoot);
         phase="imported-only offline reading clock";
         {QFile registry(coverRoot+"/imports.json");check(registry.open(QIODevice::WriteOnly));registry.write(R"({"books":{"synthetic-2":{"state":"imported","accountScope":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","uuid":"12345678-1234-1234-1234-123456789abc"}}})");}
+        const auto nativeCover=coverDirectory+"/synthetic-2-"+QString::fromLatin1(QCryptographicHash::hash(coverUrl.toUtf8(),QCryptographicHash::Sha256).toHex())+".png";
+        check(QFile::copy(cachedCover,nativeCover));
+        {QFile shelf(coverRoot+"/accounts/"+QString(64,'a')+"/shelf.json");check(shelf.open(QIODevice::WriteOnly));shelf.write(QJsonDocument(QJsonObject{{"books",QJsonArray{QJsonObject{{"bookId","synthetic-2"},{"cover",coverUrl}}}}}).toJson());}
         controller->readingStarted("{12345678-1234-1234-1234-123456789ABC}");
+        check(controller->nativeBookCover("12345678-1234-1234-1234-123456789abc")==QUrl::fromLocalFile(nativeCover).toString());
+        check(controller->nativeBookCover("unknown").isEmpty());
+        {
+            QQmlComponent coverComponent(&engine,QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[1])).dir().filePath("NativeBookCover.qml")));
+            std::unique_ptr<QObject> coverObject(coverComponent.create());check(bool(coverObject));
+            auto *coverItem=qobject_cast<QQuickItem *>(coverObject.get());check(coverItem);
+            QQuickWindow cropWindow;cropWindow.setColor(Qt::white);cropWindow.resize(80,80);
+            coverItem->setParentItem(cropWindow.contentItem());coverItem->setWidth(80);coverItem->setHeight(80);
+            coverItem->setProperty("source",QUrl::fromLocalFile(nativeCover));cropWindow.show();
+            until([&]{return coverItem->property("status").toInt()==1;});
+            check(coverItem->property("fillMode").toInt()==2 && coverItem->clip());
+            QTest::qWait(100);const auto crop=cropWindow.grabWindow();check(!crop.isNull());
+            check(crop.pixelColor(5,5)==Qt::black && crop.pixelColor(crop.width()-6,crop.height()-6)==Qt::black);
+            coverItem->setParentItem(nullptr);
+        }
+
         QTest::qWait(1100);controller->setReadingApplicationActive(false);controller->readingStopped();
         {QFile ledger(coverRoot+"/accounts/"+QString(64,'a')+"/local-reading-time-v1.json");check(ledger.open(QIODevice::ReadOnly));
          const auto data=QJsonDocument::fromJson(ledger.readAll()).object().value("books").toObject();check(data.size()==1 && data.value("synthetic-2").toObject().value("seconds").toInt()>=1);}
@@ -324,7 +344,8 @@ ColumnLayout {
         check(controller->readingStats()[0].toMap().value("pendingSeconds").toInt()==0);
         controller->uploadReadingTime("synthetic-2");check(callCount("upload-time")==1);
         writeReceipt(QJsonObject{{"confirmedSeconds",125},{"pending",QJsonObject{{"seconds",25}}}});
-        check(controller->readingStats()[0].toMap().value("timeUploadUncertain").toBool());
+        check(!controller->readingStats()[0].toMap().value("timeUploadUncertain").toBool());
+        check(controller->readingStats()[0].toMap().value("skippedSeconds").toInt()==25);
         check(!controller->readingStats()[0].toMap().value("canUploadTime").toBool());
         writeReceipt(QJsonObject{{"confirmedSeconds",125}});
         until([&]{auto *b=visualChild(item,"uploadReadingTimeButton");return b && b->isEnabled();});

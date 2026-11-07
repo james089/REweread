@@ -84,6 +84,7 @@ public:
     bool busy() const { return m_process.state() != QProcess::NotRunning || m_autoSyncProcess.state() != QProcess::NotRunning || m_entryProcess.state() != QProcess::NotRunning || m_nativePullBusy; }
     int nativeBookRevision() const { return m_nativeBookRevision; }
     Q_INVOKABLE QString nativeBookBadge(const QString &uuid) const;
+    Q_INVOKABLE QString nativeBookCover(const QString &uuid) const;
     bool canQueue() const { return m_loggedIn && (!busy() || (m_process.state()!=QProcess::NotRunning && m_operation == "import" && !m_error)); }
     bool loggedIn() const { return m_loggedIn; }
     QString status() const { return m_autoSyncProcess.state()!=QProcess::NotRunning ? QStringLiteral("正在后台上传微信读书进度…") : m_status; }
@@ -190,6 +191,7 @@ private:
     QProcess m_process, m_progressProcess, m_autoSyncProcess, m_entryProcess, m_statsProcess;
     QFileSystemWatcher m_nativeBookWatcher;
     QMap<QString,QJsonObject> m_nativeBooks;
+    QMap<QString,QString> m_nativeCoverSources;
     QMap<QString,QJsonObject> m_exitJobs;
     QMap<QString,qint64> m_exitNotBefore;
     QElapsedTimer m_exitClock;

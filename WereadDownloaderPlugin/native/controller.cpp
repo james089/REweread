@@ -145,7 +145,7 @@ DownloaderController::DownloaderController(LoginImage *image, QObject *parent, c
     m_readingClockTimer.start();
     connect(&m_progressProcess, &QProcess::readyReadStandardOutput, this, &DownloaderController::readProgress);
     connect(&m_progressProcess, qOverload<int,QProcess::ExitStatus>(&QProcess::finished), this, [this](int,QProcess::ExitStatus){readProgress();QTimer::singleShot(0,this,&DownloaderController::processExitQueue);});
-    m_covers.ready = [this] { ++m_coverRevision; emit coversChanged(); };
+    m_covers.ready = [this] { ++m_coverRevision; reloadNativeBooks(); emit coversChanged(); };
     connect(&m_process, &QProcess::readyReadStandardOutput, this, &DownloaderController::readOutput);
     connect(&m_process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, &DownloaderController::finish);
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -181,7 +181,22 @@ void DownloaderController::reloadNativeBooks(){
            || !QRegularExpression("\\A[A-Za-z0-9_-]{1,128}\\z").match(i.key()).hasMatch())continue;
         row["bookId"]=i.key();imported[uuid.toString(QUuid::WithoutBraces)]=row;
     }
-    if(imported!=m_nativeBooks){m_nativeBooks=imported;notifyNativeBooks();}
+    QMap<QString,QString> covers;
+    QMap<QString,QJsonArray> shelves;
+    for(auto i=imported.cbegin();i!=imported.cend();++i){
+        const auto scope=i.value().value("accountScope").toString();
+        if(!shelves.contains(scope))shelves[scope]=privateObject(m_dataRoot+"/accounts/"+scope+"/shelf.json").value("books").toArray();
+        const auto id=i.value().value("bookId").toString();
+        for(const auto &book:shelves.value(scope))if(book.toObject().value("bookId").toString()==id){
+            const auto source=CoverStore::cachedSource(m_dataRoot,scope,id,book.toObject().value("cover").toString());
+            if(!source.isEmpty())covers[i.key()]=source;
+            break;
+        }
+    }
+    if(imported!=m_nativeBooks || covers!=m_nativeCoverSources){m_nativeBooks=imported;m_nativeCoverSources=covers;notifyNativeBooks();}
+}
+QString DownloaderController::nativeBookCover(const QString &uuid) const {
+    return m_nativeCoverSources.value(QUuid(uuid).toString(QUuid::WithoutBraces));
 }
 QString DownloaderController::nativeBookBadge(const QString &uuid) const {
     const auto key=QUuid(uuid).toString(QUuid::WithoutBraces);
@@ -604,12 +619,15 @@ QVariantList DownloaderController::readingStats() const {
         const auto receipt=receipts.value(row.value("bookId").toString()).toObject();
         const double total=record.value("seconds").toDouble(-1);
         const double confirmed=receipt.value("confirmedSeconds").toDouble(receipt.isEmpty()?0:-1);
-        const bool valid=journalValid && total>=0 && total<=315360000 && total==qint64(total)
+        double skipped=receipt.value("skippedSeconds").toDouble(0);
+        const auto legacyPending=receipt.value("pending").toObject();
+        if(!legacyPending.isEmpty())skipped+=legacyPending.value("seconds").toDouble(0);
+        const bool valid=journalValid && skipped>=0 && skipped==qint64(skipped) && confirmed+skipped<=total && total>=0 && total<=315360000 && total==qint64(total)
             && confirmed>=0 && confirmed<=total && confirmed==qint64(confirmed);
-        const bool uncertain=receipt.contains("pending") && !receipt.value("pending").isNull() && receipt.value("pending")!=QJsonValue(false);
-        row["pendingSeconds"]=valid?int(total-confirmed):-1;
-        row["timeUploadUncertain"]=uncertain;
-        row["canUploadTime"]=valid && !uncertain && total>confirmed;
+        row["pendingSeconds"]=valid?int(total-confirmed-skipped):-1;
+        row["skippedSeconds"]=valid?int(skipped):0;
+        row["timeUploadUncertain"]=false;
+        row["canUploadTime"]=valid && total>confirmed+skipped;
         row["localSeconds"]=int(seconds);result.append(row);
     }
     std::stable_sort(result.begin(),result.end(),[](const QVariant &a,const QVariant &b){
@@ -622,7 +640,7 @@ void DownloaderController::uploadReadingTime(const QString &id) {
     checkpointReadingTime();
     bool allowed=false;
     for(const auto &value:readingStats())if(value.toMap().value("bookId").toString()==id){allowed=value.toMap().value("canUploadTime").toBool();break;}
-    if(!allowed){m_status=QStringLiteral("没有可补传时长，或有回执需要核对");emit changed();return;}
+    if(!allowed){m_status=QStringLiteral("没有可补传时长，或时长记录不可用");emit changed();return;}
     stopProgress();start(QStringLiteral("upload-time"),id);
 }
 void DownloaderController::attachSettings(QObject *settings) {
@@ -891,10 +909,13 @@ void DownloaderController::readOutput() {
             }
         } else if(state=="time_upload_progress" && m_operation=="upload-time" && row.value("bookId").toString()==m_currentId && row.value("accountScope").toString()==m_scope) {
             const int done=row.value("uploadedSeconds").toInt(-1),total=row.value("totalSeconds").toInt(-1);
-            if(done>=m_timeUploadDone && total>=done && total<=315360000){
-                m_timeUploadDone=done;m_timeUploadTotal=total;
+            const int skipped=row.value("skippedSeconds").toInt(0);
+            const qint64 processed=qint64(done)+skipped;
+            if(done>=0 && skipped>=0 && processed>=m_timeUploadDone && total>=processed && total<=315360000){
+                m_timeUploadDone=int(processed);m_timeUploadTotal=total;
                 m_status=QStringLiteral("补传时长：已提交 %1分%2秒 / %3分%4秒（%5%）")
-                    .arg(done/60).arg(done%60).arg(total/60).arg(total%60).arg(total?int(qint64(done)*100/total):100);
+                    .arg(done/60).arg(done%60).arg(total/60).arg(total%60).arg(total?int(processed*100/total):100);
+                if(skipped>0)m_status+=QStringLiteral("；跳过 %1 秒无回执时长").arg(skipped);
                 emit readingStatsChanged();
             }
         } else if(state=="time_uploaded") {
@@ -905,6 +926,7 @@ void DownloaderController::readOutput() {
             const auto today=qMax(0,row.value("remainingSeconds").toInt()-deferred);
             m_status=QStringLiteral("本次已提交 %1分%2秒；剩余待传 %3分%4秒")
                 .arg(uploaded/60).arg(uploaded%60).arg(today/60).arg(today%60);
+            if(row.value("skippedSeconds").toInt()>0)m_status+=QStringLiteral("；跳过 %1 秒无回执时长，后续可继续上传").arg(row.value("skippedSeconds").toInt());
             if(deferred>0)m_status+=QStringLiteral("；往日未传 %1分%2秒（暂不支持补传）").arg(deferred/60).arg(deferred%60);
             emit readingStatsChanged();
         } else if(state=="recent_mark_failed") {
@@ -951,7 +973,13 @@ void DownloaderController::readOutput() {
                 continue;
             }
             if (row.value("importState") == "failed") { bookState("failed"); m_final = true; }
-            m_status = row.value("code")=="time_upload_uncertain" ? QStringLiteral("进度/时长请求结果待核对，已暂停重传以免重复累计")
+            m_status = row.value("code")=="epub_invalid_xhtml" ? (row.value("chapterIndex").toInt()>0
+                ? QStringLiteral("第 %1 章 XHTML 格式校验失败，已停止导入").arg(row.value("chapterIndex").toInt())
+                : QStringLiteral("EPUB 正文格式校验失败，已停止导入；请删除旧缓存后重新下载"))
+                : row.value("code")=="epub_missing_resource" ? QStringLiteral("EPUB 引用的图片或样式资源缺失或损坏，已停止导入")
+                : row.value("code")=="epub_invalid_package" ? QStringLiteral("EPUB 文件结构校验失败，已停止导入；请删除旧缓存后重新下载")
+                : (row.value("code")=="epub_invalid_spine" || row.value("code")=="epub_invalid_chapter_list") ? QStringLiteral("EPUB 章节目录缺失或重复，已停止导入")
+                : row.value("code")=="time_upload_uncertain" ? QStringLiteral("进度/时长请求结果待核对，已暂停重传以免重复累计")
                 : m_operation=="upload-time" ? QStringLiteral("时长上传未完成，记录已保留，请刷新后重试")
                 : (m_operation == "sync-progress" || m_operation == "restore-progress")
                 ? (row.value("code") == "cloud_progress_changed" ? QStringLiteral("云端进度已变化，请刷新后再同步")

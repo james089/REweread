@@ -40,6 +40,13 @@ QString CoverStore::path(const QString &id, const QString &url) const {
  return m_root + "/accounts/" + m_scope + "/covers-v2/" + id + '-'
     + QString::fromLatin1(QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Sha256).toHex()) + ".png";
 }
+QString CoverStore::cachedSource(const QString &root, const QString &scope, const QString &id, const QString &url) {
+ if(!QRegularExpression("\\A[a-f0-9]{64}\\z").match(scope).hasMatch() || !validId(id) || url.size()>2048 || !allowed(QUrl(url)))return {};
+ const auto relative="/accounts/"+scope+"/covers-v2/"+id+'-'+QString::fromLatin1(QCryptographicHash::hash(url.toUtf8(),QCryptographicHash::Sha256).toHex())+".png";
+ const QFileInfo file(root+relative);
+ if(!cached(file.filePath()) || file.canonicalFilePath()!=QDir(root).canonicalPath()+relative)return {};
+ return QUrl::fromLocalFile(file.absoluteFilePath()).toString();
+}
 QString CoverStore::source(const QString &id, const QString &url) {
  const auto file = path(id, url); if (file.isEmpty()) return {};
  if (cached(file)) return QUrl::fromLocalFile(file).toString();

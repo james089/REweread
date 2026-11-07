@@ -90,7 +90,7 @@ void ImportRegistry::reserve(const QString &id, const QString &scope) {
 void ImportRegistry::prepareSubmission(const QString &id, const QString &path) {
     auto row = record(id);
     need(row.value("state") == "preparing", "invalid import transition");
-    need(Epub(path).sourceBookId() == id, "EPUB lacks matching source identity");
+    need(Epub(path,true).sourceBookId() == id, "EPUB lacks matching source identity");
     QFile f(path); need(f.open(QIODevice::ReadOnly), "cannot read submission file");
     QCryptographicHash hash(QCryptographicHash::Sha256);
     need(hash.addData(&f), "cannot hash submission");

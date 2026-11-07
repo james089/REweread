@@ -419,7 +419,7 @@ function DownloadManager:start_full_download(book, opts)
     local book_id = canonical_book_id(book)
     local status = self.status_store and self.status_store:get(book_id) or {}
     local scope = self:account_cache_scope(settings)
-    if not opts.force and scope and status.accountScope == scope and status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0 and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and file_exists(status.fullFile) then
+    if not opts.force and scope and status.accountScope == scope and status.downloadState == "full" and (tonumber(status.failedChapterCount) or 0) == 0 and status.fullFile and status.fullFile ~= "" and status.imageAssets == true and status.epubPackagingVersion == EpubCompatibility.packagingVersion and file_exists(status.fullFile) then
         return {
             state = "done",
             book = book,
@@ -543,6 +543,14 @@ function DownloadManager:finish_full_download(job)
         end
         error(message, 0)
     end
+    if #job.failed==0 then
+        assert(#job.selected==#job.chapters,"epub_invalid_chapter_list")
+        for index,chapter in ipairs(job.chapters)do
+            local selected=job.selected[index]
+            assert(selected and tostring(selected.chapterUid or selected.chapter_uid or selected.uid or index)
+                ==tostring(chapter.chapterUid or chapter.chapter_uid or chapter.uid or index),"epub_invalid_chapter_list")
+        end
+    end
     local cover_data
     local cover_url = WeRead.normalize_cover_url(job.work_book.cover)
     if cover_url and cover_url ~= "" then
@@ -551,10 +559,10 @@ function DownloadManager:finish_full_download(job)
         end)
     end
     local partial_state = (#job.failed > 0) and "partial" or "full"
-    local epub_bodies, epub_assets = EpubCompatibility.prepare(job.bodies, job.assets)
+    local epub_bodies, epub_assets, epub_css = EpubCompatibility.prepare(job.bodies, job.assets, job.selected, job.content_state.css)
     local path = Content.save_book_epub(
         job.settings, job.work_book, job.selected, epub_bodies,
-        partial_state == "full" and "full" or "partial", epub_assets, job.content_state.css, cover_data
+        partial_state == "full" and "full" or "partial", epub_assets, epub_css, cover_data
     )
     job.book.chapters = job.chapters
     local last_error = ""
@@ -575,6 +583,7 @@ function DownloadManager:finish_full_download(job)
             currentChapter = "",
             downloadStage = "done",
             imageAssets = true,
+            epubPackagingVersion = partial_state == "full" and EpubCompatibility.packagingVersion or nil,
             lastError = last_error,
         })
     end
@@ -600,10 +609,10 @@ function DownloadManager:finish_opening_download(job)
         end
         error(message, 0)
     end
-    local epub_bodies, epub_assets = EpubCompatibility.prepare(job.bodies, job.assets)
+    local epub_bodies, epub_assets, epub_css = EpubCompatibility.prepare(job.bodies, job.assets, job.selected, job.content_state.css)
     local path = Content.save_book_epub(
         job.settings, job.work_book, job.selected, epub_bodies,
-        "opening", epub_assets, job.content_state.css
+        "opening", epub_assets, epub_css
     )
     job.book.chapters = job.chapters
     if self.status_store and job.book_id then

@@ -86,9 +86,9 @@ local beforeRecent=J.encode({saved.chapterUid,saved.chapterOffset,saved.progress
 assert(M:markRecent(id).state=='recent_marked' and enters==1 and writes==0)
 assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.progress,saved.readingTime})==beforeRecent)
 assert(rows[1].cloudChapter=='synthetic' and rows[1].localChapter=='synthetic')
-assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic')
+local localTitle,localDisplay=M:localChapter(id,{uuid=uuid},{chapter});assert(localTitle=='synthetic' and type(localDisplay)=='number' and localDisplay>=0 and localDisplay<=100)
 local beforeLoads=pdfLoads
-assert(M:localChapter(id,{uuid=uuid},{chapter})=='synthetic' and pdfLoads==beforeLoads)
+local cachedTitle,cachedDisplay=M:localChapter(id,{uuid=uuid},{chapter});assert(cachedTitle=='synthetic' and cachedDisplay==localDisplay and pdfLoads==beforeLoads)
 local reopened=require('reading_progress').new(settings,scope,account,{root=work,library=work..'/library',pdf=P})
 assert(reopened:localChapter(id,{uuid=uuid},{chapter})=='synthetic' and pdfLoads==beforeLoads)
 reopened:close()
@@ -110,6 +110,7 @@ local fetchesBeforeSync=chapterFetches
 local result=M:sync(id) -- explicit upload keeps its direction despite pending restore
 assert(not J.decode(read(account..'/reading-progress-v1.json')).books[id].restorePending)
 assert(result.state=='progress_synced' and writes==1 and lastPayload.elapsed_seconds==0)
+assert(type(result.localProgress)=='number' and math.abs(result.localProgress-result.cloudProgress)<0.001,'same source position must use the same percentage formula')
 assert(result.recentMarked and result.uuid==uuid and enters==2)
 assert(result.timings.sourceMode=='download-map' and result.timings.chapterFetchMs==0 and chapterFetches==fetchesBeforeSync)
 assert(lastPayload.chapter_uid==42 and lastPayload.chapter_offset==position.codepoints)
@@ -127,11 +128,11 @@ json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,se
 json(account..'/reading-session-v1.json',{version=1,books={[id]={uuid=uuid,token=liveToken,enteredAt=os.time()-20,startTotal=0,startDays={}}}})
 local oldGetenv=os.getenv;os.getenv=function(key)if key=='WEREAD_READING_SESSION' then return liveToken end;return oldGetenv(key)end
 result=M:sync(id);os.getenv=oldGetenv
-assert(result.state=='progress_synced' and result.cloudPositionPreserved and result.timeUploadedSeconds==20)
-assert(writes==2 and timeWrites==1 and enters==beforeConflictEnters)
-assert(lastPayload.elapsed_seconds==20 and lastPayload.chapter_offset==0 and lastPayload.summary==middle:sub(1,18))
+assert(result.state=='progress_synced' and result.cloudPositionPreserved and result.timeUploadedSeconds==0)
+assert(writes==2 and timeWrites==0 and enters==beforeConflictEnters)
+assert(lastPayload.elapsed_seconds==0 and lastPayload.chapter_offset==0 and lastPayload.summary==middle:sub(1,18))
 assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})==expectedCloud)
-assert(J.decode(assert(io.open(account..'/uploaded-reading-time-v1.json')):read('*a')).books[id].confirmedSeconds==20)
+assert(not io.open(account..'/uploaded-reading-time-v1.json'),'position-only sync must not touch the duration ledger')
 -- Restore independent fixtures so subsequent rejection/layout scenarios retain their counters.
 for _,name in ipairs({'local-reading-time-v1.json','uploaded-reading-time-v1.json','reading-session-v1.json'})do os.remove(account..'/'..name)end
 saved=originalSaved;writes=1;timeWrites=0
@@ -199,8 +200,8 @@ rejectEnter=false
 json(account..'/local-reading-time-v1.json',{version=1,books={[id]={uuid=uuid,seconds=5,days={[os.date('%Y-%m-%d')]=5}}}})
 M:refresh({{bookId=id}},function()end)
 local readsBeforeCombined=cloudReads
-result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==1 and lastPayload.elapsed_seconds==5,
- 'manual progress drains the recorded backlog')
+result=M:sync(id);assert(result.state=='progress_synced' and result.timeUploaded and writes==4 and timeWrites==0 and lastPayload.elapsed_seconds==0,
+ 'manual progress must not drain the recorded backlog')
 assert(cloudReads-readsBeforeCombined==2,'combined sync should perform one preflight cloud read and one final verification')
 -- Native cPages v2 must retain exact sync/restore without rewriting CRDT/annotations.
 local function cell(v)return {timestamp='1:1',value=v}end
@@ -233,7 +234,7 @@ result=M:sync(id)
 assert(result.state=='progress_synced' and currentPage==1 and writes==historyWrites+1
  and lastPayload.chapter_offset==position.codepoints)
 result=M:restore(id)
-assert(result.state=='restore_position' and result.page==2 and result.pageCount==3 and result.localProgress==100)
+assert(result.state=='restore_position' and result.page==2 and result.pageCount==3 and result.localProgress==-1)
 assert(read(base..'.content')==preservedContent and read(base..'.metadata')==preservedMetadata)
 -- A PDF page omitted from native layout cannot be restored to a guessed page.
 first.redir.value=1;json(base..'.content',v2)
@@ -300,4 +301,29 @@ assert(result.state=='time_uploaded' and result.uploadedSeconds==3600 and result
 assert(cloudReads==beforeBackfillReads+1 and timeWrites==beforeBackfillWrites+60 and enters==beforeBackfillEntries+1)
 assert(pdfLoads==beforeBackfillPdf and chapterFetches==beforeBackfillChapters)
 assert(J.encode({saved.chapterUid,saved.chapterOffset,saved.summary,saved.progress})==oldCloudPosition)
+-- Native appended handwriting page without redir falls back to previous body
+-- text while preserving the actual current page and all native document bytes.
+local appended={fileType='epub',formatVersion=2,pageCount=3,cPages={original=cell(2),pages={
+ {id='00000000-0000-4000-8000-000000000001',idx=cell('a'),redir=cell(0)},
+ {id='00000000-0000-4000-8000-000000000002',idx=cell('b'),redir=cell(1)},
+ {id='00000000-0000-4000-8000-000000000003',idx=cell('c')},
+}}}
+local onAdded=J.decode(localMetadata);onAdded.lastOpenedPage=2
+json(base..'.content',appended);json(base..'.metadata',onAdded)
+local beforeAddedContent=read(base..'.content');local beforeAddedMeta=read(base..'.metadata')
+result=M:sync(id);assert(result.state=='progress_synced')
+assert(read(base..'.content')==beforeAddedContent and read(base..'.metadata')==beforeAddedMeta)
+-- A trailing source PDF appendix may have text absent from downloaded chapters.
+-- Keep looking backwards for a uniquely matching body page, only for added pages.
+local oldChars=P.FPDFText_CountChars;local oldUnicode=P.FPDFText_GetUnicode
+P.FPDFText_CountChars=function()return currentPage==1 and 10 or 120 end
+P.FPDFText_GetUnicode=function(_,i)return currentPage==1 and 0x61 or 0x4e00+i+1 end
+result=M:sync(id);assert(result.state=='progress_synced')
+assert(read(base..'.content')==beforeAddedContent and read(base..'.metadata')==beforeAddedMeta)
+P.FPDFText_CountChars=oldChars;P.FPDFText_GetUnicode=oldUnicode
+-- A first added page has no preceding original position: refuse to invent one.
+appended.cPages.pages[3].idx=cell('0');onAdded.lastOpenedPage=0
+json(base..'.content',appended);json(base..'.metadata',onAdded)
+local beforeFirst=writes;ok,err=pcall(M.sync,M,id)
+assert(not ok and err=='progress_not_located' and writes==beforeFirst)
 M:close();print('synthetic progress: imported-only reads, exact sync/zero time, conflict, rejection, restore and layout refusal passed')

@@ -16,6 +16,7 @@ public:
  int imageFailures = 0;
  QString source(const QString &id, const QString &url);
  std::function<void()> ready;
+ static QString cachedSource(const QString &root, const QString &scope, const QString &id, const QString &url);
  static bool allowed(const QUrl &url);
  static bool saveImage(const QByteArray &bytes, const QString &path);
 private:

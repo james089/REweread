@@ -120,7 +120,10 @@ QJsonObject helper(const QString &operation, const QString &id = {}, const QStri
                     if (record.value("state") != "imported" || record.value("accountScope") != object.value("accountScope")) continue;
                     const auto uuid = record.value("uuid").toString();
                     need(QRegularExpression("\\A[0-9a-fA-F-]{36}\\z").match(uuid).hasMatch(), "invalid_document_id");
-                    object["localProgress"] = nativeReadingPercent(readJson(libraryRoot+'/'+uuid+".metadata"),readJson(libraryRoot+'/'+uuid+".content",8*1024*1024));
+                    // Lua verifies the source anchor and uses the same content
+                    // weighting as cloud display; never overwrite it with PDF page ratio.
+                    const double local=object.value("localProgress").toDouble(-1);
+                    object["localProgress"]=(std::isfinite(local) && local>=0 && local<=100)?local:-1;
                     emitRow(object);
                 } catch (const std::exception &) {}
             } else if (state == "qr" || state == "progress" || state == "time_upload_progress") {
@@ -302,11 +305,6 @@ int main(int argc, char **argv) {
                 book["importState"] = state.isEmpty() ? "remote" : state;
                 book["localProgress"] = -1;
                 auto record = registry.record(book.value("bookId").toString());
-                if (state == "imported" && record.value("accountScope") == row.value("accountScope")) {
-                    const auto uuid = record.value("uuid").toString();
-                    try { book["localProgress"] = nativeReadingPercent(readJson(libraryRoot + '/' + uuid + ".metadata"), readJson(libraryRoot + '/' + uuid + ".content", 8*1024*1024)); }
-                    catch (const std::exception &) {}
-                }
                 book["hasDownloadCache"] = QFileInfo(root + "/accounts/" + row.value("accountScope").toString() + "/books/" + book.value("bookId").toString()).isDir();
                 books[i] = book;
             }
@@ -392,11 +390,16 @@ int main(int argc, char **argv) {
             const auto scope = identity.value("accountScope").toString();
             registry.reserve(id, scope);
         }
-        QString path;
+        QString path;bool validatingEpub=false;
         try {
             need(QStorageInfo(root).bytesAvailable() >= 256 * 1024 * 1024, "insufficient_space");
             emitRow({{"state", "downloading"}});
             const auto downloaded = helper("download", id);
+            if(downloaded.value("state")=="error" && (downloaded.value("code")=="epub_invalid_xhtml" || downloaded.value("code")=="epub_invalid_chapter_list")){
+                if(registry.record(id).value("state")=="preparing")registry.failBeforeSubmission(id);
+                auto failure=downloaded;failure["importState"]=registry.record(id).value("state");
+                emitRow(failure);return 1;
+            }
             const auto scope = downloaded.value("accountScope").toString();
             need(scope == identity.value("accountScope").toString(), "account_changed");
             const auto cache = QFileInfo(root + "/accounts/" + scope + "/books").canonicalFilePath();
@@ -404,15 +407,15 @@ int main(int argc, char **argv) {
             const auto source = QFileInfo(downloaded.value("path").toString()).canonicalFilePath();
             need(!cache.isEmpty() && !bookRoot.isEmpty() && bookRoot.startsWith(cache + '/')
                 && source.startsWith(bookRoot + '/') && !source.isEmpty(), "invalid_download_path");
-            emitRow({{"state", "validating"}});
+            validatingEpub=true;emitRow({{"state", "validating"}});
             const auto coverUrl = downloaded.value("coverUrl").toString();
-            if (!Epub(source).hasCover() && !coverUrl.isEmpty()) {
+            if (!Epub(source,true).hasCover() && !coverUrl.isEmpty()) {
                 Epub(source).stamp(id, source, coverImage(scope, id, coverUrl));
                 need(Epub(source).hasCover(), "cover_unavailable");
             }
             if (operation == "repair-cover") { emitRow({{"state", "cover_repaired"}, {"hasCover", Epub(source).hasCover()}}); return 0; }
             path = root + "/submission-" + id + ".epub";
-            Epub(source).stamp(id, path);
+            Epub(source).stamp(id, path);validatingEpub=false;
             registry.reconcile(scan(registry)); // Catch concurrent external import.
             need(registry.record(id).value("state") == "preparing", "already_imported");
             NativeAddress address(root);
@@ -461,6 +464,13 @@ int main(int argc, char **argv) {
         } catch (const std::exception &error) {
             if (registry.record(id).value("state") == "preparing") registry.failBeforeSubmission(id);
             if (!path.isEmpty()) QFile::remove(path);
+            const auto validationCode=QString::fromUtf8(error.what());
+            if(validationCode=="epub_invalid_xhtml" || validationCode=="epub_invalid_spine" || validationCode=="epub_missing_resource"){
+                emitRow({{"state","error"},{"code",validationCode},{"importState",registry.record(id).value("state")}});return 1;
+            }
+            if(validatingEpub && registry.record(id).value("state")=="failed" && validationCode!="cover_unavailable"){
+                emitRow({{"state","error"},{"code","epub_invalid_package"},{"importState","failed"}});return 1;
+            }
             if (QString::fromUtf8(error.what()) == "cover_unavailable" && registry.record(id).value("state") == "failed") {
                 emitRow({{"state", "error"}, {"code", "cover_unavailable"}, {"importState", "failed"}}); return 1;
             }

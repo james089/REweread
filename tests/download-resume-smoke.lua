@@ -1,6 +1,6 @@
 -- Runs DownloadManager against the real chapter cache with a fake Content module.
 -- Invoke locally with:
--- npx --yes --package=fengari-node-cli fengari tests/download-resume-smoke.lua
+-- luajit tests/download-resume-smoke.lua (uses the production XML validator)
 
 package.path = "apps/weread-move/lib/?.lua;" .. package.path
 
@@ -158,6 +158,13 @@ assert(content.fetches.a == 1, "first chapter must be fetched before interruptio
 run_to_end(new_manager(), book)
 assert(content.fetches.a == 1 and content.fetches.b == 1, "resume must reuse the verified completed chapter")
 assert(content.saved[#content.saved].suffix == "full", "all verified chapters must produce a full EPUB")
+
+-- Upgrade only the packaged artifact; keep every verified downloaded chapter.
+local beforeUpgradeA,beforeUpgradeB=content.fetches.a,content.fetches.b
+status.values.book.epubPackagingVersion=nil
+local upgraded=run_to_end(new_manager(),book)
+assert(upgraded.state=='done' and content.fetches.a==beforeUpgradeA and content.fetches.b==beforeUpgradeB,'old EPUB format must repackage without fetching chapters')
+assert(status.values.book.epubPackagingVersion==require('epub_compatibility').packagingVersion)
 
 local cache = ChapterCache:new{ root = root }
 local damaged = assert(io.open(cache:chapter_path("book", "a"), "wb"))

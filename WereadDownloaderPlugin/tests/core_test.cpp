@@ -25,6 +25,10 @@ static void rejects(const std::function<void()> &fn) {
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
+        if(argc==3 && QString::fromLocal8Bit(argv[1])=="--validate-epub"){
+            Epub checked(QString::fromLocal8Bit(argv[2]),true);
+            std::cout << "EPUB XML/spine/resource validation passed\n";return 0;
+        }
         check(argc == 2);
         const auto previousTZ=qgetenv("TZ");const bool hadTZ=qEnvironmentVariableIsSet("TZ");
         const std::time_t epoch=1793066400; // A UTC instant near a calendar boundary.
@@ -71,6 +75,8 @@ int main(int argc, char **argv) {
         const auto stamped = temporary.path() + "/stamped.epub";
         const auto twice = temporary.path() + "/twice.epub";
         Epub original(fixtures + "/valid.epub");
+        Epub validDoctype(fixtures+"/valid-doctype.epub",true);
+        Epub validLinks(fixtures+"/valid-links.epub",true);
         check(original.sourceBookId().isEmpty());
         original.stamp("synthetic-book-1", stamped);
         check(Epub(stamped).sourceBookId() == "synthetic-book-1");
@@ -87,9 +93,13 @@ int main(int argc, char **argv) {
         check(Epub(covered).hasCover() && QFileInfo(covered).size() == coveredSize);
         rejects([&] { Epub(fixtures + "/valid.epub").stamp("synthetic", twice, "not an image"); });
         rejects([&] { original.stamp("../escape", twice); });
-        for (const auto &name : {"traversal", "duplicate", "missing-resource", "bad-spine", "checksum", "ambiguous", "encrypted"}) {
-            rejects([&] { Epub epub(fixtures + "/" + name + ".epub"); epub.sourceBookId(); });
+        for (const auto &name : {"traversal", "duplicate", "missing-resource", "bad-spine", "checksum", "ambiguous", "encrypted", "duplicate-attributes", "malformed-chapter", "missing-inline-image", "missing-inline-style", "missing-css-asset", "duplicate-spine", "missing-inline-css-image", "missing-style-element-image"}) {
+            rejects([&] { Epub epub(fixtures + "/" + name + ".epub",true); epub.sourceBookId(); });
         }
+        // Historical identity checks stay lightweight; strict validation is
+        // required for a new submission, not every progress refresh.
+        Epub historicalPackage(fixtures+"/duplicate-attributes.epub");
+        check(historicalPackage.sourceBookId().isEmpty());
         // Failed tagging must not overwrite an unrelated, existing output.
         QFile before(twice); check(before.open(QIODevice::ReadOnly)); const auto bytes = before.readAll(); before.close();
         rejects([&] { original.stamp("bad/id", twice); });

@@ -7,7 +7,7 @@ namespace WereadDownloader {
 // Bounded, non-extracting ZIP reader/writer. No archive paths reach the filesystem.
 class Epub {
 public:
-    explicit Epub(const QString &path);
+    explicit Epub(const QString &path, bool strictContent = false);
     QString sourceBookId() const;
     bool hasCover() const;
     void stamp(const QString &bookId, const QString &outputPath, const QByteArray &cover = {});
@@ -21,7 +21,7 @@ private:
     QByteArray unpack(const Entry &entry) const;
     QByteArray read(const QByteArray &name) const;
     QByteArray packagePath() const;
-    void validate() const;
+    void validate(bool strictContent) const;
     QVector<Entry> m_entries;
 };
 }

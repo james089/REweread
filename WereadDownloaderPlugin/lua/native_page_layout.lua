@@ -51,7 +51,7 @@ function M.resolve(content)
   local deleted=value(page.deleted)
   if page.deleted~=nil and deleted~=false and deleted~=0 and deleted~=true and deleted~=1 then return nil end
   if deleted~=true and deleted~=1 then
-   local idx=value(page.idx);local redir=value(page.redir)
+   local idx=value(page.idx);local redir=page.redir==nil and -1 or value(page.redir)
    if type(idx)~='string' or #idx==0 or #idx>512 or not integer(redir) or redir< -1 or redir>=original then return nil end
    active[#active+1]={idx=idx,pdf=redir}
   end

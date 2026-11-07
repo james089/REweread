@@ -481,7 +481,7 @@ Rectangle {
                                 objectName: "pendingReadingTimeLabel"
                                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 20; color: "#444444"
                                 text: (modelData.pendingSeconds < 0 ? "待传时长未知" : "全部待传 " + page.duration(modelData.pendingSeconds))
-                                    + (modelData.timeUploadUncertain ? " · 回执待核对" : "")
+                                    + (modelData.skippedSeconds > 0 ? " · 已跳过 " + page.duration(modelData.skippedSeconds) : "")
                             }
                         }
                         RoundedButton {

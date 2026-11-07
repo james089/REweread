@@ -318,3 +318,66 @@ AFFECT /qml/device/view/documentview/DocumentPageSlider.qml
         }
     END TRAVERSE
 END AFFECT
+
+AFFECT /qml/device/view/navigator/ContentEntriesGridItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE MouseArea#gridItem > Item#preview > Rectangle#thumbnail
+        LOCATE AFTER PageThumbnail#_image
+        INSERT {
+            Loader {
+                id: wereadLegacyOriginalCover
+                anchors.fill: parent
+                opacity: _image.opacity
+                property string coverSource: {
+                    const revision = Downloader.nativeBookRevision;
+                    return (gridItem.entry && !lockedByPassword) ? Downloader.nativeBookCover(String(gridItem.entry.id)) : "";
+                }
+                active: coverSource !== ""
+                source: "qrc:/weread-downloader/NativeBookCover.qml"
+                onLoaded: item.source = Qt.binding(function() { return wereadLegacyOriginalCover.coverSource; });
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/syncserviceexplorer/ContentGridItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE ContentItemBase#gridItem > Item#_thumbnail
+        LOCATE AFTER Image#_image
+        INSERT {
+            Loader {
+                id: wereadGridOriginalCover
+                anchors.fill: parent
+                opacity: _image.opacity
+                property string coverSource: {
+                    const revision = Downloader.nativeBookRevision;
+                    return (gridItem.supported && !gridItem.passwordProtected) ? Downloader.nativeBookCover(String(gridItem.entityId)) : "";
+                }
+                active: coverSource !== ""
+                source: "qrc:/weread-downloader/NativeBookCover.qml"
+                onLoaded: item.source = Qt.binding(function() { return wereadGridOriginalCover.coverSource; });
+            }
+        }
+    END TRAVERSE
+END AFFECT
+
+AFFECT /qml/device/view/syncserviceexplorer/ContentListItem.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE ContentItemBase#listItem > RowLayout#row > Rectangle#thumbnailBackground > Image#thumbnailImage
+        LOCATE BEFORE ALL
+        INSERT {
+            Loader {
+                id: wereadListOriginalCover
+                anchors.fill: parent
+                opacity: 1
+                property string coverSource: {
+                    const revision = Downloader.nativeBookRevision;
+                    return (listItem.supported && !listItem.passwordProtected) ? Downloader.nativeBookCover(String(listItem.entityId)) : "";
+                }
+                active: coverSource !== ""
+                source: "qrc:/weread-downloader/NativeBookCover.qml"
+                onLoaded: item.source = Qt.binding(function() { return wereadListOriginalCover.coverSource; });
+            }
+        }
+    END TRAVERSE
+END AFFECT

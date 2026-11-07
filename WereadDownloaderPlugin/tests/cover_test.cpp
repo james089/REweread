@@ -26,6 +26,11 @@ int main(int argc, char **argv) {
   QImage image(320, 640, QImage::Format_RGB32); image.fill(Qt::green);
   QByteArray bytes; QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly); check(image.save(&buffer,"PNG"));
   check(CoverStore::saveImage(bytes, file));
+  check(CoverStore::cachedSource(temporary.path(),scope,"synthetic",url)==QUrl::fromLocalFile(file).toString());
+  check(CoverStore::cachedSource(temporary.path(),scope,"missing",url).isEmpty());
+  check(CoverStore::cachedSource(temporary.path(),"../outside","synthetic",url).isEmpty());
+  check(CoverStore::cachedSource(temporary.path(),scope,"../outside",url).isEmpty());
+  check(CoverStore::cachedSource(temporary.path(),scope,"synthetic","http://cdn.weread.qq.com/synthetic.png").isEmpty());
   check(!CoverStore::saveImage("not an image", temporary.path()+"/bad.png"));
   check(!CoverStore::allowed(QUrl("https://cdn.weread.qq.com.evil.example/x")));
   check(!CoverStore::allowed(QUrl("http://cdn.weread.qq.com/x")));
