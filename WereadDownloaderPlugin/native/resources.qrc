@@ -7,5 +7,6 @@
     <file alias="icons/weread.png">../qml/icons/weread.png</file>
     <file alias="icons/sync.svg">../qml/icons/sync.svg</file>
     <file alias="NativeBookCover.qml">../qml/NativeBookCover.qml</file>
+    <file alias="NativeSleepCover.qml">../qml/NativeSleepCover.qml</file>
 </qresource>
 </RCC>

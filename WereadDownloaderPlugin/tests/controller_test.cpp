@@ -132,9 +132,16 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
         const auto nativeCover=coverDirectory+"/synthetic-2-"+QString::fromLatin1(QCryptographicHash::hash(coverUrl.toUtf8(),QCryptographicHash::Sha256).toHex())+".png";
         check(QFile::copy(cachedCover,nativeCover));
         {QFile shelf(coverRoot+"/accounts/"+QString(64,'a')+"/shelf.json");check(shelf.open(QIODevice::WriteOnly));shelf.write(QJsonDocument(QJsonObject{{"books",QJsonArray{QJsonObject{{"bookId","synthetic-2"},{"cover",coverUrl}}}}}).toJson());}
+        check(controller->nativeSleepCover().isEmpty());
         controller->readingStarted("{12345678-1234-1234-1234-123456789ABC}");
         check(controller->nativeBookCover("12345678-1234-1234-1234-123456789abc")==QUrl::fromLocalFile(nativeCover).toString());
         check(controller->nativeBookCover("unknown").isEmpty());
+        check(controller->nativeSleepCover()==QUrl::fromLocalFile(nativeCover).toString());
+        controller->setReadingDeviceSleeping(true);
+        controller->setReadingLocked(true);
+        check(controller->nativeSleepCover()==QUrl::fromLocalFile(nativeCover).toString());
+        controller->setReadingDeviceSleeping(false);
+        controller->setReadingLocked(false);
         {
             QQmlComponent coverComponent(&engine,QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[1])).dir().filePath("NativeBookCover.qml")));
             std::unique_ptr<QObject> coverObject(coverComponent.create());check(bool(coverObject));
@@ -149,10 +156,28 @@ if [ "$1" = shelf ] && [ -f "$script_root/slow-shelf" ]; then /bin/sleep 0.5; fi
             coverItem->setParentItem(nullptr);
         }
 
+        {
+            QQmlComponent component(&engine,QUrl::fromLocalFile(QFileInfo(QString::fromLocal8Bit(argv[1])).dir().filePath("NativeSleepCover.qml")));
+            std::unique_ptr<QObject> object(component.create());check(bool(object));
+            auto *item=qobject_cast<QQuickItem *>(object.get());check(item);
+            QQuickWindow window;window.setColor(Qt::red);window.resize(80,80);
+            item->setParentItem(window.contentItem());item->setWidth(80);item->setHeight(80);
+            item->setProperty("coverSource",QUrl::fromLocalFile(nativeCover));window.show();
+            until([&]{return item->property("coverReady").toBool();});
+            QTest::qWait(100);auto shot=window.grabWindow();check(!shot.isNull());
+            check(shot.pixelColor(40,40)==Qt::black && shot.pixelColor(2,2)==Qt::white);
+            item->setProperty("coverSource",QUrl::fromLocalFile(temporary.path()+"/missing.png"));
+            until([&]{return !item->isVisible();});
+            QTest::qWait(100);shot=window.grabWindow();check(shot.pixelColor(40,40)==Qt::red);
+            item->setProperty("coverSource",QUrl());check(!item->isVisible());
+            item->setParentItem(nullptr);
+        }
+
         QTest::qWait(1100);controller->setReadingApplicationActive(false);controller->readingStopped();
+        check(controller->nativeSleepCover().isEmpty());
         {QFile ledger(coverRoot+"/accounts/"+QString(64,'a')+"/local-reading-time-v1.json");check(ledger.open(QIODevice::ReadOnly));
          const auto data=QJsonDocument::fromJson(ledger.readAll()).object().value("books").toObject();check(data.size()==1 && data.value("synthetic-2").toObject().value("seconds").toInt()>=1);}
-        controller->readingStarted("not-an-imported-document");controller->readingStopped();
+        controller->readingStarted("not-an-imported-document");check(controller->nativeSleepCover().isEmpty());controller->readingStopped();
         phase="setup";
         int recentRequests=0;
         QObject::connect(controller,&DownloaderController::recentReadRequested,[&](const QString &uuid){

@@ -51,6 +51,10 @@ for token in ['wereadNativePullMenu', 'Downloader.nativePullAvailable', 'Downloa
 for token in ['NativeProgressDialog.qml', 'onNativePullRestoreRequested', 'root.openPage', 'Downloader.nativePullVisible', 'PenInputBlocker']:
     if token not in reader:
         raise SystemExit('Native progress confirmation or live restore hooks are missing')
+sleep = (root / 'build/replay/qt/qml/xofm/modules/sleepscreen/qml/default/sleep-window-opaque.qml').read_text()
+for token in ['wereadSleepCoverLoader', 'NativeSleepCover.qml', 'Downloader.nativeSleepCover', 'Epaper.ScreenModeItem.Sleep']:
+    if token not in sleep:
+        raise SystemExit('Native sleep cover replay is incomplete')
 record = root / 'build/replayed-patch.sha256'
 if not record.exists() or record.read_text().strip() != hashlib.sha256(patch).hexdigest():
     raise SystemExit('Replay this exact patch again before installation')

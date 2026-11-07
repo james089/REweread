@@ -47,6 +47,7 @@ class DownloaderController : public QObject {
     Q_PROPERTY(QString accountName READ accountName NOTIFY changed)
     Q_PROPERTY(QString qrImage READ qrImage NOTIFY changed)
     Q_PROPERTY(QVariantList books READ books NOTIFY booksChanged)
+    Q_PROPERTY(QString nativeSleepCover READ nativeSleepCover NOTIFY nativeSleepCoverChanged)
     Q_PROPERTY(int coverRevision READ coverRevision NOTIFY coversChanged)
     Q_PROPERTY(bool statisticsConfigured READ statisticsConfigured NOTIFY readingStatsChanged)
     Q_PROPERTY(QString statisticsStatus READ statisticsStatus NOTIFY readingStatsChanged)
@@ -84,6 +85,7 @@ public:
     bool busy() const { return m_process.state() != QProcess::NotRunning || m_autoSyncProcess.state() != QProcess::NotRunning || m_entryProcess.state() != QProcess::NotRunning || m_nativePullBusy; }
     int nativeBookRevision() const { return m_nativeBookRevision; }
     Q_INVOKABLE QString nativeBookBadge(const QString &uuid) const;
+    QString nativeSleepCover() const { return nativeBookCover(m_readingUuid); }
     Q_INVOKABLE QString nativeBookCover(const QString &uuid) const;
     bool canQueue() const { return m_loggedIn && (!busy() || (m_process.state()!=QProcess::NotRunning && m_operation == "import" && !m_error)); }
     bool loggedIn() const { return m_loggedIn; }
@@ -148,6 +150,7 @@ signals:
     void readingSessionChanged();
     void changed();
     void coversChanged();
+    void nativeSleepCoverChanged();
     void booksChanged();
     void bookUpdated(const QString &id, const QVariantMap &book);
     void restoreRequested(const QString &uuid, int page, const QString &id);

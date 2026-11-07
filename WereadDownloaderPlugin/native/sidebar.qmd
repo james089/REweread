@@ -381,3 +381,19 @@ AFFECT /qml/device/view/syncserviceexplorer/ContentListItem.qml
         }
     END TRAVERSE
 END AFFECT
+
+; Use the native opaque sleep window; leave sleep scheduling and frontlight alone.
+AFFECT /qt/qml/xofm/modules/sleepscreen/qml/default/sleep-window-opaque.qml
+    IMPORT org.reweread.Downloader 1.0
+    TRAVERSE BaseView#root > InputBlocker
+        LOCATE BEFORE Epaper.ScreenModeItem
+        INSERT {
+            Loader {
+                id: wereadSleepCoverLoader
+                anchors.fill: parent
+                source: "qrc:/weread-downloader/NativeSleepCover.qml"
+                onLoaded: item.coverSource = Qt.binding(function() { return Downloader.nativeSleepCover; })
+            }
+        }
+    END TRAVERSE
+END AFFECT

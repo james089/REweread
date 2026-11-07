@@ -170,7 +170,7 @@ DownloaderController::~DownloaderController() {
     }
     restoreImporter();
 }
-void DownloaderController::notifyNativeBooks(){++m_nativeBookRevision;emit nativeBooksChanged();}
+void DownloaderController::notifyNativeBooks(){++m_nativeBookRevision;emit nativeBooksChanged();emit nativeSleepCoverChanged();}
 void DownloaderController::reloadNativeBooks(){
     const auto books=privateObject(m_dataRoot+"/imports.json").value("books").toObject();
     QMap<QString,QJsonObject> imported;
@@ -450,7 +450,7 @@ void DownloaderController::readingStarted(const QString &uuid,int page) {
     if(m_entryProcess.state()!=QProcess::NotRunning){m_entryProcess.kill();m_entryProcess.waitForFinished(500);}
     m_readingTracked=matched;m_readingStartSeconds=m_readingTime.totalSeconds();m_reportCount=0;m_reportSeconds=0;m_reportFailed=false;
     m_entryNeeded=matched;m_entryTerminal=false;m_entryAttempts=0;
-    m_readingSuspended=false;updateReadingTimer();
+    m_readingSuspended=false;updateReadingTimer();emit nativeSleepCoverChanged();
     qInfo("WereadDownloaderPlugin: reading-clock matched=%d active=%d app=%d locked=%d",matched,m_readingTime.active(),m_readingAppActive,m_readingLocked);
 }
 void DownloaderController::readingStopped(int expectedPage){
@@ -458,7 +458,7 @@ void DownloaderController::readingStopped(int expectedPage){
     m_entryRetryTimer.stop();m_entryNeeded=false;m_readingTracked=false;updateReadingEntry();
     checkpointReadingTime();m_readingTime.close();m_readingTimer.stop();emit readingStatsChanged();
     reloadNativeBooks();
-    const auto uuid=m_readingUuid;m_readingUuid.clear();emit readingSessionChanged();
+    const auto uuid=m_readingUuid;m_readingUuid.clear();emit readingSessionChanged();emit nativeSleepCoverChanged();
     if(!uuid.isEmpty() && m_nativeBooks.contains(uuid)) {
         m_exitJobs[uuid]=m_nativeBooks.value(uuid);m_exitJobs[uuid]["expectedPage"]=expectedPage;m_exitJobs[uuid]["openingSignature"]=m_readingOpeningSignature;m_exitJobs[uuid]["readingSession"]=m_readingSession;m_exitNotBefore[uuid]=m_exitClock.elapsed()+1500;
         if(!m_exitQueue.contains(uuid))m_exitQueue.append(uuid);
